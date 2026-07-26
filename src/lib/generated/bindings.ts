@@ -45,6 +45,14 @@ async getModelBreakdown(days: number) : Promise<Result<ModelStats[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getDailyModelBreakdown(days: number) : Promise<Result<DailyModelBucket[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_daily_model_breakdown", { days }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getProjectBreakdown(days: number) : Promise<Result<ProjectStats[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_project_breakdown", { days }) };
@@ -341,6 +349,7 @@ export type ExtraUsage = { is_enabled?: boolean; monthly_limit_cents?: number; u
  */
 export type HhMm = { hour: number; minute: number }
 export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number }
+export type DailyModelBucket = { date: string; models: ModelStats[] }
 export type PricingEntry = { prefix: string; input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_5m_per_mtok: number; cache_1h_per_mtok: number; 
 /**
  * Optional 1M-context tier (Sonnet 4 only at time of writing). When

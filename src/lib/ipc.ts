@@ -12,6 +12,7 @@ export const ipc = {
   getSessionHistory: (days: number) => commands.getSessionHistory(days).then(unwrap),
   getDailyTrends: (days: number) => commands.getDailyTrends(days).then(unwrap),
   getModelBreakdown: (days: number) => commands.getModelBreakdown(days).then(unwrap),
+  getDailyModelBreakdown: (days: number) => commands.getDailyModelBreakdown(days).then(unwrap),
   getProjectBreakdown: (days: number) => commands.getProjectBreakdown(days).then(unwrap),
   getCacheStats: (days: number) => commands.getCacheStats(days).then(unwrap),
 
