@@ -3,7 +3,7 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { formatTokens, formatCost } from '../lib/format';
-import { ChevronDown, ChevronRight, IconSessions } from '../lib/icons';
+import { ChevronDown, ChevronRight, IconSessions, IconSubagent } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
@@ -24,6 +24,32 @@ function modelKey(name: string): string {
   return 'default';
 }
 
+/** Badge text for a model. Anthropic families collapse to their tier name
+ * (opus/sonnet/haiku/fable); third-party / relay models keep a cleaned
+ * version of their real name so the badge says "glm-5.2" or "k3" instead of
+ * a generic "default" — the family color variant is still driven by
+ * `modelKey` (which stays "default", i.e. neutral, for non-Anthropic). */
+export function modelLabel(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.includes('opus')) return 'opus';
+  if (lower.includes('sonnet')) return 'sonnet';
+  if (lower.includes('haiku')) return 'haiku';
+  if (lower.includes('fable')) return 'fable';
+  return name
+    .replace(/-(highspeed|streaming)$/i, '')
+    .replace(/-\d{8}$/, '')
+    .replace(/-for-coding$/i, '');
+}
+
+/** A session whose transcript had no working directory (`cwd` absent) lands
+ * in ~/.claude/projects/-/ and resolves to project "-". These are headless /
+ * scheduled `claude` invocations (regular cadence, 1 turn, tiny tokens), not
+ * interactive work — so relabel them "headless" and visually demote the row
+ * instead of showing a bare "-" that reads as a broken session. */
+export function isHeadlessProject(project: string): boolean {
+  return !project || project === '-';
+}
+
 function formatTime(iso: string): string {
   const d = new Date(iso);
   const now = new Date();
@@ -33,94 +59,157 @@ function formatTime(iso: string): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + time;
 }
 
+type Breakdown = {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write_5m: number;
+  cache_write_1h: number;
+};
+
+/** A subagent (Task/Agent tool) transcript rolled under its parent session.
+ * Claude Code writes these to `<project>/<sessionId>/subagents/agent-*.jsonl`.
+ * They share the parent conversation's `cwd`, so without nesting every
+ * subagent would render as a duplicate top-level session row. */
+interface SubagentSession {
+  id: string;
+  label: string;
+  latest_ts: string;
+  turn_count: number;
+  headline_tokens: number;
+  total_cost_usd: number;
+  dominant_model: string;
+}
+
 interface AggregatedSession {
   id: string;
   project: string;
   latest_ts: string;
   turn_count: number;
   /** Headline tokens shown on the collapsed row: input + output only.
-   * This represents the "new content" of the session, which is what
-   * users intuitively mean by "size of the session." Cache totals
-   * (which can be 10–100x larger but mostly reuse) are surfaced in the
-   * expandable breakdown. */
+   * Combined across the parent and all of its subagents — the row
+   * represents the whole conversation, and subagents' API calls are real
+   * usage the parent transcript does not include. Cache totals (which can
+   * be 10–100x larger but mostly reuse) are surfaced in the expandable
+   * breakdown. */
   headline_tokens: number;
   total_cost_usd: number;
   /** Model with the most output tokens — surfaced via the row's badge. */
   dominant_model: string;
-  /** Per-category token totals for the expandable breakdown. */
-  breakdown: {
-    input: number;
-    output: number;
-    cache_read: number;
-    cache_write_5m: number;
-    cache_write_1h: number;
-  };
+  /** Per-category token totals for the expandable breakdown (combined). */
+  breakdown: Breakdown;
   /** Per-category cost contributions, summed over all turns. Mirrors the
    * backend cost_for logic so totals match what's billed. */
-  cost_breakdown: {
-    input: number;
-    output: number;
-    cache_read: number;
-    cache_write_5m: number;
-    cache_write_1h: number;
-  };
+  cost_breakdown: Breakdown;
+  /** Subagent transcripts spawned by this conversation, in chronological
+   * order. Empty for sessions that never used the Task/Agent tool. */
+  subagents: SubagentSession[];
+}
+
+const EMPTY_BREAKDOWN: Breakdown = {
+  input: 0,
+  output: 0,
+  cache_read: 0,
+  cache_write_5m: 0,
+  cache_write_1h: 0,
+};
+
+/** Subagent transcripts live at `<project>/<sessionId>/subagents/agent-*.jsonl`.
+ * Detect that path shape and fold them under their parent's key. */
+const SUBAGENT_SEGMENT = '/subagents/agent-';
+
+function parentKeyOf(sourceFile: string): string {
+  const idx = sourceFile.indexOf('/subagents/');
+  // The sibling parent transcript is `<sessionId>.jsonl` in the project dir,
+  // i.e. everything before `/subagents/` plus a `.jsonl` suffix.
+  return idx < 0 ? sourceFile : sourceFile.slice(0, idx) + '.jsonl';
+}
+
+function subagentLabel(sourceFile: string): string {
+  const m = sourceFile.match(/agent-([0-9a-f]+)/i);
+  return m ? `agent ${m[1].slice(0, 8)}` : 'subagent';
+}
+
+function pickDominant(modelTokens: Map<string, number>, fallback: string): string {
+  let best = fallback;
+  let bestTokens = -1;
+  for (const [model, tokens] of modelTokens) {
+    if (tokens > bestTokens) {
+      bestTokens = tokens;
+      best = model;
+    }
+  }
+  return best;
+}
+
+interface ParentAgg {
+  project: string;
+  latest_ts: string;
+  turn_count: number;
+  headline_tokens: number;
+  total_cost_usd: number;
+  dominant_model: string;
+  breakdown: Breakdown;
+  cost_breakdown: Breakdown;
+  modelTokens: Map<string, number>;
+  subs: Map<string, SubAgg>;
+}
+
+interface SubAgg {
+  label: string;
+  latest_ts: string;
+  turn_count: number;
+  headline_tokens: number;
+  total_cost_usd: number;
+  modelTokens: Map<string, number>;
+  dominant_model: string;
 }
 
 /**
- * Group raw assistant-message events into one row per Claude Code session.
- * Each unique `source_file` (a JSONL path under ~/.claude/projects/) is one
- * session; the lines inside it are the conversation turns. Without this,
- * "5447 sessions" actually meant 5447 individual API calls.
+ * Group raw assistant-message events into one row per Claude Code
+ * conversation. Each unique parent `source_file` (a JSONL path under
+ * ~/.claude/projects/) is one session; the lines inside it are the
+ * conversation turns. Subagent transcripts (Task/Agent tool) are nested
+ * under their parent instead of shown as duplicate top-level rows.
  */
-function aggregateSessions(
+export function aggregateSessions(
   events: SessionEvent[],
   pricing: PricingEntry[] | null,
 ): AggregatedSession[] {
-  const byFile = new Map<string, AggregatedSession & { _modelTokens: Map<string, number> }>();
+  const parents = new Map<string, ParentAgg>();
 
   for (const e of events) {
-    const id = e.source_file;
-    let agg = byFile.get(id);
-    if (!agg) {
-      agg = {
-        id,
+    const isSub = e.source_file.includes(SUBAGENT_SEGMENT);
+    const pkey = parentKeyOf(e.source_file);
+    let p = parents.get(pkey);
+    if (!p) {
+      p = {
         project: e.project,
         latest_ts: e.ts,
         turn_count: 0,
         headline_tokens: 0,
         total_cost_usd: 0,
         dominant_model: e.model,
-        breakdown: {
-          input: 0,
-          output: 0,
-          cache_read: 0,
-          cache_write_5m: 0,
-          cache_write_1h: 0,
-        },
-        cost_breakdown: {
-          input: 0,
-          output: 0,
-          cache_read: 0,
-          cache_write_5m: 0,
-          cache_write_1h: 0,
-        },
-        _modelTokens: new Map(),
+        breakdown: { ...EMPTY_BREAKDOWN },
+        cost_breakdown: { ...EMPTY_BREAKDOWN },
+        modelTokens: new Map(),
+        subs: new Map(),
       };
-      byFile.set(id, agg);
+      parents.set(pkey, p);
     }
-    agg.turn_count += 1;
-    agg.headline_tokens += e.input_tokens + e.output_tokens;
-    agg.breakdown.input += e.input_tokens;
-    agg.breakdown.output += e.output_tokens;
-    agg.breakdown.cache_read += e.cache_read_tokens;
-    agg.breakdown.cache_write_5m += e.cache_creation_5m_tokens;
-    agg.breakdown.cache_write_1h += e.cache_creation_1h_tokens;
-    agg.total_cost_usd += e.cost_usd;
-    if (e.ts > agg.latest_ts) agg.latest_ts = e.ts;
-    agg._modelTokens.set(
-      e.model,
-      (agg._modelTokens.get(e.model) ?? 0) + e.output_tokens,
-    );
+
+    // Combined accumulation — the parent row represents the whole
+    // conversation, so subagent usage counts toward its totals.
+    p.turn_count += 1;
+    p.headline_tokens += e.input_tokens + e.output_tokens;
+    p.breakdown.input += e.input_tokens;
+    p.breakdown.output += e.output_tokens;
+    p.breakdown.cache_read += e.cache_read_tokens;
+    p.breakdown.cache_write_5m += e.cache_creation_5m_tokens;
+    p.breakdown.cache_write_1h += e.cache_creation_1h_tokens;
+    p.total_cost_usd += e.cost_usd;
+    if (e.ts > p.latest_ts) p.latest_ts = e.ts;
+    p.modelTokens.set(e.model, (p.modelTokens.get(e.model) ?? 0) + e.output_tokens);
 
     // Per-category cost is computed per-turn so the Sonnet 1M-context
     // tier (which switches based on the call's own context size, not the
@@ -135,29 +224,65 @@ function aggregateSessions(
           cache_5m: e.cache_creation_5m_tokens,
           cache_1h: e.cache_creation_1h_tokens,
         });
-        agg.cost_breakdown.input += c.input;
-        agg.cost_breakdown.output += c.output;
-        agg.cost_breakdown.cache_read += c.cache_read;
-        agg.cost_breakdown.cache_write_5m += c.cache_5m;
-        agg.cost_breakdown.cache_write_1h += c.cache_1h;
+        p.cost_breakdown.input += c.input;
+        p.cost_breakdown.output += c.output;
+        p.cost_breakdown.cache_read += c.cache_read;
+        p.cost_breakdown.cache_write_5m += c.cache_5m;
+        p.cost_breakdown.cache_write_1h += c.cache_1h;
       }
+    }
+
+    if (isSub) {
+      let s = p.subs.get(e.source_file);
+      if (!s) {
+        s = {
+          label: subagentLabel(e.source_file),
+          latest_ts: e.ts,
+          turn_count: 0,
+          headline_tokens: 0,
+          total_cost_usd: 0,
+          modelTokens: new Map(),
+          dominant_model: e.model,
+        };
+        p.subs.set(e.source_file, s);
+      }
+      s.turn_count += 1;
+      s.headline_tokens += e.input_tokens + e.output_tokens;
+      s.total_cost_usd += e.cost_usd;
+      if (e.ts > s.latest_ts) s.latest_ts = e.ts;
+      s.modelTokens.set(e.model, (s.modelTokens.get(e.model) ?? 0) + e.output_tokens);
     }
   }
 
   const result: AggregatedSession[] = [];
-  for (const agg of byFile.values()) {
-    let bestModel = agg.dominant_model;
-    let bestTokens = -1;
-    for (const [model, tokens] of agg._modelTokens) {
-      if (tokens > bestTokens) {
-        bestTokens = tokens;
-        bestModel = model;
-      }
+  for (const [id, p] of parents) {
+    const subagents: SubagentSession[] = [];
+    for (const [sid, s] of p.subs) {
+      subagents.push({
+        id: sid,
+        label: s.label,
+        latest_ts: s.latest_ts,
+        turn_count: s.turn_count,
+        headline_tokens: s.headline_tokens,
+        total_cost_usd: s.total_cost_usd,
+        dominant_model: pickDominant(s.modelTokens, s.dominant_model),
+      });
     }
-    agg.dominant_model = bestModel;
-    const { _modelTokens, ...rest } = agg;
-    void _modelTokens;
-    result.push(rest);
+    // Chronological so the parent's spawn order reads top-to-bottom.
+    subagents.sort((a, b) => (a.latest_ts < b.latest_ts ? -1 : 1));
+
+    result.push({
+      id,
+      project: p.project,
+      latest_ts: p.latest_ts,
+      turn_count: p.turn_count,
+      headline_tokens: p.headline_tokens,
+      total_cost_usd: p.total_cost_usd,
+      dominant_model: pickDominant(p.modelTokens, p.dominant_model),
+      breakdown: p.breakdown,
+      cost_breakdown: p.cost_breakdown,
+      subagents,
+    });
   }
 
   result.sort((a, b) => (a.latest_ts < b.latest_ts ? 1 : -1));
@@ -213,6 +338,31 @@ function BreakdownTable({
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** An indented, muted row for one subagent under its parent session. */
+function SubagentRow({ sub }: { sub: SubagentSession }) {
+  const key = modelKey(sub.dominant_model);
+  return (
+    <div
+      className={[
+        'flex items-center gap-[var(--space-sm)]',
+        'pl-[calc(var(--space-sm)+14px+var(--space-sm))] pr-[var(--space-sm)] py-[var(--space-2xs)]',
+      ].join(' ')}
+    >
+      <IconSubagent size={12} className="shrink-0 text-[color:var(--color-text-muted)] opacity-60" />
+      <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] truncate flex-1 min-w-0">
+        {sub.label}
+      </span>
+      <Badge variant={MODEL_BADGE[key] ?? 'default'}>{modelLabel(sub.dominant_model)}</Badge>
+      <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums min-w-[64px] text-right">
+        {formatTokens(sub.headline_tokens)}
+      </span>
+      <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums min-w-[48px] text-right">
+        {formatCost(sub.total_cost_usd)}
+      </span>
     </div>
   );
 }
@@ -284,6 +434,8 @@ export function SessionsTab() {
           const key = modelKey(session.dominant_model);
           const isOpen = expandedId === session.id;
           const Chevron = isOpen ? ChevronDown : ChevronRight;
+          const agentCount = session.subagents.length;
+          const headless = isHeadlessProject(session.project);
           return (
             <div key={session.id} className="border-b border-[var(--color-border-subtle)]">
               <button
@@ -296,6 +448,7 @@ export function SessionsTab() {
                   'transition-[background] duration-[var(--duration-fast)]',
                   'hover:bg-[var(--color-bg-card)]',
                   isOpen ? 'bg-[var(--color-bg-card)]' : '',
+                  headless ? 'opacity-55' : '',
                 ].join(' ')}
                 aria-expanded={isOpen}
               >
@@ -305,15 +458,22 @@ export function SessionsTab() {
                 />
                 <div className="flex flex-col min-w-0 flex-1">
                   <div className="flex items-center gap-[var(--space-sm)]">
-                    <span className="text-[length:var(--text-body)] text-[color:var(--color-text)] truncate">
-                      {session.project}
+                    <span
+                      className={[
+                        'text-[length:var(--text-body)] truncate',
+                        headless
+                          ? 'italic text-[color:var(--color-text-muted)]'
+                          : 'text-[color:var(--color-text)]',
+                      ].join(' ')}
+                    >
+                      {headless ? 'headless' : session.project}
                     </span>
                     <Badge variant={MODEL_BADGE[key] ?? 'default'}>
-                      {key}
+                      {modelLabel(session.dominant_model)}
                     </Badge>
                   </div>
                   <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
-                    {formatTime(session.latest_ts)} · {session.turn_count} {session.turn_count === 1 ? 'turn' : 'turns'}
+                    {formatTime(session.latest_ts)} · {session.turn_count} {session.turn_count === 1 ? 'turn' : 'turns'}{agentCount > 0 ? ` · ${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}` : ''}
                   </span>
                 </div>
 
@@ -327,10 +487,19 @@ export function SessionsTab() {
                 </div>
               </button>
               {isOpen && (
-                <BreakdownTable
-                  breakdown={session.breakdown}
-                  costBreakdown={session.cost_breakdown}
-                />
+                <>
+                  {agentCount > 0 && (
+                    <div className="flex flex-col py-[var(--space-2xs)]">
+                      {session.subagents.map((sub) => (
+                        <SubagentRow key={sub.id} sub={sub} />
+                      ))}
+                    </div>
+                  )}
+                  <BreakdownTable
+                    breakdown={session.breakdown}
+                    costBreakdown={session.cost_breakdown}
+                  />
+                </>
               )}
             </div>
           );
