@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## v1.2.0 — 2026-07-27
+
 ### Added
 
 - **Trends tab: click a day to see its per-model breakdown.** Clicking any bar reveals that day's token, cost, and cache breakdown per model, sorted by cost — the whole window's per-day/per-model data loads once alongside the chart, so opening the breakdown is instant with no extra fetch.
@@ -147,7 +149,8 @@ First public release. See the [GitHub release notes](https://github.com/FeiXu-11
 - Settings persistence via SQLite; CSP set; corrupted-DB recovery.
 - Anthropic-warm token system with native vibrancy (macOS) / Mica (Windows 11) / translucent solid (Windows 10).
 
-[Unreleased]: https://github.com/FeiXu-1131372/claude-switchboard/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/FeiXu-1131372/claude-switchboard/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/FeiXu-1131372/claude-switchboard/compare/v1.1.3...v1.2.0
 [1.1.0]: https://github.com/FeiXu-1131372/claude-switchboard/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/FeiXu-1131372/claude-switchboard/releases/tag/v1.0.0
 [0.3.0]: https://github.com/FeiXu-1131372/claude-limits/compare/v0.2.0...v0.3.0
