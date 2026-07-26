@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Trends tab: click a day to see its per-model breakdown.** Clicking any bar reveals that day's token, cost, and cache breakdown per model, sorted by cost — the whole window's per-day/per-model data loads once alongside the chart, so opening the breakdown is instant with no extra fetch.
+
 ## v1.1.3 — 2026-07-24
 
 ### Fixed
