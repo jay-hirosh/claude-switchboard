@@ -162,7 +162,7 @@ pub async fn get_daily_model_breakdown(
             .with_timezone(&chrono::Local)
             .format("%Y-%m-%d")
             .to_string();
-        let by_model = by_day.entry(date).or_insert_with(HashMap::new);
+        let by_model = by_day.entry(date).or_default();
         let entry = by_model
             .entry(e.model.clone())
             .or_insert_with(|| ModelStats {

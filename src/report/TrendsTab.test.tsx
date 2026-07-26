@@ -43,6 +43,8 @@ import { TrendsTab } from './TrendsTab';
 
 describe('TrendsTab — day breakdown panel', () => {
   beforeEach(() => {
+    ipcMock.getDailyTrends.mockClear();
+    ipcMock.getDailyModelBreakdown.mockClear();
     ipcMock.getDailyTrends.mockResolvedValue(TRENDS);
     ipcMock.getDailyModelBreakdown.mockResolvedValue(BREAKDOWN);
   });
@@ -55,6 +57,11 @@ describe('TrendsTab — day breakdown panel', () => {
     const panel = await screen.findByTestId('day-breakdown-panel');
     const badges = within(panel).getAllByText(/^(sonnet|opus|haiku) \d/);
     expect(badges.map((b) => b.textContent)).toEqual(['sonnet 4-6', 'opus 4-7', 'haiku 4-5']);
+
+    const sonnetFill = within(panel).getByTestId('model-fill-claude-sonnet-4-6');
+    // day total = 8_000_000 + 4_400_000 = 12_400_000; sonnet total = 6_000_000 + 2_100_000 = 8_100_000
+    // 8_100_000 / 12_400_000 * 100 = 65.32258064516129 — NOT the 30-day aggregate ModelsTab uses
+    expect(parseFloat(sonnetFill.style.width)).toBeCloseTo(65.32, 1);
   });
 
   it('collapses the panel when the same bar is clicked again', async () => {
@@ -81,6 +88,9 @@ describe('TrendsTab — day breakdown panel', () => {
       expect(within(panel).queryByText('opus 4-7')).not.toBeInTheDocument();
     });
     expect(within(panel).getByText('sonnet 4-6')).toBeInTheDocument();
+
+    expect(ipcMock.getDailyTrends).toHaveBeenCalledTimes(1);
+    expect(ipcMock.getDailyModelBreakdown).toHaveBeenCalledTimes(1);
   });
 
   it('clears the selection when the range toggle changes', async () => {

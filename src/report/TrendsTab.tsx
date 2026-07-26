@@ -121,19 +121,24 @@ export function TrendsTab() {
                   aria-label={label}
                   aria-pressed={isSelected}
                   onClick={() => setSelectedDate((d) => (d === day.date ? null : day.date))}
-                  className={[
-                    'w-full rounded-t-[2px] transition-[height,background-color] duration-[var(--duration-normal)]',
-                    isDanger
-                      ? 'bg-[var(--color-danger)]'
-                      : isWarn
-                        ? 'bg-[var(--color-warn)]'
-                        : 'bg-[var(--color-accent)]',
-                    isSelected
-                      ? 'opacity-100 ring-2 ring-[var(--color-border-focus)]'
-                      : 'opacity-80 group-hover:opacity-100',
-                  ].join(' ')}
-                  style={{ height: `${heightPct}%` }}
-                />
+                  className="w-full h-full flex flex-col justify-end"
+                >
+                  <div
+                    data-testid={`day-bar-${day.date}`}
+                    className={[
+                      'w-full rounded-t-[2px] transition-[height,background-color] duration-[var(--duration-normal)]',
+                      isDanger
+                        ? 'bg-[var(--color-danger)]'
+                        : isWarn
+                          ? 'bg-[var(--color-warn)]'
+                          : 'bg-[var(--color-accent)]',
+                      isSelected
+                        ? 'opacity-100 ring-2 ring-[var(--color-border-focus)]'
+                        : 'opacity-80 group-hover:opacity-100',
+                    ].join(' ')}
+                    style={{ height: `${heightPct}%` }}
+                  />
+                </button>
                 {/* Tooltip */}
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-[var(--space-xs)] hidden group-hover:block z-10">
                   <div className="bg-[var(--color-bg-elevated)] border border-[var(--color-border)] rounded-[var(--radius-sm)] px-[var(--space-sm)] py-[var(--space-xs)] whitespace-nowrap">
@@ -193,6 +198,7 @@ export function TrendsTab() {
                     <div className="flex-1">
                       <div className="w-full h-[6px] rounded-[var(--radius-pill)] bg-[var(--color-track)] overflow-hidden">
                         <div
+                          data-testid={`model-fill-${m.model}`}
                           className="h-full rounded-[var(--radius-pill)] transition-[width] duration-[var(--duration-bar)] ease-[var(--ease-spring)]"
                           style={{
                             width: `${pct}%`,
