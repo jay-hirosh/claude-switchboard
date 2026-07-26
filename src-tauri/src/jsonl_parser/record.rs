@@ -25,10 +25,12 @@ pub struct SessionEvent {
     #[serde(default)]
     pub cost_usd: f64,
 
-    /// Stable per-API-call key, "{requestId}:{message.id}" when both fields
-    /// were present on the JSONL line. None for older Claude Code formats
-    /// that didn't write requestId — the walker substitutes a structural
-    /// "{source_file}:{source_line}" fallback in that case.
+    /// Stable per-API-call dedup key. "{requestId}:{message.id}" when both
+    /// fields are present (native Claude Code); `message.id` alone when
+    /// `requestId` is absent (every third-party relay — GLM, k3, MiniMax,
+    /// kimi — omits requestId). None only when `message.id` is absent too,
+    /// in which case the walker substitutes a structural
+    /// "{source_file}:{source_line}" fallback.
     #[serde(default)]
     pub event_id: Option<String>,
 
@@ -102,13 +104,20 @@ pub fn parse_event_line(line: &str, fallback_project: &str) -> Option<SessionEve
     // or partial). Skip silently.
     let usage = msg.usage?;
 
-    // Build the dedup key from Claude's stable identifiers when both are
-    // present. ccusage uses the same combination — neither field alone is
-    // unique enough across retries.
+    // Build the dedup key from Claude's stable identifiers. Prefer the
+    // "{requestId}:{message.id}" combo (what ccusage uses) when both are
+    // present. When `requestId` is absent — true for every third-party relay
+    // (GLM, k3, MiniMax, kimi) — fall back to `message.id` alone. Relays
+    // write each response's usage to multiple JSONL lines (one per content
+    // block); without this fallback every duplicate line gets a distinct
+    // line-based key and is counted separately, inflating relay-model totals
+    // 2-8x. `message.id` is the API's globally-unique response id, so keying
+    // on it collapses those duplicates.
     let event_id = match (rec.request_id.as_deref(), msg.id.as_deref()) {
         (Some(req), Some(mid)) if !req.is_empty() && !mid.is_empty() => {
             Some(format!("{req}:{mid}"))
         }
+        (_, Some(mid)) if !mid.is_empty() => Some(mid.to_string()),
         _ => None,
     };
 
@@ -243,8 +252,12 @@ mod tests {
     }
 
     #[test]
-    fn event_id_is_none_when_request_id_or_message_id_missing() {
-        let no_request_id = r#"{
+    fn event_id_uses_message_id_when_request_id_absent() {
+        // This is the third-party relay case (GLM / k3 / MiniMax / kimi):
+        // requestId is never written, so we must dedupe on message.id alone.
+        // Without this, the same response written to multiple JSONL lines
+        // would be counted once per line.
+        let relay_line = r#"{
           "type": "assistant",
           "timestamp": "2026-04-26T03:59:37.845Z",
           "cwd": "/x/y",
@@ -254,8 +267,16 @@ mod tests {
             "usage": {"input_tokens": 1, "output_tokens": 1}
           }
         }"#;
-        assert!(parse_event_line(no_request_id, "fb").unwrap().event_id.is_none());
+        assert_eq!(
+            parse_event_line(relay_line, "fb").unwrap().event_id.as_deref(),
+            Some("msg_xyz")
+        );
+    }
 
+    #[test]
+    fn event_id_is_none_when_message_id_absent() {
+        // Only message.id is absent → no content-stable key is possible, so
+        // the walker falls back to the structural {source_file}:{line} key.
         let no_message_id = r#"{
           "type": "assistant",
           "timestamp": "2026-04-26T03:59:37.845Z",

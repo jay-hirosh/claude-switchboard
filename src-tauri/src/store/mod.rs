@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=5 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=6 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [5_i64],
+            [6_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -147,9 +147,17 @@ impl Db {
                 .context("apply migration 0005")?;
         }
 
+        if current < 6 {
+            tracing::info!("migrating session_events v5 -> v6 (re-ingest for relay message.id dedup)");
+            conn.execute_batch(include_str!(
+                "migrations/0006_reingest_for_message_id_dedup.sql"
+            ))
+            .context("apply migration 0006")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [5_i64],
+            [6_i64],
         )?;
         Ok(())
     }
@@ -353,6 +361,59 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "idempotent re-run must not duplicate the row");
+    }
+
+    /// 0006 clears the inflated relay-model rows and resets JSONL cursors so
+    /// the walker re-ingests every file from byte 0 with the corrected
+    /// message.id-based dedup. Verify it empties both tables regardless of
+    /// prior contents.
+    #[test]
+    fn migration_0006_clears_events_and_resets_cursors() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).expect("open fresh db");
+        let conn = db.conn();
+
+        // Seed inflated history: a few session_events + a cursor, mimicking
+        // the pre-fix state where relay responses were counted per-line.
+        conn.execute(
+            "INSERT INTO session_events
+             (ts, project, model, input_tokens, output_tokens, cache_read_tokens,
+              cache_creation_5m_tokens, cache_creation_1h_tokens, cost_usd,
+              source_file, source_line, event_id)
+             VALUES (1,'p','glm-5.2',1,1,1,0,0,0.1,'f.jsonl',0,'f.jsonl:0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jsonl_cursors (file_path, last_mtime_ns, byte_offset)
+             VALUES ('f.jsonl', 100, 999)",
+            [],
+        )
+        .unwrap();
+        let events_before: i64 =
+            conn.query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+                .unwrap();
+        let cursors_before: i64 =
+            conn.query_row("SELECT COUNT(*) FROM jsonl_cursors", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(events_before, 1);
+        assert_eq!(cursors_before, 1);
+
+        // Run the migration SQL directly — this is the code under test.
+        conn.execute_batch(include_str!("migrations/0006_reingest_for_message_id_dedup.sql"))
+            .expect("0006 SQL should execute without error");
+
+        let events_after: i64 =
+            conn.query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+                .unwrap();
+        let cursors_after: i64 =
+            conn.query_row("SELECT COUNT(*) FROM jsonl_cursors", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(events_after, 0, "0006 must clear all session_events rows");
+        assert_eq!(
+            cursors_after, 0,
+            "0006 must clear all jsonl_cursors so the walker re-reads every file"
+        );
     }
 
     #[test]
