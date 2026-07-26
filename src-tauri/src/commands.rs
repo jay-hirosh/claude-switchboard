@@ -555,8 +555,7 @@ pub async fn resize_window(mode: String, app: tauri::AppHandle) -> Result<(), St
         // compact_target_xy). Expanded was already animated to monitor
         // center, no follow-up needed.
         if tray_position_known && (mode == "compact" || mode == "compact-minimal") {
-            use tauri_plugin_positioner::{Position as TrayPos, WindowExt};
-            let _ = w.move_window(TrayPos::TrayCenter);
+            crate::move_to_tray_center(&w);
         }
     }
 
@@ -574,8 +573,7 @@ pub async fn resize_window(mode: String, app: tauri::AppHandle) -> Result<(), St
                 let _ = w.set_size(Size::Logical(LogicalSize::new(target_size.0, target_size.1)));
                 let _ = w.set_position(Position::Logical(LogicalPosition::new(to_x, to_y)));
                 if tray_position_known {
-                    use tauri_plugin_positioner::{Position as TrayPos, WindowExt};
-                    let _ = w.move_window(TrayPos::TrayCenter);
+                    crate::move_to_tray_center(&w);
                 }
             });
         }

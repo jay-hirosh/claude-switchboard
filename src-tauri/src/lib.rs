@@ -22,6 +22,27 @@ pub mod warmup;
 use app_state::AppState;
 use std::sync::Arc;
 
+/// Move `window` to the tray icon's center, with a panic-safe fallback.
+///
+/// `tauri_plugin_positioner::WindowExt::move_window(Position::TrayCenter)`
+/// panics inside the plugin's `calculate_position` (`ext.rs`) via
+/// `window.current_monitor()?.unwrap()` when the window isn't on any monitor
+/// — e.g. shown before it has been placed, or mid display-reconfiguration.
+/// Under this crate's `panic = "abort"` release profile that aborts the whole
+/// app (and in dev it tears down the process via the worker-thread panic).
+/// We check `current_monitor()` ourselves first and fall back to
+/// `Position::TopRight` (monitor work-area only, never tray-dependent) when
+/// there's no current monitor — the same fallback used during first-run setup.
+pub(crate) fn move_to_tray_center<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    use tauri_plugin_positioner::{Position, WindowExt};
+    let on_monitor = window.current_monitor().ok().flatten().is_some();
+    let _ = window.move_window(if on_monitor {
+        Position::TrayCenter
+    } else {
+        Position::TopRight
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let log_dir = logging::log_dir();
@@ -225,8 +246,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             use tauri::{Emitter, Manager};
             if let Some(w) = app.get_webview_window("popover") {
-                use tauri_plugin_positioner::{WindowExt, Position};
-                let _ = w.move_window(Position::TrayCenter);
+                crate::move_to_tray_center(&w);
                 let _ = w.show();
                 let _ = w.set_focus();
                 let _ = w.app_handle().emit("popover_shown", ());
@@ -333,8 +353,7 @@ pub fn run() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("popover") {
                             use tauri::Emitter;
-                            use tauri_plugin_positioner::{WindowExt, Position};
-                            let _ = w.move_window(Position::TrayCenter);
+                            crate::move_to_tray_center(&w);
                             let _ = w.show();
                             let _ = w.set_focus();
                             let _ = app.emit("popover_shown", ());
@@ -369,8 +388,7 @@ pub fn run() {
                                 let _ = w.app_handle().emit("popover_hidden", ());
                             } else {
                                 use tauri::Emitter;
-                                use tauri_plugin_positioner::{WindowExt, Position};
-                                let _ = w.move_window(Position::TrayCenter);
+                                crate::move_to_tray_center(&w);
                                 let _ = w.show();
                                 let _ = w.set_focus();
                                 let _ = w.app_handle().emit("popover_shown", ());
