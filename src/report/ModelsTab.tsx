@@ -8,25 +8,7 @@ import { IconChart } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
-
-const MODEL_VARIANT: Record<string, 'opus' | 'sonnet' | 'haiku' | 'default'> = {
-  opus: 'opus',
-  sonnet: 'sonnet',
-  haiku: 'haiku',
-};
-
-function modelKey(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.includes('opus')) return 'opus';
-  if (lower.includes('sonnet')) return 'sonnet';
-  if (lower.includes('haiku')) return 'haiku';
-  return 'default';
-}
-
-function shortName(model: string): string {
-  const m = model.match(/(opus|sonnet|haiku)-(\d+(?:-\d+)?)/i);
-  return m ? `${m[1]} ${m[2]}` : model;
-}
+import { MODEL_VARIANT, modelKey, shortName } from './modelDisplay';
 
 export function ModelsTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
