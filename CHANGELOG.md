@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Trends tab: click a day to see its per-model breakdown.** Clicking any bar reveals that day's token, cost, and cache breakdown per model, sorted by cost — the whole window's per-day/per-model data loads once alongside the chart, so opening the breakdown is instant with no extra fetch.
 
+### Changed
+
+- **Sessions tab groups subagent transcripts under their parent conversation.** Task/Agent-tool subagent runs used to show up as separate top-level rows; they now roll into the conversation that spawned them, as an indented row per subagent, with their usage counted toward the parent's totals. Model badges also read more clearly: Anthropic tiers collapse to a short name (opus/sonnet/haiku/fable), and third-party/relay models keep a cleaned version of their real name instead of a generic label. Headless or scheduled invocations (no working directory) are labeled "headless" and visually demoted instead of showing a bare, broken-looking "-".
+- **Per-model 7-day usage only renders when the account's plan actually reports it.** Pro and Team-Pro plans share a single combined 7-day quota and return null for both the Opus and Sonnet sub-buckets — those rows no longer render empty on plans that don't provide the split.
+
+### Fixed
+
+- **Third-party relay models (GLM, k3, MiniMax, kimi) could show inflated cost and token totals — up to 2-8x.** These relays never write a `requestId`, and write each response's usage across multiple JSONL lines (one per content block); the dedup key fell back to a per-line identifier, so every duplicate line was counted separately. Session history now dedupes on the response's own `message.id` when `requestId` is absent, and existing history is automatically re-ingested once on first launch after this update so past totals correct themselves.
+- **Several tray-repositioning call sites could still crash the app.** `move_window(Position::TrayCenter)` panics inside the positioner plugin when the window isn't on any monitor yet — e.g. shown before being placed, or mid display-reconfiguration — and under this app's `panic = "abort"` release profile that takes down the whole process, not just the one window. v1.1.3 closed this for the cold-launch popover-sizing path specifically; window resize, relaunching while already running, the tray menu's Show item, and clicking the tray icon could all still hit it. All four now go through one helper that checks for a monitor first and falls back to a safe screen position, same as the existing first-run fallback.
+
 ## v1.1.3 — 2026-07-24
 
 ### Fixed

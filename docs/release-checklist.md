@@ -21,6 +21,16 @@ Before tagging a release, complete every item on both macOS and Windows.
 - [ ] WebView2 auto-bootstrap succeeds
 - [ ] Popover renders with translucent-solid fallback (no Mica)
 
+## Relay-model re-ingest (added 2026-07-27)
+
+Migration 0006 wipes `session_events` and `jsonl_cursors` on every account and forces a full re-ingest from the JSONL source of truth, so the walker can re-dedupe relay-model turns on `message.id` instead of a per-line key.
+
+- [ ] Before upgrading, note the current 30-day totals (tokens + cost) for an account with real usage
+- [ ] Install the upgrade; app doesn't crash or hang while the re-ingest runs (larger histories take longer than a normal poll)
+- [ ] Totals reappear after re-ingest completes — not left at zero
+- [ ] If the account has any third-party relay usage (GLM, k3, MiniMax, kimi), its cost/token totals are now lower than before the upgrade, not inflated
+- [ ] Native Claude Code totals (non-relay) are unchanged from the pre-upgrade note — this migration should only correct relay-model numbers
+
 ## Multi-account swap (added 2026-05-05)
 
 - [ ] Fresh install → upstream `/login` as account A → tray app launches → A appears as active in Accounts list
