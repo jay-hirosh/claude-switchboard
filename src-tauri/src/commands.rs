@@ -39,6 +39,12 @@ pub struct ModelStats {
 }
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
+pub struct DailyModelBucket {
+    pub date: String,
+    pub models: Vec<ModelStats>,
+}
+
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
 pub struct ProjectStats {
     pub project: String,
     pub session_count: u64,
@@ -139,6 +145,48 @@ pub async fn get_model_breakdown(
         entry.cost_usd += e.cost_usd;
     }
     Ok(by_model.into_values().collect())
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_daily_model_breakdown(
+    days: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<DailyModelBucket>, String> {
+    let events = get_session_history(days, state).await?;
+    use std::collections::{BTreeMap, HashMap};
+    let mut by_day: BTreeMap<String, HashMap<String, ModelStats>> = BTreeMap::new();
+    for e in events {
+        let date = e
+            .ts
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string();
+        let by_model = by_day.entry(date).or_insert_with(HashMap::new);
+        let entry = by_model
+            .entry(e.model.clone())
+            .or_insert_with(|| ModelStats {
+                model: e.model.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cost_usd: 0.0,
+            });
+        entry.input_tokens += e.input_tokens;
+        entry.output_tokens += e.output_tokens;
+        entry.cache_read_tokens += e.cache_read_tokens;
+        entry.cache_creation_tokens += e.cache_creation_5m_tokens + e.cache_creation_1h_tokens;
+        entry.cost_usd += e.cost_usd;
+    }
+    Ok(by_day
+        .into_iter()
+        .map(|(date, models)| {
+            let mut models: Vec<ModelStats> = models.into_values().collect();
+            models.sort_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd));
+            DailyModelBucket { date, models }
+        })
+        .collect())
 }
 
 #[command]
