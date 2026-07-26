@@ -38,9 +38,15 @@ export function UsageSummary({
   const snap = usage.snapshot;
   const extra = snap.extra_usage;
   const [warn, danger] = thresholds;
-  // Render the model split whenever the 7d primary has loaded — even if both
-  // sub-buckets are null, an empty row reads better than disappearing data.
-  const showModelSplit = snap.seven_day != null && (!collapsible || detailsOpen);
+  // Per-model 7-day utilization is a Max-plan-only field — the usage API
+  // returns null for both opus and sonnet on Pro / Team-Pro plans (they have
+  // a single combined 7-day quota, no per-model split). Render the rows only
+  // when at least one bucket actually carries data, so they never sit empty
+  // on plans that don't provide it.
+  const hasModelSplit =
+    snap.seven_day_opus != null || snap.seven_day_sonnet != null;
+  const showModelSplit =
+    hasModelSplit && snap.seven_day != null && (!collapsible || detailsOpen);
   const showExtra = extra?.is_enabled && (!collapsible || detailsOpen);
 
   return (

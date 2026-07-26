@@ -21,6 +21,16 @@ function usage(): CachedUsage {
   } as CachedUsage;
 }
 
+/** A Pro / Team-Pro plan snapshot: the aggregate 7-day bucket is populated,
+ * but the API returns null for the per-model opus/sonnet split (only Max
+ * plans carry separate per-model weekly quotas). */
+function proUsage(): CachedUsage {
+  const u = usage();
+  u.snapshot.seven_day_sonnet = null;
+  u.snapshot.seven_day_opus = null;
+  return u;
+}
+
 describe('UsageSummary collapsible details', () => {
   it('renders only the hero numbers plus a disclosure row when collapsed', () => {
     const onToggle = vi.fn();
@@ -78,6 +88,23 @@ describe('UsageSummary collapsible details', () => {
     );
     expect(screen.queryByRole('button', { name: /details/i })).toBeNull();
     expect(screen.getByText('Opus')).toBeTruthy();
+  });
+
+  it('hides the Opus/Sonnet rows when the plan provides no per-model data (Pro)', () => {
+    // seven_day is present but both per-model buckets are null — the API only
+    // breaks out per-model utilization for Max plans. The empty rows must not
+    // render, even with details expanded.
+    render(
+      <UsageSummary
+        usage={proUsage()}
+        thresholds={[75, 90]}
+        collapsible
+        detailsOpen
+        onToggleDetails={() => {}}
+      />,
+    );
+    expect(screen.queryByText('Opus')).toBeNull();
+    expect(screen.queryByText('Sonnet')).toBeNull();
   });
 
   it('merges the reset countdown into the bucket label row (no separate caption row)', () => {
