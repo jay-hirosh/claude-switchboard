@@ -24,7 +24,8 @@ The Trends tab chart's hover tooltip shows a day's total tokens and cost, but no
 - Click a bar → toggles `selectedDate`. Click the same bar again → collapses. Click a different bar → switches directly to the new day.
 - Inline panel appears below the chart (above the existing avg/total summary row) when a date is selected:
   - Header: date, day total tokens, day total cost (same values already shown in the hover tooltip).
-  - One row per model, sorted by cost descending: `Badge` (short model name, reusing `ModelsTab`'s `shortName`/`modelKey`/`MODEL_VARIANT` helpers) + a proportional bar + tokens + cost, with a cache read/created sub-line — same visual language as `ModelsTab`'s model list, scoped to one day instead of 30.
+  - One row per model, sorted by cost descending: `Badge` (short model name, reusing `ModelsTab`'s `shortName`/`modelKey`/`MODEL_VARIANT` helpers) + a proportional bar (fill % = that model's tokens ÷ **the selected day's** total tokens — not the 30-day total `ModelsTab` uses) + tokens + cost. This much — badge, bar, pct, cost — mirrors `ModelsTab.tsx:138-170`'s row shell directly.
+  - Below each row, a cache read/created sub-line. This is **new markup**, not a reuse: `ModelsTab` has no per-model cache figures in its row list (`ModelsTab.tsx:138-170` is badge/bar/pct/cost only) — cache numbers there only exist in the separate aggregate "Cache efficiency" card (`ModelsTab.tsx:174-192`). The per-model-per-day sub-line is this feature's own addition, built from `ModelStats.cache_read_tokens` / `cache_creation_tokens`, which the struct already carries.
 - Every rendered bar already corresponds to a day with ≥1 event (`get_daily_trends` only emits days that have events), so every clickable day is guaranteed a non-empty breakdown.
 
 ## 4. Architecture
@@ -47,11 +48,17 @@ pub async fn get_daily_model_breakdown(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<DailyModelBucket>, String> {
     let events = get_session_history(days, state).await?;
-    // bucket by (date, model), then flatten to Vec<DailyModelBucket> sorted by date
+    // bucket by (date, model) into BTreeMap<String, HashMap<String, ModelStats>>,
+    // then flatten: for each date, collect its models and
+    // .sort_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd)) before pushing into
+    // the Vec<DailyModelBucket> (outer order is date-ascending, free from the
+    // BTreeMap key).
 }
 ```
 
-One pass over `get_session_history(days)` — the same fetch `get_daily_trends` and `get_model_breakdown` already do — bucketed by the composite key `(date, model)` instead of by date alone. Sibling function to the two existing ones; same style, same error handling (`err_to_string`).
+One pass over `get_session_history(days)` — the same fetch `get_daily_trends` and `get_model_breakdown` already do — bucketed by the composite key `(date, model)` instead of by date alone. Sibling function to the two existing ones; same style. Note on error handling: like its siblings, this function has no fallible operation of its own after `get_session_history(...).await?` — the `Result<_, String>` it can return is entirely inherited from that call (whose own `String` errors come from `err_to_string` inside `events_between`), not produced here.
+
+**Sort is mandatory, not incidental.** `get_daily_trends` gets date-ascending order for free from its `BTreeMap<String, DailyBucket>` key. `get_model_breakdown` does not sort — it returns `HashMap<String, ModelStats>::into_values().collect()`, and Rust's `HashMap` iteration order is randomized per process. The new command's per-day model list would inherit that same unordered-ness unless the flatten step explicitly sorts each day's `Vec<ModelStats>` by `cost_usd` descending, per the code comment above.
 
 Registered in **both** `collect_commands!` blocks in `lib.rs` (this project runs two `tauri-specta` builders — one exports the TS bindings, one is the real invoke handler — every existing command is already listed in both).
 
@@ -80,7 +87,7 @@ Registered in **both** `collect_commands!` blocks in `lib.rs` (this project runs
 ## 7. Testing
 
 - No new Rust unit test. Following existing convention: neither `get_daily_trends` nor `get_model_breakdown` (the two commands this most closely mirrors) has unit test coverage anywhere in `src-tauri/tests/` or inline — these thin bucketing commands aren't tested at that layer in this codebase, so `get_daily_model_breakdown` follows suit.
-- `src/report/TrendsTab.test.ts` (vitest, following `SessionsTab.test.ts`'s precedent), mocking `ipc.getDailyTrends` / `ipc.getDailyModelBreakdown`:
+- `src/report/TrendsTab.test.tsx` (note the `.tsx` — this is a render test, not a pure-function test). `SessionsTab.test.ts` is the wrong precedent: it only imports and asserts on pure helpers (`aggregateSessions`, `modelLabel`), no `render`, no IPC mock. The actual precedent is `src/accounts/__tests__/AccountRow.test.tsx`'s pattern — `vi.hoisted` IPC mock, `vi.mock('../../lib/ipc', () => ({ ipc: ipcMock }))`, `render` + `fireEvent` from `@testing-library/react`. `TrendsTab.test.tsx` mocks `ipc.getDailyTrends` / `ipc.getDailyModelBreakdown` the same way and exercises:
   - Clicking a bar reveals the panel with the correct per-model rows for that date, sorted by cost descending.
   - Clicking the same bar again collapses the panel.
   - Clicking a different bar switches the panel to the new date.
@@ -94,7 +101,7 @@ None blocking.
 
 New:
 - `src/report/modelDisplay.ts` — `shortName` / `modelKey` / `MODEL_VARIANT` extracted from `ModelsTab.tsx`
-- `src/report/TrendsTab.test.ts`
+- `src/report/TrendsTab.test.tsx` (co-located with `TrendsTab.tsx`, matching `SessionsTab.test.ts`'s co-location within `src/report/` rather than the `__tests__/` subfolder convention used in `src/accounts/` — the file's *content* follows `AccountRow.test.tsx`'s render+mock pattern, per §7; its *location* follows this directory's existing sibling)
 
 Modified:
 - `src-tauri/src/commands.rs` — `DailyModelBucket` struct + `get_daily_model_breakdown` command
