@@ -343,13 +343,13 @@ projected_at_reset: number }
 export type CacheStats = { total_cache_read_tokens: number; total_cache_creation_tokens: number; estimated_savings_usd: number; hit_ratio: number }
 export type CachedUsage = { snapshot: UsageSnapshot; account_id: string; account_email: string; last_error: string | null; burn_rate?: BurnRateProjection | null; auth_source: AuthSource }
 export type DailyBucket = { date: string; input_tokens: number; output_tokens: number; cost_usd: number }
+export type DailyModelBucket = { date: string; models: ModelStats[] }
 export type ExtraUsage = { is_enabled?: boolean; monthly_limit_cents?: number; used_credits_cents?: number; utilization?: number | null; resets_at?: string | null }
 /**
  * Wall-clock time-of-day in user's local timezone.
  */
 export type HhMm = { hour: number; minute: number }
 export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number }
-export type DailyModelBucket = { date: string; models: ModelStats[] }
 export type PricingEntry = { prefix: string; input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_5m_per_mtok: number; cache_1h_per_mtok: number; 
 /**
  * Optional 1M-context tier (Sonnet 4 only at time of writing). When
