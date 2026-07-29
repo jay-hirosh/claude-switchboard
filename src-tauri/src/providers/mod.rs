@@ -8,6 +8,7 @@
 //! is therefore the default path; `default_env` is opt-in and guarded.
 
 pub mod model;
+pub mod presets;
 pub mod store;
 
 pub use model::{Provider, ProviderKind};
