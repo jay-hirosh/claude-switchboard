@@ -157,6 +157,9 @@ export function ProvidersTab() {
       {editing && (
         <ProviderForm
           providerId={editing === 'new' ? null : editing}
+          providerKind={
+            editing === 'new' ? null : (providers.find((p) => p.id === editing)?.kind ?? null)
+          }
           onClose={() => setEditing(null)}
           onSaved={async () => {
             setEditing(null);

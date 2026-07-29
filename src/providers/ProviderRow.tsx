@@ -93,17 +93,18 @@ export function ProviderRow({
       </Button>
 
       <div className="flex w-[62px] shrink-0 justify-end gap-[2px]">
+        {/* The official row is editable too: its credentials come from the
+            active account, but its launch flags are the user's, and there was
+            no way to set them. Delete stays hidden — the store refuses it. */}
+        {/* IconButton takes a required `label` prop and applies it as
+            aria-label itself — do not pass aria-label directly. */}
+        <IconButton label={`Edit ${provider.name}`} onClick={() => onEdit(provider.id)}>
+          <Pencil size={13} aria-hidden />
+        </IconButton>
         {!isOfficial && (
-          <>
-            {/* IconButton takes a required `label` prop and applies it as
-                aria-label itself — do not pass aria-label directly. */}
-            <IconButton label={`Edit ${provider.name}`} onClick={() => onEdit(provider.id)}>
-              <Pencil size={13} aria-hidden />
-            </IconButton>
-            <IconButton label={`Delete ${provider.name}`} onClick={() => onDelete(provider.id)}>
-              <Trash2 size={13} aria-hidden />
-            </IconButton>
-          </>
+          <IconButton label={`Delete ${provider.name}`} onClick={() => onDelete(provider.id)}>
+            <Trash2 size={13} aria-hidden />
+          </IconButton>
         )}
       </div>
     </div>

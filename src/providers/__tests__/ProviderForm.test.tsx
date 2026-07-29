@@ -27,7 +27,10 @@ describe('ProviderForm', () => {
 
   it('prefills base URL and model when a preset is chosen', async () => {
     render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
-    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    // The <select> renders before its options load, so waiting on the select
+    // alone lets fireEvent.change fire against an option that does not exist
+    // yet — it silently no-ops and the preset is never applied.
+    await waitFor(() => expect(screen.getByRole('option', { name: /GLM/ })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
     await waitFor(() =>
       expect((screen.getByLabelText(/base url/i) as HTMLInputElement).value).toBe(
@@ -39,7 +42,10 @@ describe('ProviderForm', () => {
 
   it('carries the preset context-window knobs into the saved provider', async () => {
     render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
-    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    // The <select> renders before its options load, so waiting on the select
+    // alone lets fireEvent.change fire against an option that does not exist
+    // yet — it silently no-ops and the preset is never applied.
+    await waitFor(() => expect(screen.getByRole('option', { name: /GLM/ })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
     fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: 'sk-test' } });
     await waitFor(() =>
@@ -55,7 +61,10 @@ describe('ProviderForm', () => {
 
   it('splits extra CLI arguments into separate argv entries', async () => {
     render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
-    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    // The <select> renders before its options load, so waiting on the select
+    // alone lets fireEvent.change fire against an option that does not exist
+    // yet — it silently no-ops and the preset is never applied.
+    await waitFor(() => expect(screen.getByRole('option', { name: /GLM/ })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
     fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: 'sk-test' } });
     fireEvent.change(screen.getByLabelText(/extra cli arguments/i), {
@@ -109,7 +118,10 @@ describe('ProviderForm', () => {
 
   it('saves a flag added by chip', async () => {
     render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
-    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    // The <select> renders before its options load, so waiting on the select
+    // alone lets fireEvent.change fire against an option that does not exist
+    // yet — it silently no-ops and the preset is never applied.
+    await waitFor(() => expect(screen.getByRole('option', { name: /GLM/ })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
     fireEvent.click(screen.getByRole('button', { name: /--dangerously-skip-permissions/ }));
     await waitFor(() =>
@@ -124,7 +136,10 @@ describe('ProviderForm', () => {
 
   it('prefills the quick model from the preset', async () => {
     render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
-    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    // The <select> renders before its options load, so waiting on the select
+    // alone lets fireEvent.change fire against an option that does not exist
+    // yet — it silently no-ops and the preset is never applied.
+    await waitFor(() => expect(screen.getByRole('option', { name: /GLM/ })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
     await waitFor(() =>
       expect((screen.getByLabelText(/quick model/i) as HTMLInputElement).value).toBe(
@@ -160,7 +175,10 @@ describe('ProviderForm', () => {
 
   it('rewrites a preset’s aliases when the model is edited', async () => {
     render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
-    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    // The <select> renders before its options load, so waiting on the select
+    // alone lets fireEvent.change fire against an option that does not exist
+    // yet — it silently no-ops and the preset is never applied.
+    await waitFor(() => expect(screen.getByRole('option', { name: /GLM/ })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
     await waitFor(() =>
       expect((screen.getByLabelText(/^model/i) as HTMLInputElement).value).toBe('glm-5.2'),
@@ -192,5 +210,65 @@ describe('ProviderForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/https/i));
     expect(ipcMock.upsertProvider).not.toHaveBeenCalled();
+  });
+
+  describe('the official provider', () => {
+    const official = {
+      id: 'official',
+      name: 'Anthropic (official)',
+      kind: 'official' as const,
+      base_url: null,
+      auth_token: null,
+      env: {},
+      extra_args: [],
+      preset_id: null,
+      sort_index: 0,
+    };
+
+    // Its endpoint, credentials and model all come from the active account —
+    // resolved_env is empty for it — so those controls would silently do
+    // nothing. Only the launch flags are real.
+    it('shows only the flags, not the inert credential fields', async () => {
+      ipcMock.listProviders.mockResolvedValue([official]);
+      render(
+        <ProviderForm
+          providerId="official"
+          providerKind="official"
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(screen.getByLabelText(/extra cli arguments/i)).toBeTruthy());
+      expect(screen.queryByLabelText(/base url/i)).toBeNull();
+      expect(screen.queryByLabelText(/api key/i)).toBeNull();
+      expect(screen.queryByLabelText(/^preset$/i)).toBeNull();
+      expect(screen.queryByLabelText(/^model$/i)).toBeNull();
+    });
+
+    it('saves flags without demanding a name or base URL', async () => {
+      ipcMock.listProviders.mockResolvedValue([official]);
+      render(
+        <ProviderForm
+          providerId="official"
+          providerKind="official"
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(screen.getByLabelText(/extra cli arguments/i)).toBeTruthy());
+      fireEvent.change(screen.getByLabelText(/extra cli arguments/i), {
+        target: { value: '--dangerously-skip-permissions' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => expect(ipcMock.upsertProvider).toHaveBeenCalled());
+
+      const saved = ipcMock.upsertProvider.mock.calls[0][0];
+      expect(saved.extra_args).toEqual(['--dangerously-skip-permissions']);
+      // Saving must not rewrite the official row into a custom endpoint.
+      expect(saved.kind).toBe('official');
+      expect(saved.base_url).toBeNull();
+      expect(saved.auth_token).toBeNull();
+      expect(saved.id).toBe('official');
+    });
   });
 });

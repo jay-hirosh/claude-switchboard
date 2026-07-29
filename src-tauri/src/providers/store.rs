@@ -56,7 +56,24 @@ impl Db {
         Ok(stmt.query_row(params![id], row_to_provider).optional()?)
     }
 
+    /// The official row is identity, not configuration: it must always resolve
+    /// to whatever the accounts subsystem has active. Its `extra_args` are the
+    /// user's to set — that is the whole point of editing it — but its kind and
+    /// credentials are pinned here rather than trusted from the caller, so no
+    /// UI slip can turn "Anthropic (official)" into a third-party provider
+    /// pointing at somebody else's endpoint while keeping the official name.
+    fn pin_official(p: &Provider) -> Provider {
+        let mut out = p.clone();
+        if out.id == OFFICIAL_PROVIDER_ID {
+            out.kind = ProviderKind::Official;
+            out.base_url = None;
+            out.auth_token = None;
+        }
+        out
+    }
+
     pub fn upsert_provider(&self, p: &Provider) -> Result<()> {
+        let p = &Self::pin_official(p);
         let kind = match p.kind {
             ProviderKind::Official => "official",
             ProviderKind::ThirdParty => "third_party",
@@ -222,6 +239,48 @@ mod tests {
         let (_d, db) = fresh();
         assert!(db.delete_provider(OFFICIAL_PROVIDER_ID).is_err());
         assert!(db.get_provider(OFFICIAL_PROVIDER_ID).unwrap().is_some());
+    }
+
+    /// Editing the official provider is how a user adds launch flags to it, so
+    /// the write has to go through — the flags are the point.
+    #[test]
+    fn official_provider_accepts_extra_args() {
+        let (_d, db) = fresh();
+        let mut official = db.get_provider(OFFICIAL_PROVIDER_ID).unwrap().unwrap();
+        official.extra_args = vec!["--dangerously-skip-permissions".to_string()];
+        db.upsert_provider(&official).unwrap();
+
+        let back = db.get_provider(OFFICIAL_PROVIDER_ID).unwrap().unwrap();
+        assert_eq!(back.extra_args, vec!["--dangerously-skip-permissions"]);
+        assert_eq!(back.kind, ProviderKind::Official);
+    }
+
+    /// A UI slip must not be able to turn the official row into a third-party
+    /// endpoint that still carries the official name — the session would
+    /// silently run against somebody else's API.
+    #[test]
+    fn official_provider_cannot_be_turned_into_a_third_party_one() {
+        let (_d, db) = fresh();
+        let hijacked = Provider {
+            id: OFFICIAL_PROVIDER_ID.into(),
+            name: "Anthropic (official)".into(),
+            kind: ProviderKind::ThirdParty,
+            base_url: Some("https://evil.example".into()),
+            auth_token: Some("tok".into()),
+            env: BTreeMap::new(),
+            extra_args: vec!["--continue".to_string()],
+            preset_id: None,
+            sort_index: 0,
+        };
+        db.upsert_provider(&hijacked).unwrap();
+
+        let back = db.get_provider(OFFICIAL_PROVIDER_ID).unwrap().unwrap();
+        assert_eq!(back.kind, ProviderKind::Official);
+        assert_eq!(back.base_url, None);
+        assert_eq!(back.auth_token, None);
+        assert!(back.resolved_env().is_empty(), "must still inherit the account");
+        // The one field that is legitimately the user's still lands.
+        assert_eq!(back.extra_args, vec!["--continue"]);
     }
 
     #[test]

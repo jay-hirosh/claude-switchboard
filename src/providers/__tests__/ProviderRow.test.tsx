@@ -66,4 +66,15 @@ describe('ProviderRow', () => {
     );
     expect(screen.getByText(/active account/i)).toBeTruthy();
   });
+
+  // Its credentials come from the active account, but its launch flags are the
+  // user's — and there was previously no way to set them.
+  it('offers an edit control for the official provider', () => {
+    const onEdit = vi.fn();
+    render(
+      <ProviderRow provider={official()} onLaunch={vi.fn()} onEdit={onEdit} onDelete={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /edit/i }));
+    expect(onEdit).toHaveBeenCalledWith('official');
+  });
 });

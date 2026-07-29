@@ -11,6 +11,10 @@ import { applyModelEnv } from './modelEnv';
 
 interface Props {
   providerId: string | null;
+  /** Supplied by the caller, which already has the row. Deriving it from the
+   *  async load instead would flash the credential fields before hiding them
+   *  on the one provider that has none. */
+  providerKind?: Provider['kind'] | null;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }
@@ -23,7 +27,7 @@ function newId(): string {
  *  a shortcut for the usual case, not a catalogue of the CLI. */
 const COMMON_ARGS = ['--dangerously-skip-permissions', '--continue'] as const;
 
-export function ProviderForm({ providerId, onClose, onSaved }: Props) {
+export function ProviderForm({ providerId, providerKind = null, onClose, onSaved }: Props) {
   const [presets, setPresets] = useState<PresetInfo[]>([]);
   const [presetId, setPresetId] = useState('');
   const [name, setName] = useState('');
@@ -70,7 +74,16 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
     setQuickModel(p.env['ANTHROPIC_SMALL_FAST_MODEL'] ?? '');
   }
 
-  const title = useMemo(() => (providerId ? 'Edit provider' : 'Add provider'), [providerId]);
+  // The official provider's credentials, endpoint and model all come from the
+  // active account — `resolved_env` returns an empty map for it, so those
+  // fields would be inert controls that silently do nothing. Its launch flags
+  // are the one thing it does own, so that is all it shows.
+  const isOfficial = (existing?.kind ?? providerKind) === 'official';
+
+  const title = useMemo(
+    () => (isOfficial ? 'Edit Anthropic (official)' : providerId ? 'Edit provider' : 'Add provider'),
+    [isOfficial, providerId],
+  );
 
   function toggleArg(flag: string) {
     setExtraArgs((cur) => {
@@ -83,11 +96,13 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
   }
 
   async function save() {
-    if (!name.trim() || !baseUrl.trim()) {
+    // The official row has no name or URL to validate — it is seeded, not
+    // authored, and only its flags are editable.
+    if (!isOfficial && (!name.trim() || !baseUrl.trim())) {
       setError('Name and base URL are both required.');
       return;
     }
-    if (!/^https?:\/\//i.test(baseUrl.trim())) {
+    if (!isOfficial && !/^https?:\/\//i.test(baseUrl.trim())) {
       setError('Base URL must start with https:// (or http:// for a local endpoint).');
       return;
     }
@@ -96,11 +111,14 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
       const merged = applyModelEnv(env, model, quickModel);
       const provider: Provider = {
         id: existing?.id ?? providerId ?? newId(),
-        name: name.trim(),
-        kind: 'third_party',
-        base_url: baseUrl.trim(),
-        auth_token: token,
-        env: merged,
+        name: isOfficial ? (existing?.name ?? name) : name.trim(),
+        // Never hardcode third_party: doing so on the official row would
+        // rewrite it into a custom endpoint. The store pins this too, so the
+        // invariant does not rest on the form alone.
+        kind: isOfficial ? 'official' : 'third_party',
+        base_url: isOfficial ? null : baseUrl.trim(),
+        auth_token: isOfficial ? null : token,
+        env: isOfficial ? (existing?.env ?? {}) : merged,
         // Whitespace-split is deliberate: each token becomes its own argv
         // entry, quoted separately by the script renderer.
         extra_args: extraArgs.trim() ? extraArgs.trim().split(/\s+/) : [],
@@ -125,6 +143,15 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
       <div className="flex flex-col gap-[var(--space-md)] px-[var(--space-md)] py-[var(--space-md)]">
         {error && <Banner variant="error">{error}</Banner>}
 
+        {isOfficial && (
+          <p className={hintClass}>
+            Credentials, endpoint and model come from your active account and are not set
+            here. These flags are added to every launch of this provider.
+          </p>
+        )}
+
+        {!isOfficial && (
+          <>
         <label className="flex flex-col gap-[var(--space-2xs)]">
           <span className={labelClass}>Preset</span>
           <span className="relative block">
@@ -225,6 +252,8 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
             at Model and <code className="mono">haiku</code> at Quick model.
           </span>
         </div>
+          </>
+        )}
 
         <label className="flex flex-col gap-[var(--space-2xs)]">
           <span className={labelClass}>Extra CLI arguments</span>
@@ -271,9 +300,15 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
         </label>
 
         <div className="flex items-center justify-between gap-[var(--space-md)] border-t border-[var(--color-rule)] pt-[var(--space-md)]">
+          {/* The official provider deliberately sets no env of its own — the
+              session inherits the active account — so a "0 environment
+              variables" line would read as something being wrong. */}
           <span className={hintClass}>
-            {Object.keys(env).length} environment variable
-            {Object.keys(env).length === 1 ? '' : 's'} set on launch.
+            {isOfficial
+              ? 'Runs on your active account.'
+              : `${Object.keys(env).length} environment variable${
+                  Object.keys(env).length === 1 ? '' : 's'
+                } set on launch.`}
           </span>
           <div className="flex shrink-0 gap-[var(--space-xs)]">
             <Button variant="ghost" size="sm" onClick={onClose}>
