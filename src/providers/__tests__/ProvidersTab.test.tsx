@@ -12,6 +12,7 @@ const ipcMock = vi.hoisted(() => ({
   deleteProvider: vi.fn().mockResolvedValue(undefined),
   setDefaultProvider: vi.fn().mockResolvedValue({ status: 'applied' }),
   clearDefaultProvider: vi.fn().mockResolvedValue([]), // returns drift-skipped keys
+  getSettings: vi.fn().mockResolvedValue({ terminal: null }),
 }));
 vi.mock('../../lib/ipc', () => ({ ipc: ipcMock }));
 

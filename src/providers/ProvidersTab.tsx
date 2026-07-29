@@ -17,7 +17,16 @@ export function ProvidersTab() {
   const [defaultState, setDefaultState] = useState<DefaultProviderState | null>(null);
 
   useEffect(() => {
-    void ipc.listAvailableTerminals().then((ts) => setTerminal(ts[0] ?? null));
+    void (async () => {
+      const [settings, available] = await Promise.all([
+        ipc.getSettings(),
+        ipc.listAvailableTerminals(),
+      ]);
+      const configured = settings.terminal;
+      setTerminal(
+        configured && available.includes(configured) ? configured : (available[0] ?? null),
+      );
+    })();
   }, []);
 
   const reloadDefault = useCallback(async () => {

@@ -4,6 +4,8 @@ import { Toggle } from '../components/ui/Toggle';
 import { Slider } from '../components/ui/Slider';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
+import { Select } from '../components/ui/Select';
+import type { Terminal } from '../lib/generated/bindings';
 import { useAppStore } from '../lib/store';
 import { useThemeStore, type ThemePreference } from '../lib/theme';
 import type { Settings } from '../lib/types';
@@ -18,6 +20,19 @@ import { WarmupSettings } from './WarmupSettings';
 const POLL_MIN_SECS = 60;
 const POLL_MAX_SECS = 1800;
 
+/// Display names for the `Terminal` enum. The backend's `label()` is not
+/// exposed over IPC, so the mapping is duplicated here — keep in sync with
+/// `providers::launcher::Terminal::label`.
+const TERMINAL_LABELS: Record<Terminal, string> = {
+  ghostty: 'Ghostty',
+  terminal_app: 'Terminal.app',
+  iterm_2: 'iTerm2',
+  kitty: 'kitty',
+  wez_term: 'WezTerm',
+  windows_terminal: 'Windows Terminal',
+  power_shell: 'PowerShell',
+};
+
 export function SettingsPanel() {
   const settings = useAppStore((s) => s.settings);
   const setSettings = useAppStore((s) => s.setSettings);
@@ -31,10 +46,12 @@ export function SettingsPanel() {
   const [savedOk, setSavedOk] = useState(false);
   const [consentGranted, setConsentGranted] = useState(false);
   const [osRegistered, setOsRegistered] = useState(false);
+  const [availableTerminals, setAvailableTerminals] = useState<Terminal[]>([]);
 
   useEffect(() => {
     ipc.getWarmupConsentGranted().then(setConsentGranted).catch(() => {});
     ipc.osSchedulerIsRegistered().then(setOsRegistered).catch(() => {});
+    ipc.listAvailableTerminals().then(setAvailableTerminals).catch(() => {});
   }, []);
 
   const handleRevoke = async () => {
@@ -230,6 +247,28 @@ export function SettingsPanel() {
               Notifications fire once per bucket reset cycle
             </span>
           </div>
+        </Card>
+      </section>
+
+      {/* Terminal */}
+      <section className="flex flex-col gap-[var(--space-sm)]">
+        <h2 className="text-[length:var(--text-label)] font-[var(--weight-semibold)] text-[color:var(--color-text-muted)] uppercase tracking-[0.04em] px-[var(--space-2xs)]">
+          Terminal
+        </h2>
+        <Card className="p-[var(--space-md)]">
+          <Select
+            label="Terminal"
+            value={local.terminal ?? ''}
+            onChange={(e) => update('terminal', (e.target.value || null) as Settings['terminal'])}
+            options={[
+              { value: '', label: 'System default' },
+              ...availableTerminals.map((t) => ({ value: t, label: TERMINAL_LABELS[t] ?? t })),
+            ]}
+          />
+          <p className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] mt-[var(--space-xs)]">
+            Used when launching or resuming a session from the Providers and Sessions tabs. Only
+            terminals installed on this machine are listed.
+          </p>
         </Card>
       </section>
 

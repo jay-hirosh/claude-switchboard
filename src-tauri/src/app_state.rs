@@ -37,6 +37,10 @@ pub struct Settings {
     pub launch_at_login: bool,
     pub crash_reports: bool,
     pub preferred_auth_source: Option<AuthSource>,
+    /// `None` means "use the platform default" (`launcher::default_terminal()`).
+    /// `#[serde(default)]` keeps settings written before this field readable.
+    #[serde(default)]
+    pub terminal: Option<crate::providers::launcher::Terminal>,
 }
 
 impl Default for Settings {
@@ -49,7 +53,37 @@ impl Default for Settings {
             launch_at_login: false,
             crash_reports: false,
             preferred_auth_source: None,
+            terminal: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::Settings;
+
+    #[test]
+    fn settings_without_terminal_field_still_deserialize() {
+        let json = r#"{
+            "polling_interval_secs": 300,
+            "stagger_gap_secs": 30,
+            "thresholds": [75, 90],
+            "theme": "system",
+            "launch_at_login": false,
+            "crash_reports": false,
+            "preferred_auth_source": null
+        }"#;
+        let s: Settings = serde_json::from_str(json).expect("legacy settings must still parse");
+        assert!(s.terminal.is_none());
+    }
+
+    #[test]
+    fn terminal_choice_round_trips() {
+        let mut s = Settings::default();
+        s.terminal = Some(crate::providers::launcher::Terminal::Iterm2);
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.terminal, Some(crate::providers::launcher::Terminal::Iterm2));
     }
 }
 

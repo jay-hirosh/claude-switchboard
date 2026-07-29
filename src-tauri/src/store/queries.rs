@@ -638,6 +638,7 @@ mod tests {
             launch_at_login: true,
             crash_reports: true,
             preferred_auth_source: None,
+            terminal: Some(crate::providers::launcher::Terminal::Iterm2),
         };
         db.save_settings(&s).unwrap();
 
@@ -649,6 +650,7 @@ mod tests {
         assert_eq!(loaded.theme, s.theme);
         assert_eq!(loaded.launch_at_login, s.launch_at_login);
         assert_eq!(loaded.crash_reports, s.crash_reports);
+        assert_eq!(loaded.terminal, s.terminal);
 
         // Overwrite and confirm the latest value wins (UPSERT).
         let s2 = Settings { polling_interval_secs: 120, ..Settings::default() };
