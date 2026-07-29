@@ -32,6 +32,14 @@
   --color-bg-card-hover: oklch(99.5% 0.006 70);
   --color-bg-elevated: oklch(99% 0.006 70);
 
+  /* Fill for a form field. Its own token rather than a reused surface,
+   * because "recessed" is a *relative* step below whatever the field sits on
+   * and the two themes need different absolute values to read the same.
+   * Light: 5 points under --color-bg-elevated. Dark: 10 under, where reusing
+   * --color-bg-base (24%) put an 18-point hole in a 42% modal and made the
+   * field the highest-contrast object in the dialog. */
+  --color-field: oklch(94% 0.013 70);
+
   /* Borders — warm ink at low alpha on the light surface */
   --color-rule: oklch(40% 0.015 65 / 0.06);
   --color-rule-strong: oklch(40% 0.015 65 / 0.14);
@@ -191,6 +199,7 @@ body[data-theme="dark"] {
   --color-bg-card: oklch(34% 0.022 65);
   --color-bg-card-hover: oklch(38% 0.024 65);
   --color-bg-elevated: oklch(42% 0.026 65);
+  --color-field: oklch(32% 0.018 65);
 
   --color-rule: oklch(95% 0.020 65 / 0.06);
   --color-rule-strong: oklch(95% 0.020 65 / 0.14);

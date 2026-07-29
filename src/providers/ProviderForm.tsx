@@ -4,6 +4,8 @@ import { ipc } from '../lib/ipc';
 import { ModalShell } from '../components/modals/ModalShell';
 import { Banner } from '../components/ui/Banner';
 import { Button } from '../components/ui/Button';
+import { SelectChevron } from '../components/ui/SelectChevron';
+import { hintClass, inputClass, labelClass, selectClass } from '../components/ui/field';
 import { Check, Eye, EyeOff, Plus } from '../lib/icons';
 import { applyModelEnv } from './modelEnv';
 
@@ -12,25 +14,6 @@ interface Props {
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }
-
-const inputClass = [
-  'w-full rounded-[var(--radius-sm)]',
-  'border border-[var(--color-border)] bg-[var(--color-bg-base)]',
-  'px-[var(--space-sm)] py-[var(--space-xs)]',
-  'text-[length:var(--text-body)] text-[color:var(--color-text)]',
-  'placeholder:text-[color:var(--color-text-muted)]',
-  'transition-[border-color] duration-[var(--duration-fast)]',
-  'focus:border-[var(--color-border-focus)] focus:outline-none',
-].join(' ');
-
-const labelClass = [
-  'text-[length:var(--text-micro)] font-[var(--weight-medium)]',
-  'uppercase tracking-[var(--tracking-label)]',
-  'text-[color:var(--color-text-muted)]',
-].join(' ');
-
-const hintClass =
-  'text-[length:var(--text-micro)] leading-[var(--leading-body)] text-[color:var(--color-text-muted)]';
 
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `p-${Date.now()}`;
@@ -144,19 +127,22 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
 
         <label className="flex flex-col gap-[var(--space-2xs)]">
           <span className={labelClass}>Preset</span>
-          <select
-            aria-label="Preset"
-            className={inputClass}
-            value={presetId}
-            onChange={(e) => applyPreset(e.target.value)}
-          >
-            <option value="">Custom</option>
-            {presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+          <span className="relative block">
+            <select
+              aria-label="Preset"
+              className={selectClass}
+              value={presetId}
+              onChange={(e) => applyPreset(e.target.value)}
+            >
+              <option value="">Custom</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <SelectChevron />
+          </span>
         </label>
 
         <label className="flex flex-col gap-[var(--space-2xs)]">
