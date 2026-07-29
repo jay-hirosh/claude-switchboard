@@ -159,7 +159,9 @@ async fn fetch_and_apply_one(
     // wins and a dead one hands control back to the HTTP path within a cycle.
     if Some(slot) == active_slot {
         let interval = Duration::from_secs(state.settings.read().polling_interval_secs.max(60));
-        if let Some(snap) = read_shared_snapshot(&shared_usage_file_path(), interval) {
+        let active_since = *state.active_since.read();
+        if let Some(snap) = read_shared_snapshot(&shared_usage_file_path(), interval, active_since)
+        {
             tracing::debug!(target: "switchboard.poll", "slot {slot}: adopted shared snapshot");
             return self::apply_fetch_outcome(
                 handle,
@@ -374,6 +376,14 @@ async fn poll_all(
     });
     let prev_active_slot = std::mem::replace(&mut *state.active_slot.write(), active_slot);
 
+    // Catches the paths that never go through `swap_to_account`: an external
+    // `cswap`, or a Claude Code / cowork instance started on another machine.
+    // Any shared snapshot older than this moment describes the account that
+    // was live before the change.
+    if prev_active_slot != active_slot {
+        *state.active_since.write() = Some(Utc::now());
+    }
+
     // Notify the frontend whenever the active slot transitions. The
     // frontend's `accounts` array only carries `is_active` flags from the
     // last `list_accounts` call; without this event, an out-of-band CC
@@ -543,7 +553,11 @@ fn shared_usage_file_path() -> std::path::PathBuf {
 /// and this app. On a busy account the budget is saturated, so the app's own
 /// fetches 429 constantly. Adopting the daemon's fresh snapshot removes this
 /// app as a competitor for the active account's budget entirely.
-pub fn read_shared_snapshot(path: &std::path::Path, max_age: Duration) -> Option<UsageSnapshot> {
+pub fn read_shared_snapshot(
+    path: &std::path::Path,
+    max_age: Duration,
+    active_since: Option<DateTime<Utc>>,
+) -> Option<UsageSnapshot> {
     let raw = std::fs::read_to_string(path).ok()?;
     let mut value: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let obj = value.as_object_mut()?;
@@ -556,6 +570,22 @@ pub fn read_shared_snapshot(path: &std::path::Path, max_age: Duration) -> Option
     }
     if now - fetched_at > ChronoDuration::from_std(max_age).ok()? {
         return None;
+    }
+    // The file carries NO account identity — it describes whichever account
+    // was live when the daemon wrote it. A snapshot written before the active
+    // account last changed therefore describes the *previous* account, and
+    // adopting it would put that account's numbers on the new active slot
+    // while the previous account's own slot fetches the same numbers with its
+    // own token — two rows showing identical usage until the file ages out.
+    //
+    // `active_since` is when the live account last changed (swap, external
+    // `cswap`, or a Claude Code / cowork instance started elsewhere). `None`
+    // means no change has been observed this run, so there is nothing to
+    // invalidate against.
+    if let Some(since) = active_since {
+        if fetched_at < since {
+            return None;
+        }
     }
     let mut snap: UsageSnapshot = serde_json::from_value(value).ok()?;
     snap.fetched_at = fetched_at;
@@ -842,7 +872,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let now = Utc::now().timestamp();
             let p = write(&dir, &payload(now));
-            let snap = read_shared_snapshot(&p, Duration::from_secs(120))
+            let snap = read_shared_snapshot(&p, Duration::from_secs(120), None)
                 .expect("fresh snapshot adopted");
             assert_eq!(snap.five_hour.unwrap().utilization, 42.5);
             assert_eq!(snap.fetched_at.timestamp(), now);
@@ -858,7 +888,7 @@ mod tests {
                 r#"{{"five_hour": {{"utilization": 2.0, "resets_at": null}}, "seven_day": {{"utilization": 26.0, "resets_at": "2026-07-25T02:59:59Z"}}, "seven_day_cowork": null, "tangelo": null, "limits": [], "fetched_at": {now}}}"#
             );
             let p = write(&dir, &body);
-            assert!(read_shared_snapshot(&p, Duration::from_secs(120)).is_some());
+            assert!(read_shared_snapshot(&p, Duration::from_secs(120), None).is_some());
         }
 
         #[test]
@@ -866,7 +896,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let old = (Utc::now() - ChronoDuration::minutes(10)).timestamp();
             let p = write(&dir, &payload(old));
-            assert!(read_shared_snapshot(&p, Duration::from_secs(120)).is_none());
+            assert!(read_shared_snapshot(&p, Duration::from_secs(120), None).is_none());
         }
 
         #[test]
@@ -874,21 +904,21 @@ mod tests {
             let dir = tempdir().unwrap();
             let future = (Utc::now() + ChronoDuration::minutes(5)).timestamp();
             let p = write(&dir, &payload(future));
-            assert!(read_shared_snapshot(&p, Duration::from_secs(120)).is_none());
+            assert!(read_shared_snapshot(&p, Duration::from_secs(120), None).is_none());
         }
 
         #[test]
         fn missing_file_returns_none() {
             let dir = tempdir().unwrap();
             let p = dir.path().join("does-not-exist.json");
-            assert!(read_shared_snapshot(&p, Duration::from_secs(120)).is_none());
+            assert!(read_shared_snapshot(&p, Duration::from_secs(120), None).is_none());
         }
 
         #[test]
         fn corrupt_json_returns_none() {
             let dir = tempdir().unwrap();
             let p = write(&dir, "not json at all");
-            assert!(read_shared_snapshot(&p, Duration::from_secs(120)).is_none());
+            assert!(read_shared_snapshot(&p, Duration::from_secs(120), None).is_none());
         }
 
         #[test]
@@ -897,7 +927,61 @@ mod tests {
             // freshness — treat as a foreign file and ignore it.
             let dir = tempdir().unwrap();
             let p = write(&dir, r#"{"five_hour": {"utilization": 42.5, "resets_at": null}}"#);
-            assert!(read_shared_snapshot(&p, Duration::from_secs(120)).is_none());
+            assert!(read_shared_snapshot(&p, Duration::from_secs(120), None).is_none());
+        }
+
+        /// The file carries NO account identity — no email, no account_uuid,
+        /// nothing. It describes whichever account was live when the daemon
+        /// wrote it. So a snapshot written BEFORE the active account changed
+        /// describes the *previous* account, and adopting it puts the old
+        /// account's numbers on the new active slot — while the old account's
+        /// own slot fetches the same numbers with its own token. Both rows
+        /// then show identical usage until the file ages out.
+        #[test]
+        fn rejects_a_snapshot_written_before_the_active_account_changed() {
+            let dir = tempdir().unwrap();
+            let now = Utc::now();
+            // Daemon wrote this 60s ago, while account A was live.
+            let written = (now - ChronoDuration::seconds(60)).timestamp();
+            let p = write(&dir, &payload(written));
+
+            // Still comfortably inside the freshness window on its own.
+            assert!(
+                read_shared_snapshot(&p, Duration::from_secs(300), None).is_some(),
+                "precondition: the snapshot is fresh enough by age alone"
+            );
+
+            // The user swapped to account B 30s ago — after the file was
+            // written. The snapshot cannot describe B.
+            let swapped_at = now - ChronoDuration::seconds(30);
+            assert!(
+                read_shared_snapshot(&p, Duration::from_secs(300), Some(swapped_at)).is_none(),
+                "a snapshot predating the swap describes the previous account"
+            );
+        }
+
+        #[test]
+        fn accepts_a_snapshot_written_after_the_active_account_changed() {
+            let dir = tempdir().unwrap();
+            let now = Utc::now();
+            let swapped_at = now - ChronoDuration::seconds(60);
+            // Daemon re-polled after the swap, so this describes the new account.
+            let written = (now - ChronoDuration::seconds(10)).timestamp();
+            let p = write(&dir, &payload(written));
+            assert!(
+                read_shared_snapshot(&p, Duration::from_secs(300), Some(swapped_at)).is_some(),
+                "a snapshot written after the swap is valid for the new account"
+            );
+        }
+
+        /// No recorded change (fresh boot, never swapped) must not disable the
+        /// fast path — that would silently spend every account's scarce /usage
+        /// budget on duplicate calls.
+        #[test]
+        fn no_recorded_change_still_adopts() {
+            let dir = tempdir().unwrap();
+            let p = write(&dir, &payload(Utc::now().timestamp()));
+            assert!(read_shared_snapshot(&p, Duration::from_secs(120), None).is_some());
         }
     }
 }

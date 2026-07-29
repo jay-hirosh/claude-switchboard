@@ -141,6 +141,13 @@ pub struct AppState {
     pub accounts: Arc<AccountManager>,
     pub cached_usage_by_slot: RwLock<HashMap<u32, CachedUsage>>,
     pub active_slot: RwLock<Option<u32>>,
+    /// When the live Claude Code account last changed — a swap, an external
+    /// `cswap`, or a Claude Code / cowork instance started on another machine.
+    ///
+    /// Guards the shared-snapshot fast path: `statusline-usage.json` carries no
+    /// account identity, so a snapshot written before this instant describes
+    /// the previous account and must not be adopted for the new one.
+    pub active_since: RwLock<Option<DateTime<Utc>>>,
     pub backoff_by_slot: RwLock<HashMap<u32, BackoffState>>,
     pub schedule_by_slot: RwLock<HashMap<u32, ScheduleState>>,
     pub keychain_guardian: Mutex<Option<KeychainGuardian>>,

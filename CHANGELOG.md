@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Two accounts could show identical usage.** The statusline daemon's shared snapshot (`~/.claude/statusline-usage.json`) carries no account identity, so after the live account changed — a swap, an external `cswap`, or a Claude Code / cowork instance started on another machine — the previous account's numbers were adopted for the new active account. Both rows then showed the same percentages and reset times for up to one polling interval. Snapshots written before the active account last changed are now ignored.
 - **Subagent usage was under-counted.** The startup backfill skipped subagent transcripts that the live watcher already collected, so sessions run while the app was closed never had their subagent API calls counted. Existing data is re-ingested automatically on upgrade.
 
 ## v1.2.0 — 2026-07-27

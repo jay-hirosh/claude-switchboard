@@ -221,6 +221,7 @@ pub fn run() {
         accounts,
         cached_usage_by_slot: parking_lot::RwLock::new(std::collections::HashMap::new()),
         active_slot: parking_lot::RwLock::new(None),
+        active_since: parking_lot::RwLock::new(None),
         backoff_by_slot: parking_lot::RwLock::new(std::collections::HashMap::new()),
         schedule_by_slot: parking_lot::RwLock::new(std::collections::HashMap::new()),
         keychain_guardian: parking_lot::Mutex::new(None),
@@ -314,7 +315,13 @@ pub fn run() {
             }
             // Recurring sweep — a startup-only pass leaves token-bearing
             // scripts on disk for the entire uptime of a resident menu-bar app.
-            tokio::spawn(async {
+            //
+            // `tauri::async_runtime::spawn`, not `tokio::spawn`: the setup
+            // closure runs on the main thread outside any Tokio runtime
+            // context, and `tokio::spawn` panics there. Because setup is
+            // invoked from the macOS app delegate (an ObjC frame), that panic
+            // cannot unwind and aborts the process on launch.
+            tauri::async_runtime::spawn(async {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(1800));
                 tick.tick().await; // consume the immediate first tick
                 loop {

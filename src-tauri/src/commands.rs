@@ -772,6 +772,13 @@ pub async fn swap_to_account(
     // flags without waiting on the poll-loop tick.
     *state.active_slot.write() = Some(slot);
 
+    // The statusline daemon's shared snapshot carries no account identity, so
+    // anything it wrote before this instant describes the account we just
+    // swapped away from. Without this, the new active slot adopts the previous
+    // account's numbers and both rows show identical usage for up to one
+    // polling interval.
+    *state.active_since.write() = Some(Utc::now());
+
     // Drop per-slot backoff state. The previous backoff was earned by a
     // different token (the prior active slot's live CC blob, or a stale
     // OAuth refresh token) — a swap rotates which token authenticates each
