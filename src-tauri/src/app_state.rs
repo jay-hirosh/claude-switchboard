@@ -79,8 +79,10 @@ mod settings_tests {
 
     #[test]
     fn terminal_choice_round_trips() {
-        let mut s = Settings::default();
-        s.terminal = Some(crate::providers::launcher::Terminal::Iterm2);
+        let s = Settings {
+            terminal: Some(crate::providers::launcher::Terminal::Iterm2),
+            ..Settings::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.terminal, Some(crate::providers::launcher::Terminal::Iterm2));

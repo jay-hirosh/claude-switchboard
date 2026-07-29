@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Custom model providers.** Run Claude Code against third-party Anthropic-compatible endpoints (GLM, Kimi, DeepSeek, MiniMax, OpenRouter, or a custom URL) by launching provider-scoped terminal sessions from the new Providers tab. Sessions use per-process environment variables, so several providers can run at once and your own launch scripts keep working.
+- **Optional global default.** A provider can additionally be set as the default for bare `claude` invocations. This writes `~/.claude/settings.json` and is guarded by a backup, an undo manifest and a confirmation prompt — it overrides `ANTHROPIC_*` variables exported by your shell.
+
 ## v1.2.0 — 2026-07-27
 
 ### Added

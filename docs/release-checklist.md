@@ -47,3 +47,30 @@ Migration 0006 wipes `session_events` and `jsonl_cursors` on every account and f
 - [ ] Remove C → upstream's active login (A or B) untouched
 - [ ] Single-account upgrade: install previous version with one OAuth account → upgrade to multi-account → existing account appears as Slot 1, no manual action
 - [ ] Org-shared accounts: add two in same org → bars show identical numbers, "shares quota with…" hint appears
+
+## Custom model providers (added 2026-07-29)
+
+Run on **both macOS and Windows**.
+
+- [ ] Providers tab lists `Anthropic (official)` first; it has no delete control
+- [ ] Add a provider from the GLM preset — base URL, model and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` prefill
+- [ ] Launch it against a project folder; the terminal opens in that folder and `/status` reports the custom endpoint
+- [ ] Launch a second provider while the first is still running; both sessions work independently
+- [ ] Launch `Anthropic (official)`; the session uses the currently active managed account
+- [ ] `ps aux | grep -i ghostty` (macOS) shows **no** API key in the command line
+- [ ] Generated scripts under the app data dir are mode `0700` and are swept on next app start
+- [ ] Enable "Set default" on a provider; the banner appears and names it
+- [ ] With the default on, run `claude` by hand — it uses the default provider
+- [ ] `~/.claude/settings.json` still contains your hooks, `enabledPlugins`, `statusLine` and `model`
+- [ ] A `settings.json.switchboard-<ts>` backup exists; no more than 5 accumulate
+- [ ] Turn the default off; `settings.json` returns to its previous content and a pre-existing hook still fires
+- [ ] Set a default while `settings.json` already has a hand-written `ANTHROPIC_BASE_URL` — the confirmation prompt lists it
+- [ ] **Switch default A → B → off** (spec §4.1). Hand-set `ANTHROPIC_MODEL` first; after turning off, that value must be back and neither provider's keys may remain
+- [ ] **Decline the confirmation on a switch** — the previous default must still be fully in effect afterwards
+- [ ] **Hand-edit a managed key while a default is active**, then turn the default off — your edit survives and the UI names it
+- [ ] **Concurrency**: with the app open, run `/config` in Claude Code and toggle something, then set a default — either it succeeds or it reports the file changed; the `/config` change is never lost
+- [ ] **Permissions**: `stat -f '%Sp' ~/.claude/settings.json` reads `-rw-------` before and after enabling and clearing a default; backups are `-rw-------` too
+- [ ] Delete a provider that is currently the default; `settings.json` is cleaned up first
+- [ ] Tray tooltip names the default provider while one is set, and omits the line when none is
+- [ ] Settings → Terminal lists only installed terminals; choosing one is used by the next launch
+- [ ] **Windows**: launch works on a machine with neither `pwsh` nor `wt.exe` installed, and with ExecutionPolicy at its `Restricted` default
