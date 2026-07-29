@@ -28,6 +28,7 @@ Coverage measured across the 70 **substantive** sessions (see §3 for the filter
 | First user message | **100%** | "Asked" — the intent |
 | Last user message | **100%** | "Left off" — where it stopped |
 | Turn count, time span | 100% | weight and duration |
+| `away_summary` (recap) | 50% | **Recap** — goal, state and next action |
 | `aiTitle` | 71% | title when present |
 | Tool usage histogram | 71% | (not surfaced in v1) |
 | Touched file paths | 61% | "Touched" file chips |
@@ -120,6 +121,9 @@ Model badges reuse the existing `modelLabel()` from `src/report/SessionsTab.tsx`
 ▾ Plan custom model swapping feature          opus-5 · 2h ago
   claude-switchboard · main · 12 turns over 2h07m
 
+  Recap    Goal: add third-party model provider support to
+           Switchboard. The spec is written and committed.
+           Next: review the spec, or save the hand-off prompt.
   Asked    "we need a to plan for another major feature which
             allows users to swap in there own model…"
   Left off "what about spec B? previous session list and one
@@ -129,10 +133,23 @@ Model badges reuse the existing `modelLabel()` from `src/report/SessionsTab.tsx`
                                             [ Resume → ]
 ```
 
+**Recap** leads the card when present. Claude Code writes its own end-of-session summary — the `※ recap:` line shown at the bottom of a conversation — as a `type: "system"`, `subtype: "away_summary"` record with the text in `content`. It is the single most identifying signal in the transcript because it states goal, state **and next action**:
+
+> Goal: add third-party model provider support to Switchboard. The design spec is written and committed (`60913d2`), and I've given you a hand-off prompt for a fresh agent to review it. Next: review the spec yourself, or tell me to save that prompt to `docs/`.
+
+Three properties govern its handling:
+
+- **50% coverage** (35 of 70). Unlike `aiTitle` this is *not* recency-correlated — 47% in the last 7 days against 57% at 7–30 days — so it is a steady half, not a feature ramping up. It layers on top of the 100% floor below; it does not replace it.
+- **Rewritten as the session moves.** 20 sessions carry more than one record, one carries 16. Take the **last**, which is the current one.
+- **Strip the trailing `(disable recaps in /config)`.** Present on all 35; it is interface chrome, not content.
+
+It is not used for the title — it is a paragraph, the wrong shape — so the title chain in §4.1 is unchanged.
+
 **Both *Asked* and *Left off* draw from the filtered real-user-message sequence — the same predicate §3 uses for inclusion, reapplied during extraction.** The 100% figures are a property of that filter, not of the raw data.
 
 This is not a refinement. `type: "user"` records also carry **tool results**, which have no text block at all. On the 70 sessions this browser lists, **41 (58%) end on a `type: "user"` record that is not a real user message**. Taking "the last `type: user` record" would render *Left off* as `"This command requires approval"` or a raw directory listing — or blank — on the majority of rows.
 
+- **Recap** — last `away_summary`, chrome suffix stripped, clamped to 3 lines. Omitted entirely when absent (50%).
 - **Asked** — first real user message, 100% under the filter, clamped to 2 lines.
 - **Left off** — last real user message, 100% under the filter, clamped to 2 lines. Omitted when identical to *Asked* (single-turn sessions; median turn count is 3).
 - **Touched** — up to 4 files from `tool_use` blocks with a `file_path` input, most-frequent first, plus an overflow count. Basenames, except where two entries would collide — this repo yields `mod.rs · +3 more` often enough to matter — in which case the parent segment is included (`store/mod.rs`). Omitted entirely when absent (39%) rather than rendering an empty label.
@@ -146,7 +163,7 @@ Only one row is expanded at a time; expanding another collapses the previous.
 
 **Grouping.** Sessions group under their project (`cwd`), projects ordered by their most recent session, sessions ordered by recency within. Today that is 70 sessions across 6 projects, so the whole list is navigable without scrolling far.
 
-**Search.** A single filter box matching case-insensitively against title, project path, branch, model, *Asked*, *Left off*, and touched-file names. *Left off* is frequently the memorable thing about an abandoned session, and a filename is often how you remember what you were editing. While a query is active the grouping flattens to a single recency-ordered result list, because grouping fights matching — a two-result query should not be split across two headers.
+**Search.** A single filter box matching case-insensitively against title, project path, branch, model, *Recap*, *Asked*, *Left off*, and touched-file names. *Left off* is frequently the memorable thing about an abandoned session, and a filename is often how you remember what you were editing. While a query is active the grouping flattens to a single recency-ordered result list, because grouping fights matching — a two-result query should not be split across two headers.
 
 Empty states are distinct: "no sessions yet" (nothing on disk) versus "no sessions match" (filter too narrow, with a clear-filter action).
 
@@ -231,6 +248,7 @@ pub struct SessionSummary {
     pub project_name: String,       // basename of cwd
     pub git_branch: Option<String>,
     pub title: String,              // aiTitle, else truncated first message
+    pub recap: Option<String>,      // last away_summary, chrome stripped
     pub asked: String,              // first user message
     pub left_off: Option<String>,   // last user message; None when == asked
     pub touched_files: Vec<String>, // basenames, most-frequent first, max 4
@@ -307,6 +325,7 @@ The existing `src/report/SessionsTab.tsx` is **not** renamed as a file — only 
 **Rust unit tests** run against fixture JSONL written to a `tempdir`:
 - inclusion filter: headless (`project == "-"`), missing `cwd`, and zero-user-turn transcripts are excluded; a normal transcript is included
 - title fallback chain: `aiTitle` present → used; absent → first user message truncated
+- recap: the **last** of several `away_summary` records wins; the `(disable recaps in /config)` suffix is stripped; absent yields `None` rather than an empty string
 - `left_off` is `None` when it equals `asked`
 - touched-file extraction: ranked by frequency, capped at 4, overflow counted, absent when no `file_path` inputs exist
 - synthetic user turns (content starting with `<`) do not count toward `turns` and never become `asked`

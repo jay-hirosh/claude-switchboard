@@ -430,6 +430,10 @@ pub struct SessionSummary {
     pub project_name: String,
     pub git_branch: Option<String>,
     pub title: String,
+    /// Claude Code's own end-of-session summary (the `※ recap:` line). The
+    /// single most identifying signal in a transcript — it states goal,
+    /// state and next action — but present in only 50% of sessions.
+    pub recap: Option<String>,
     pub asked: String,
     pub left_off: Option<String>,
     pub touched_files: Vec<String>,
@@ -469,6 +473,15 @@ pub fn is_real_user_text(message: &Value) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+/// Removes the trailing interface hint Claude Code appends to every recap.
+/// Present on all 35 recaps in the corpus; it is chrome, not content.
+fn strip_recap_chrome(s: &str) -> String {
+    s.trim()
+        .trim_end_matches("(disable recaps in /config)")
+        .trim()
+        .to_string()
+}
+
 fn truncate(s: &str, max: usize) -> String {
     let one_line = s.split('\n').next().unwrap_or(s).trim();
     if one_line.chars().count() <= max {
@@ -488,6 +501,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
     let mut cwd: Option<String> = None;
     let mut git_branch: Option<String> = None;
     let mut ai_title: Option<String> = None;
+    let mut away_summary: Option<String> = None;
     let mut model: Option<String> = None;
     let mut first_user: Option<String> = None;
     let mut last_user: Option<String> = None;
@@ -516,6 +530,19 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         }
         if let Some(ts) = v.get("timestamp").and_then(Value::as_str) {
             timestamps.push(ts.to_string());
+        }
+
+        // Claude Code rewrites the recap as the session moves — 20 of 70
+        // sessions carry more than one record, one carries 16. Overwriting
+        // keeps the last, which is the current one.
+        if v.get("type").and_then(Value::as_str) == Some("system")
+            && v.get("subtype").and_then(Value::as_str) == Some("away_summary")
+        {
+            if let Some(c) = v.get("content").and_then(Value::as_str) {
+                if !c.trim().is_empty() {
+                    away_summary = Some(c.to_string());
+                }
+            }
         }
 
         let Some(message) = v.get("message") else { continue };
@@ -576,6 +603,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         project_name,
         git_branch,
         title: ai_title.unwrap_or_else(|| truncate(&asked, TITLE_MAX_CHARS)),
+        recap: away_summary.as_deref().map(strip_recap_chrome),
         asked: truncate(&asked, 160),
         left_off,
         touched_files,
@@ -673,6 +701,42 @@ mod tests {
 
         let p2 = write_session(d.path(), "b.jsonl", &[user("some long question about the thing")]);
         assert_eq!(parse_session(&p2).unwrap().title, "some long question about the thing");
+    }
+
+    fn away(text: &str) -> Value {
+        json!({"type":"system","subtype":"away_summary","cwd":"/w/proj","content":text})
+    }
+
+    #[test]
+    fn recap_takes_the_last_away_summary_and_strips_chrome() {
+        let d = tempdir().unwrap();
+        let p = write_session(d.path(), "s.jsonl", &[
+            user("go"),
+            away("Goal: an early state. (disable recaps in /config)"),
+            away("Goal: the current state. Next: ship it. (disable recaps in /config)"),
+        ]);
+        let s = parse_session(&p).unwrap();
+        assert_eq!(
+            s.recap.as_deref(),
+            Some("Goal: the current state. Next: ship it."),
+            "the last recap wins and the /config hint is stripped"
+        );
+    }
+
+    #[test]
+    fn recap_is_none_when_absent_rather_than_empty() {
+        let d = tempdir().unwrap();
+        let p = write_session(d.path(), "s.jsonl", &[user("go")]);
+        assert!(parse_session(&p).unwrap().recap.is_none());
+    }
+
+    #[test]
+    fn away_summary_is_not_mistaken_for_a_user_turn() {
+        let d = tempdir().unwrap();
+        let p = write_session(d.path(), "s.jsonl", &[user("go"), away("Goal: x.")]);
+        let s = parse_session(&p).unwrap();
+        assert_eq!(s.turns, 1, "a system record is not a turn");
+        assert_eq!(s.asked, "go");
     }
 
     #[test]
@@ -1119,6 +1183,7 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
     project_name: 'claude-switchboard',
     git_branch: 'main',
     title: 'Plan custom model swapping feature',
+    recap: 'Goal: add provider support. Next: review the spec.',
     asked: 'we need a to plan for another major feature',
     left_off: 'what about spec B?',
     touched_files: ['design.md', 'plan.md'],
@@ -1148,6 +1213,18 @@ describe('SessionRow', () => {
     rerender(<SessionRow session={session()} expanded onToggle={vi.fn()} onResume={vi.fn()} />);
     expect(screen.getByText(/we need a to plan/)).toBeTruthy();
     expect(screen.getByText(/what about spec B/)).toBeTruthy();
+  });
+
+  it('shows the recap first when present', () => {
+    render(<SessionRow session={session()} expanded onToggle={vi.fn()} onResume={vi.fn()} />);
+    expect(screen.getByText(/Goal: add provider support/)).toBeTruthy();
+  });
+
+  it('omits the Recap row when the session has none', () => {
+    render(
+      <SessionRow session={session({ recap: null })} expanded onToggle={vi.fn()} onResume={vi.fn()} />,
+    );
+    expect(screen.queryByText(/^recap$/i)).toBeNull();
   });
 
   it('shows touched files with an overflow count', () => {
@@ -1222,6 +1299,15 @@ export function SessionRecapCard({ session }: { session: SessionSummary }) {
         {session.turns} turn{session.turns === 1 ? '' : 's'}
         {duration && ` over ${duration}`}
       </div>
+
+      {session.recap && (
+        <div className="flex gap-[var(--space-xs)]">
+          <span className={labelClass}>Recap</span>
+          <span className="flex-1 text-[length:var(--text-micro)] text-[color:var(--color-text)]">
+            {session.recap}
+          </span>
+        </div>
+      )}
 
       <div className="flex gap-[var(--space-xs)]">
         <span className={labelClass}>Asked</span>
@@ -1425,7 +1511,7 @@ import { SessionsBrowserTab } from '../SessionsBrowserTab';
 function s(over: Partial<SessionSummary>): SessionSummary {
   return {
     session_id: 'id-1', cwd: '/w/alpha', project_name: 'alpha', git_branch: 'main',
-    title: 'Alpha work', asked: 'do alpha', left_off: null,
+    title: 'Alpha work', recap: null, asked: 'do alpha', left_off: null,
     touched_files: [], touched_overflow: 0, model: 'claude-opus-5', turns: 3,
     started_at: '2026-07-29T10:00:00Z', ended_at: '2026-07-29T11:00:00Z', ...over,
   };
@@ -1522,7 +1608,7 @@ import { useResume } from './useResume';
 function matches(s: SessionSummary, q: string): boolean {
   const hay = [
     s.title, s.project_name, s.git_branch ?? '', s.model ?? '',
-    s.asked, s.left_off ?? '', ...s.touched_files,
+    s.recap ?? '', s.asked, s.left_off ?? '', ...s.touched_files,
   ].join(' ').toLowerCase();
   return hay.includes(q);
 }
@@ -1673,7 +1759,7 @@ const glmProvider = {
 
 const session = {
   session_id: 'sess-1', cwd: '/w/proj', project_name: 'proj', git_branch: 'main',
-  title: 'T', asked: 'a', left_off: null, touched_files: [], touched_overflow: 0,
+  title: 'T', recap: null, asked: 'a', left_off: null, touched_files: [], touched_overflow: 0,
   model: 'glm-5.2', turns: 2, started_at: '', ended_at: '',
 };
 
@@ -1951,7 +2037,9 @@ Append to `docs/release-checklist.md`:
 - [ ] Sessions tab lists real sessions grouped by project, newest project first
 - [ ] **No subagent transcripts appear** — cross-check `ls ~/.claude/projects/*/*/subagents/*.jsonl | wc -l` against the row count; the browser must show none of them
 - [ ] No headless (`-` project) sessions appear
-- [ ] Expanding a row shows Asked / Left off / Touched and collapses any other open row
+- [ ] Expanding a row shows Recap / Asked / Left off / Touched and collapses any other open row
+- [ ] **Recap matches the `※ recap:` line** shown at the bottom of that conversation in Claude Code, with no trailing `(disable recaps in /config)`
+- [ ] A session with several recaps shows the most recent one
 - [ ] **Left off is never tool output** — spot-check a session that ended on a tool result
 - [ ] Search matches title, project, model, Asked, Left off, and a touched filename; results are flat, not grouped
 - [ ] Empty-corpus and no-match states are distinct
@@ -1969,7 +2057,7 @@ In the `## Unreleased` section of `CHANGELOG.md`:
 
 ```markdown
 ### Added
-- **Session browser.** A new Sessions tab lists past Claude Code sessions grouped by project, each expanding to show what you asked, where you left off, and which files it touched. One click resumes any session in a new terminal running the provider it originally used — resuming always forks, so a session still open elsewhere is never disturbed. The previous Sessions tab, which reports tokens and cost, is now called **Cost**.
+- **Session browser.** A new Sessions tab lists past Claude Code sessions grouped by project, each expanding to show Claude Code's own end-of-session recap, what you asked, where you left off, and which files it touched. One click resumes any session in a new terminal running the provider it originally used — resuming always forks, so a session still open elsewhere is never disturbed. The previous Sessions tab, which reports tokens and cost, is now called **Cost**.
 
 ### Fixed
 - **Subagent usage was under-counted.** The startup backfill skipped subagent transcripts that the live watcher already collected, so sessions run while the app was closed never had their subagent API calls counted. Existing data is re-ingested automatically on upgrade.
@@ -2005,7 +2093,7 @@ Run `npm run tauri dev` and work the checklist block from Step 3. The two items 
 |---|---|
 | §2 Tabs (Cost/Sessions split) | 9 |
 | §3 Inclusion filter, subagent exclusion, post-filter cap | 2, 3, 4 |
-| §4 Recap (title, collapsed row, expanded card) | 3, 6 |
+| §4 Recap (`away_summary`, title, collapsed row, expanded card) | 3, 6 |
 | §5 Grouping and search | 7 |
 | §6 Model → provider resolution | 5 |
 | §7 Resume, §7.1 always-fork | 8 (fork flag is enforced in the Spec A launcher) |
