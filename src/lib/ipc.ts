@@ -70,4 +70,7 @@ export const ipc = {
     commands.setDefaultProvider(providerId, force).then(unwrap),
   /** Resolves to the keys left untouched because the user edited them (spec §4.2). */
   clearDefaultProvider: () => commands.clearDefaultProvider().then(unwrap),
+
+  // Session browser
+  listResumableSessions: () => commands.listResumableSessions().then(unwrap),
 };

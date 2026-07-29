@@ -101,6 +101,7 @@ pub fn run() {
             commands::get_default_provider,
             commands::set_default_provider,
             commands::clear_default_provider,
+            commands::list_resumable_sessions,
         ]);
 
     #[cfg(debug_assertions)]
@@ -149,6 +150,7 @@ pub fn run() {
             commands::get_default_provider,
             commands::set_default_provider,
             commands::clear_default_provider,
+            commands::list_resumable_sessions,
         ]);
 
     #[cfg(debug_assertions)]
@@ -224,6 +226,7 @@ pub fn run() {
         keychain_guardian: parking_lot::Mutex::new(None),
         warmup: app_state::WarmupState::default(),
         tray_position_known: std::sync::atomic::AtomicBool::new(false),
+        sessions_cache: parking_lot::RwLock::new(None),
     });
 
     // One-time per pricing revision: recompute historical event costs with

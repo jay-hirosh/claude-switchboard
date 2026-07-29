@@ -389,6 +389,14 @@ async clearDefaultProvider() : Promise<Result<string[], string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async listResumableSessions() : Promise<Result<SessionSummary[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_resumable_sessions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -493,6 +501,13 @@ export type RunningClaudeCode = { cli_processes: number; vscode_with_extension: 
  * {"type":"Custom","times":[{"hour":7,"minute":30},{"hour":17,"minute":0}]}
  */
 export type Schedule = { type: "Off" } | { type: "Every5h"; anchor: HhMm } | { type: "Custom"; times: HhMm[] }
+export type SessionSummary = { session_id: string; cwd: string; project_name: string; git_branch: string | null; title: string; 
+/**
+ * Claude Code's own end-of-session summary (the `※ recap:` line). The
+ * single most identifying signal in a transcript — it states goal,
+ * state and next action — but present in only 50% of sessions.
+ */
+recap: string | null; asked: string; left_off: string | null; touched_files: string[]; touched_overflow: number; model: string | null; turns: number; started_at: string; ended_at: string }
 export type SetDefaultOutcome = { status: "applied" } | 
 /**
  * `settings.json` already carries provider env we do not own. The UI

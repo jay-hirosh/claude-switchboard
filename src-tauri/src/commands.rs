@@ -1336,3 +1336,51 @@ pub async fn clear_default_provider(
     state.db.clear_default_provider().map_err(|e| e.to_string())?;
     Ok(skipped)
 }
+
+// ---------------------------------------------------------------------------
+// Session browser
+// ---------------------------------------------------------------------------
+
+use crate::sessions::{recap, scan, SessionSummary};
+
+const MAX_SESSIONS: usize = 200;
+
+#[command]
+#[specta::specta]
+pub async fn list_resumable_sessions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<SessionSummary>, String> {
+    let Some(root) = crate::jsonl_parser::walker::claude_projects_root() else {
+        return Ok(Vec::new());
+    };
+    let files = scan::discover_session_files(&root);
+
+    // Newest mtime is the cache key: any new or appended transcript advances it.
+    let newest = files
+        .first()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    if let Some((cached_at, rows)) = state.sessions_cache.read().as_ref() {
+        if *cached_at == newest {
+            return Ok(rows.clone());
+        }
+    }
+
+    // The cap applies to sessions AFTER filtering, not files scanned — a
+    // pre-filter cap would let one session's subagent transcripts evict real
+    // sessions. Scanning is cheap; the result list is what needs bounding.
+    let mut rows: Vec<SessionSummary> = Vec::new();
+    for f in &files {
+        if let Some(s) = recap::parse_session(f) {
+            rows.push(s);
+            if rows.len() >= MAX_SESSIONS {
+                break;
+            }
+        }
+    }
+
+    *state.sessions_cache.write() = Some((newest, rows.clone()));
+    Ok(rows)
+}

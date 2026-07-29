@@ -153,6 +153,10 @@ pub struct AppState {
     /// interacted with the tray icon. `resize_window` checks this before
     /// asking for `TrayCenter`.
     pub tray_position_known: AtomicBool,
+    /// Cached session-browser scan, invalidated when any transcript's mtime
+    /// advances. `ExpandedReport` remounts tab components on every tab
+    /// change, so an unmemoized scan would re-parse ~100 MB per switch.
+    pub sessions_cache: RwLock<Option<(std::time::SystemTime, Vec<crate::sessions::SessionSummary>)>>,
 }
 
 #[derive(Debug, Clone, Copy)]
