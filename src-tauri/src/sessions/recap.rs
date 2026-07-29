@@ -45,9 +45,31 @@ pub struct SessionSummary {
     pub touched_files: Vec<String>,
     pub touched_overflow: usize,
     pub model: Option<String>,
+    /// Largest context the session ever held, in tokens: the peak of
+    /// `input + cache_read + cache_creation` across assistant turns.
+    ///
+    /// Claude Code strips the `[1m]` suffix before writing a transcript
+    /// (`claude-opus-5[1m]` is recorded as `claude-opus-5`), so the
+    /// *configured* window is not recoverable from the file. The peak is,
+    /// and it is the more useful number anyway — it says how full the
+    /// conversation actually got. A peak above the 200K standard window is
+    /// also positive proof the session ran on a 1M one.
+    ///
+    /// `None` for a transcript with no usage-bearing assistant turn.
+    pub peak_context_tokens: Option<u64>,
     pub turns: u32,
     pub started_at: String,
     pub ended_at: String,
+}
+
+/// Total context held by one assistant turn — everything the model had to
+/// read, whether fresh, cached, or being written to cache. Mirrors what the
+/// status line reports as context usage.
+fn context_of(usage: &Value) -> u64 {
+    ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
+        .iter()
+        .filter_map(|k| usage.get(*k).and_then(Value::as_u64))
+        .sum()
 }
 
 /// The text of a *real* user message, or `None`.
@@ -112,6 +134,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
     let mut first_user: Option<String> = None;
     let mut last_user: Option<String> = None;
     let mut turns: u32 = 0;
+    let mut peak_context: u64 = 0;
     let mut timestamps: Vec<String> = Vec::new();
     let mut touched: HashMap<String, usize> = HashMap::new();
 
@@ -174,6 +197,9 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         }
 
         if message.get("role").and_then(Value::as_str) == Some("assistant") {
+            if let Some(usage) = message.get("usage") {
+                peak_context = peak_context.max(context_of(usage));
+            }
             if let Some(Value::Array(blocks)) = message.get("content") {
                 for b in blocks {
                     if b.get("type").and_then(Value::as_str) != Some("tool_use") {
@@ -218,6 +244,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         touched_files,
         touched_overflow,
         model,
+        peak_context_tokens: (peak_context > 0).then_some(peak_context),
         turns,
         started_at: timestamps.first().cloned().unwrap_or_default(),
         ended_at: timestamps.last().cloned().unwrap_or_default(),
@@ -256,6 +283,84 @@ mod tests {
         json!({"cwd":"/w/proj","timestamp":"2026-07-29T10:02:00Z",
                "message":{"role":"assistant","model":"claude-opus-5","content":[
                    {"type":"tool_use","name":"Edit","input":{"file_path":file}}]}})
+    }
+
+    fn assistant_usage(input: u64, cache_read: u64, cache_create: u64) -> Value {
+        json!({"cwd":"/w/proj","timestamp":"2026-07-29T10:03:00Z",
+               "message":{"role":"assistant","model":"claude-opus-5","content":[],
+                          "usage":{"input_tokens":input,
+                                   "cache_read_input_tokens":cache_read,
+                                   "cache_creation_input_tokens":cache_create,
+                                   "output_tokens":500}}})
+    }
+
+    /// Context is the sum of everything the model had to read — fresh input
+    /// plus cache reads plus cache writes. Counting only `input_tokens` would
+    /// report ~2K for a session actually holding 400K, because almost all of
+    /// a long conversation arrives as a cache read.
+    #[test]
+    fn peak_context_sums_all_input_categories_and_takes_the_maximum() {
+        let d = tempdir().unwrap();
+        let p = write_session(
+            d.path(),
+            "s.jsonl",
+            &[
+                user("go"),
+                assistant_usage(1_000, 20_000, 4_000), // 25_000
+                assistant_usage(2_000, 400_000, 8_000), // 410_000 ← peak
+                assistant_usage(1_500, 300_000, 2_000), // 303_500 (after a compact)
+            ],
+        );
+        let s = parse_session(&p).unwrap();
+        assert_eq!(
+            s.peak_context_tokens,
+            Some(410_000),
+            "peak must be the max over turns, not the last or the sum"
+        );
+    }
+
+    /// Output tokens are what the model wrote, not what it had to read. Adding
+    /// them would inflate every long session's context by the length of the
+    /// replies.
+    #[test]
+    fn peak_context_excludes_output_tokens() {
+        let d = tempdir().unwrap();
+        let p = write_session(
+            d.path(),
+            "s.jsonl",
+            &[user("go"), assistant_usage(1_000, 0, 0)],
+        );
+        assert_eq!(parse_session(&p).unwrap().peak_context_tokens, Some(1_000));
+    }
+
+    #[test]
+    fn peak_context_is_none_when_no_turn_reports_usage() {
+        let d = tempdir().unwrap();
+        let p = write_session(
+            d.path(),
+            "s.jsonl",
+            &[user("go"), assistant_edit("/w/proj/a.rs")],
+        );
+        assert!(
+            parse_session(&p).unwrap().peak_context_tokens.is_none(),
+            "absent usage must be None, never a misleading 0"
+        );
+    }
+
+    /// A partial usage object must not be fatal or silently zero the others.
+    #[test]
+    fn peak_context_tolerates_missing_usage_fields() {
+        let d = tempdir().unwrap();
+        let p = write_session(
+            d.path(),
+            "s.jsonl",
+            &[
+                user("go"),
+                json!({"cwd":"/w/proj","message":{"role":"assistant","content":[],
+                       "usage":{"cache_read_input_tokens":50_000}}}),
+            ],
+        );
+        assert_eq!(parse_session(&p).unwrap().peak_context_tokens, Some(50_000));
     }
 
     /// H1 regression: 58% of real sessions end on a tool_result.

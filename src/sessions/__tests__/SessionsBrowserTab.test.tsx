@@ -26,6 +26,7 @@ function s(over: Partial<SessionSummary>): SessionSummary {
     touched_files: [],
     touched_overflow: 0,
     model: 'claude-opus-5',
+    peak_context_tokens: 120_000,
     turns: 3,
     started_at: '2026-07-29T10:00:00Z',
     ended_at: '2026-07-29T11:00:00Z',

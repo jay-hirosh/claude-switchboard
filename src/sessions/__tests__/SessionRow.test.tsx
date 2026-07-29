@@ -16,6 +16,7 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
     touched_files: ['design.md', 'plan.md'],
     touched_overflow: 3,
     model: 'glm-5.2',
+    peak_context_tokens: 410_000,
     turns: 12,
     started_at: '2026-07-28T23:07:00Z',
     ended_at: '2026-07-29T01:14:00Z',
@@ -126,6 +127,45 @@ describe('SessionRow', () => {
     );
     expect(screen.queryByText(/unknown/i)).toBeNull();
     expect(screen.getByText('Plan custom model swapping feature')).toBeTruthy();
+  });
+
+  // Claude Code strips the [1m] suffix before writing a transcript, so the
+  // configured window is not recorded. Exceeding the 200K standard window is
+  // the only surviving evidence that a session ran on a 1M one.
+  it('infers a 1M window when peak context exceeds the standard 200K', () => {
+    render(
+      <SessionRow
+        session={session({ peak_context_tokens: 410_000 })}
+        expanded
+        onToggle={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/410\.0K of 1M/)).toBeTruthy();
+  });
+
+  it('assumes the standard window when peak context stays under it', () => {
+    render(
+      <SessionRow
+        session={session({ peak_context_tokens: 57_000 })}
+        expanded
+        onToggle={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/57\.0K of 200K/)).toBeTruthy();
+  });
+
+  it('omits the context readout when no turn reported usage', () => {
+    render(
+      <SessionRow
+        session={session({ peak_context_tokens: null })}
+        expanded
+        onToggle={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/ of (1M|200K)/)).toBeNull();
   });
 
   it('calls onResume with the session id', () => {

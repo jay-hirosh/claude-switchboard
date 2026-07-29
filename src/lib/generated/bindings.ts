@@ -507,7 +507,21 @@ export type SessionSummary = { session_id: string; cwd: string; project_name: st
  * single most identifying signal in a transcript — it states goal,
  * state and next action — but present in only 50% of sessions.
  */
-recap: string | null; asked: string; left_off: string | null; touched_files: string[]; touched_overflow: number; model: string | null; turns: number; started_at: string; ended_at: string }
+recap: string | null; asked: string; left_off: string | null; touched_files: string[]; touched_overflow: number; model: string | null; 
+/**
+ * Largest context the session ever held, in tokens: the peak of
+ * `input + cache_read + cache_creation` across assistant turns.
+ * 
+ * Claude Code strips the `[1m]` suffix before writing a transcript
+ * (`claude-opus-5[1m]` is recorded as `claude-opus-5`), so the
+ * *configured* window is not recoverable from the file. The peak is,
+ * and it is the more useful number anyway — it says how full the
+ * conversation actually got. A peak above the 200K standard window is
+ * also positive proof the session ran on a 1M one.
+ * 
+ * `None` for a transcript with no usage-bearing assistant turn.
+ */
+peak_context_tokens: number | null; turns: number; started_at: string; ended_at: string }
 export type SetDefaultOutcome = { status: "applied" } | 
 /**
  * `settings.json` already carries provider env we do not own. The UI
