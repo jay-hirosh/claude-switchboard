@@ -14,6 +14,7 @@ import { IconRefresh, IconCollapse, IconSettings, X } from '../lib/icons';
 import { handleDragStart, closeWindow } from '../lib/window-chrome';
 import { AccountsSidebar } from '../accounts/AccountsSidebar';
 import { SettingsModal } from '../components/modals/SettingsModal';
+import { ProvidersTab } from '../providers/ProvidersTab';
 
 const TAB_CONFIG = [
   { id: 'sessions', label: 'Sessions' },
@@ -22,6 +23,7 @@ const TAB_CONFIG = [
   { id: 'projects', label: 'Projects' },
   { id: 'heatmap', label: 'Heatmap' },
   { id: 'cache', label: 'Cache' },
+  { id: 'providers', label: 'Providers' },
 ] as const;
 
 const TAB_COMPONENTS: Record<string, React.FC> = {
@@ -31,6 +33,7 @@ const TAB_COMPONENTS: Record<string, React.FC> = {
   projects: ProjectsTab,
   heatmap: HeatmapTab,
   cache: CacheTab,
+  providers: ProvidersTab,
 };
 
 export function ExpandedReport() {
