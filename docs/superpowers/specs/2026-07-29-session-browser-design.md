@@ -3,7 +3,7 @@
 **Date:** 2026-07-29
 **Status:** Design pending user review
 **Scope:** Spec B of two. Depends on the provider model and launcher from `docs/superpowers/specs/2026-07-29-custom-model-providers-design.md`.
-**Measured against:** 160 local transcripts in `~/.claude/projects/` (100.7 MB), Claude Code v2.1.220.
+**Measured against:** the 160 top-level transcripts in `~/.claude/projects/` (100.7 MB), excluding 138 subagent sidechains at `<sessionId>/subagents/` (§3). Corpus total is 298 files / 131.7 MB. Claude Code v2.1.220.
 
 ---
 
@@ -44,7 +44,7 @@ The 16% without a usable model (11 of 70) are sessions that ended before any ass
 >
 > `aiTitle` rises because headless transcripts have no title — they have no conversation. `message.model` falls because the all-files figure counted the `<synthetic>` placeholder as a model; here it does not.
 
-Full parse of all 160 transcripts takes **0.35 s**, so the browser reads from disk directly. No new table, no cache, no invalidation logic.
+Full parse of all 160 transcripts takes **0.35 s** warm, so the browser reads from disk directly rather than persisting a table. It does keep an **in-memory memo in `AppState`, invalidated on `max(mtime)` change** — roughly fifteen lines, no migration, no staleness class. Without it every tab switch re-reads and re-parses 100.7 MB, because `ExpandedReport` remounts tab components across its slide transition; on a menu-bar app open all day that is real disk and battery cost. The first scan after boot is cold and slower than 0.35 s.
 
 ### 1.3 Goals
 
@@ -81,13 +81,19 @@ A transcript is included when **all** of:
 
 1. `cwd` is present and non-empty
 2. the project directory is not `-`
-3. at least one real user message exists — text content that is non-empty and does not begin with `<` (which marks synthetic/system-injected turns)
+3. at least one **real user message** exists — a `type: "user"` record carrying a non-empty `text` content block that is not a known injection marker (`<system-reminder>`, `<command-name>`, `<local-command-stdout>`, `<command-message>`). Matching known markers costs the same as a bare `<` prefix guess and will not misfire on pasted markup or generics such as `Vec<T>`. Records whose content is entirely `tool_result` blocks are not user messages at all and never qualify — see §4.3
 
 This yields 70 of 160 transcripts today.
 
-**Bounding.** Only the 200 most recently modified transcripts are scanned, so the cost stays flat as history grows. At the current 0.35 s for 160 files this is not a concern today; the cap exists so it never becomes one.
+**Bounding.** The cap is **200 sessions after filtering**, not 200 files scanned. Applied before the filter it would be actively harmful: with subagent transcripts on disk the corpus is already 298 files, so a pre-filter cap would let one session's 102 subagent files consume half the budget and evict real sessions. Scanning is cheap (§1.2); it is the result list that needs bounding.
 
-**Sidechains.** Subagent turns are recorded as inline records within the parent transcript, not as separate files (measured: 0 sidechain-only files). No special handling is required.
+**Subagent transcripts must be excluded explicitly.** Subagent (Task/Agent tool) turns are recorded **exclusively as separate files** at `<project>/<sessionId>/subagents/agent-*.jsonl`, and not at all inline. The corpus holds 138 of them across 7 sessions — one session alone contributes 102.
+
+**All 138 satisfy the three inclusion conditions above**: they carry a real `cwd`, a project directory that is not `-`, and real user turns (the subagent's prompt). Nothing in the filter distinguishes them, so `scan.rs` must skip any path containing a `subagents/` segment as a stated rule.
+
+This is not a hypothetical. `scan.rs` is described below as a directory walk; the idiomatic Rust choice (`walkdir`) recurses, which would return **208 rows instead of 70**, dominated by the 102 from a single session. Each would render with a plausible title and *Asked* text, and each would offer a Resume button running `claude --resume <agentId>` against an id that is not a session.
+
+> An earlier revision of this spec claimed the opposite — "recorded as inline records … measured: 0 sidechain-only files". That measurement used a flat `~/.claude/projects/*/*.jsonl` glob, which structurally cannot reach a third directory level. The corpus is 298 `.jsonl` files, not 160: 160 top-level plus 138 subagent transcripts. Every coverage figure in §1.2 remains correct for the 160 top-level files, which are the only ones this browser lists.
 
 ---
 
@@ -123,9 +129,13 @@ Model badges reuse the existing `modelLabel()` from `src/report/SessionsTab.tsx`
                                             [ Resume → ]
 ```
 
-- **Asked** — first user message, 100% available, clamped to 2 lines.
-- **Left off** — last user message, 100% available, clamped to 2 lines. Omitted when identical to *Asked* (single-turn sessions, median turn count is 3).
-- **Touched** — up to 4 file basenames from `tool_use` blocks with a `file_path` input, most-frequent first, plus an overflow count. Omitted entirely when absent (39%) rather than rendering an empty label.
+**Both *Asked* and *Left off* draw from the filtered real-user-message sequence — the same predicate §3 uses for inclusion, reapplied during extraction.** The 100% figures are a property of that filter, not of the raw data.
+
+This is not a refinement. `type: "user"` records also carry **tool results**, which have no text block at all. On the 70 sessions this browser lists, **41 (58%) end on a `type: "user"` record that is not a real user message**. Taking "the last `type: user` record" would render *Left off* as `"This command requires approval"` or a raw directory listing — or blank — on the majority of rows.
+
+- **Asked** — first real user message, 100% under the filter, clamped to 2 lines.
+- **Left off** — last real user message, 100% under the filter, clamped to 2 lines. Omitted when identical to *Asked* (single-turn sessions; median turn count is 3).
+- **Touched** — up to 4 files from `tool_use` blocks with a `file_path` input, most-frequent first, plus an overflow count. Basenames, except where two entries would collide — this repo yields `mod.rs · +3 more` often enough to matter — in which case the parent segment is included (`store/mod.rs`). Omitted entirely when absent (39%) rather than rendering an empty label.
 - **Stats** — turn count and wall-clock span from first to last `timestamp`.
 
 Only one row is expanded at a time; expanding another collapses the previous.
@@ -136,7 +146,7 @@ Only one row is expanded at a time; expanding another collapses the previous.
 
 **Grouping.** Sessions group under their project (`cwd`), projects ordered by their most recent session, sessions ordered by recency within. Today that is 70 sessions across 6 projects, so the whole list is navigable without scrolling far.
 
-**Search.** A single filter box matching case-insensitively against title, project path, branch, model, and the *Asked* text. While a query is active the grouping flattens to a single recency-ordered result list, because grouping fights matching — a two-result query should not be split across two headers.
+**Search.** A single filter box matching case-insensitively against title, project path, branch, model, *Asked*, *Left off*, and touched-file names. *Left off* is frequently the memorable thing about an abandoned session, and a filename is often how you remember what you were editing. While a query is active the grouping flattens to a single recency-ordered result list, because grouping fights matching — a two-result query should not be split across two headers.
 
 Empty states are distinct: "no sessions yet" (nothing on disk) versus "no sessions match" (filter too narrow, with a clear-filter action).
 
@@ -145,18 +155,34 @@ Empty states are distinct: "no sessions yet" (nothing on disk) versus "no sessio
 ## 6. Model → provider resolution
 
 ```
-normalize(model)   lowercase, strip a trailing [..] context modifier
+norm(session.model)  ─── compared against ───  norm(provider.<each model key>)
    │
-   ├─ exact match against any provider's ANTHROPIC_MODEL,
-   │  ANTHROPIC_SMALL_FAST_MODEL, or ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL
-   │        → that provider
-   ├─ model starts with "claude-"   → Anthropic (official)
-   └─ otherwise                     → unresolved
+   ├─ match on ANTHROPIC_MODEL, ANTHROPIC_SMALL_FAST_MODEL, or
+   │  ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL
+   │        → that provider (lowest sort_index wins on tie)
+   ├─ session.model starts with "claude-"   → Anthropic (official)
+   └─ otherwise                             → unresolved
+
+norm(x) = x.lowercase().strip_suffix("[1m]")     // applied to BOTH sides
 ```
 
-**Normalization is required, not cosmetic.** Claude Code strips the `[1m]` context-window modifier before writing the transcript: `ANTHROPIC_MODEL="glm-5.2[1m]"` in the user's launch script is recorded as `glm-5.2`. A naive exact match would fail on precisely the two providers used most (`glm-5.2[1m]`, `k3[1m]`).
+**`norm` must be applied to both operands.** Claude Code strips the `[1m]` context modifier before writing the transcript, so the *session* side arrives already normalized — `glm-5.2`, `k3`. The value that still carries the suffix is the **provider's**, straight from the launch config:
 
-All model env keys are checked, not just `ANTHROPIC_MODEL`, because a session's recorded `message.model` may be the small/fast model for short turns.
+```
+provider config              transcript records
+  ANTHROPIC_MODEL=glm-5.2[1m]  →  glm-5.2   (710 events)
+  ANTHROPIC_MODEL=k3[1m]       →  k3        (1289 events)
+```
+
+Normalizing only the session side is a no-op, and `"glm-5.2" == "glm-5.2[1m]"` is false — so GLM and k3 would fall through to the §7 picker on every single resume. These are the two heaviest third-party providers in the corpus and precisely the ones this section exists to handle.
+
+Lowercasing is equally load-bearing: the MiniMax launch script sets `MiniMax-M2.7-highspeed`, recorded verbatim.
+
+All six model env keys are checked, not just `ANTHROPIC_MODEL`. 519 recorded events are `kimi-for-coding-highspeed`, which the Kimi config sets as `ANTHROPIC_SMALL_FAST_MODEL` — a single-key match would miss every one.
+
+**Ties resolve by `sort_index`, then `id`.** Two providers can declare the same model id (duplicating a row does it immediately), and "any provider's" is not a rule. Deterministic ordering means a given session always resolves to the same provider.
+
+**Deleting a provider must not silently reroute its sessions.** The `claude-*` → official fallback sits after exact match, which is correct — but it means deleting a provider that used Anthropic-style model ids reclassifies all its past sessions as official, and §7 would then resume them on Anthropic with no prompt. That is the exact failure §1.3 promises to prevent. Sessions whose model matched a now-deleted provider are therefore treated as **unresolved**, not official: resolution consults the set of model ids ever configured, so a disappeared provider produces a prompt rather than a silent substitution.
 
 ---
 
@@ -166,7 +192,7 @@ Clicking **Resume**:
 
 1. Resolve the provider from the session's model (§6).
 2. **Resolved** → launch immediately.
-3. **Unresolved, or no usable model recorded (16%, §1.2)** → open a picker listing configured providers, defaulting to the best guess, with an *Add a provider* action that opens the Providers tab form.
+3. **Unresolved, or no usable model recorded (16%, §1.2)** → open a picker listing configured providers, defaulting to the best guess, with an *Add a provider* action that opens the Providers tab form. When the chosen provider's model differs from the one recorded in the transcript, the picker states the consequence in one line: thinking-block signatures will not validate and are stripped on retry (Spec A §9), the prompt cache cold-starts, and the effective context window changes. This path is not rare — it covers the 16% with no usable model — so it must not present a cross-model resume as an unremarkable default.
 4. Launch via the Spec A launcher: `launcher::launch(LaunchSpec { provider, cwd: session.cwd, terminal, resume_session_id: Some(id) })`.
 
 This opens a **new terminal** in the session's original working directory. Global configuration is never touched and the current session keeps its provider — resuming a `glm-5.2` session while working on Anthropic changes nothing about the session you are already in.
@@ -196,7 +222,7 @@ src-tauri/src/sessions/
 └── recap.rs      per-transcript extraction (§4)
 ```
 
-One Tauri command, `list_resumable_sessions() -> Vec<SessionSummary>`, and one resolution helper, `resolve_provider_for_model(model, providers) -> Option<String>`, exposed so the frontend can render the resolved provider name per row.
+One Tauri command: `list_resumable_sessions() -> Vec<SessionSummary>`. Provider resolution (§6) lives in TypeScript beside `modelLabel`, not behind IPC — it is a pure function over data the frontend already holds, so a per-row IPC round-trip would buy nothing.
 
 ```rust
 pub struct SessionSummary {
@@ -222,11 +248,41 @@ Parsing is line-by-line and tolerant: a malformed line is skipped, never fatal. 
 
 ---
 
+## 8.1 Prerequisite: a shipped ingestion bug this spec makes visible
+
+Not a Spec B defect, but §2 renames a tab whose rollup logic depends on it, and the Cost/Sessions split invites direct comparison between the two.
+
+Two discovery paths disagree about subagent transcripts:
+
+- `watcher.rs:31` watches with `RecursiveMode::Recursive`, so subagent files written **while Switchboard is running** are ingested.
+- `walker.rs:16` `discover_jsonl_files` — the startup and backfill scan — is a two-level `read_dir` that skips the `<sessionId>/` directory outright (`if !fmeta.is_file() { continue; }`, line 39). Anything written while the app was closed is **never backfilled**.
+
+Measured on the live database:
+
+```
+subagent transcripts on disk:   138
+  present in session_events:     13
+  never ingested:               125
+
+Tokens in the never-ingested files:
+  input:       12,261,121
+  output:        1,094,629
+  cache-read: 104,520,949
+```
+
+`SessionsTab.tsx` already carries `SUBAGENT_SEGMENT = '/subagents/agent-'` and rollup logic keyed on it, commented "subagents' API calls are real" — the frontend is built to display data the backfill path cannot supply. The Cost tab is therefore under-reporting today.
+
+The fix is one level of traversal in `discover_jsonl_files` plus a re-ingest migration. It is sequenced **before** the browser work in the implementation plan, because shipping a second session view while the first under-counts invites a bug report about the discrepancy.
+
+Note the relationship to §3: ingestion **wants** subagent transcripts (their API calls cost money); the browser **must not list** them (they are not resumable sessions). The two paths deliberately diverge, which is why §3 states the exclusion as a rule rather than leaving it implicit.
+
+---
+
 ## 9. Rejected alternatives
 
 **Full transcript viewer.** A scrollable rendered conversation with tool-call formatting. Rejected for v1: it needs message rendering, tool-result formatting and virtualized scrolling for the 21.5 MB outlier transcript, and the recap card already answers "what was this about". Revisit if the recap proves insufficient in use.
 
-**Persisting session metadata to SQLite.** A `sessions` table populated during JSONL ingestion. Rejected because a full scan is 0.35 s — a cache would add a migration, an invalidation path and a staleness class of bug to save a third of a second.
+**Persisting session metadata to SQLite.** A `sessions` table populated during JSONL ingestion. Rejected — but not on latency grounds, which was the original and wrong argument. The cost that matters is *repetition*: without memoization every tab switch re-parses 100.7 MB, since `ExpandedReport` remounts tab components across its slide transition. §1.2 therefore adopts the middle option this section originally skipped — an in-memory memo keyed on `max(mtime)`, which removes the repetition without a migration, a table, or a staleness class.
 
 **Extending the existing Sessions tab in place.** Rejected in favour of the Cost/Sessions split (§2): the accounting view is scoped to a day window and rolls subagents into parents, neither of which suits browsing, and bolting resume onto it would compromise both.
 
@@ -235,6 +291,8 @@ Parsing is line-by-line and tolerant: a malformed line is skipped, never fatal. 
 ---
 
 ## 10. Files touched
+
+**Modified first (prerequisite, §8.1):** `src-tauri/src/jsonl_parser/walker.rs`, plus a re-ingest migration under `src-tauri/src/store/migrations/`
 
 **New (Rust):** `sessions/{mod,scan,recap}.rs`
 **New (TS):** `src/sessions/{SessionsBrowserTab,SessionRow,SessionRecapCard,ResumeProviderPicker}.tsx`, `src/sessions/useResumableSessions.ts`, `src/sessions/__tests__/`
@@ -253,9 +311,15 @@ The existing `src/report/SessionsTab.tsx` is **not** renamed as a file — only 
 - touched-file extraction: ranked by frequency, capped at 4, overflow counted, absent when no `file_path` inputs exist
 - synthetic user turns (content starting with `<`) do not count toward `turns` and never become `asked`
 - malformed lines are skipped; a wholly malformed file is omitted rather than panicking
-- model normalization: `glm-5.2[1m]` → `glm-5.2`; case-insensitive
-- provider resolution: exact match on each of the six model env keys; `claude-*` → official; unknown → `None`
-- the 200-file cap keeps the most recent by mtime
+- **subagent exclusion**: a fixture at `<project>/<sessionId>/subagents/agent-x.jsonl` that satisfies every inclusion condition is still not listed (C1 regression)
+- **`tool_result` exclusion in both fields**: a session whose final `type: "user"` record is a tool result yields the last *real* message as `left_off`, never the tool output; the same for `asked` when the first `type: "user"` record is a tool result
+- **end-to-end provider resolution**, not normalization in isolation: a provider configured `ANTHROPIC_MODEL = "glm-5.2[1m]"` resolves a session recorded as `glm-5.2`. A unit test that only asserts `norm("glm-5.2[1m]") == "glm-5.2"` passes while the feature is broken, because the defect is which operand `norm` is applied to (C2 regression)
+- case-insensitive match: provider `MiniMax-M2.7-highspeed` resolves a session recorded in any casing
+- resolution via a non-`ANTHROPIC_MODEL` key: `kimi-for-coding-highspeed` configured as `ANTHROPIC_SMALL_FAST_MODEL` resolves
+- tie-break: two providers declaring the same model id resolve to the lower `sort_index`, deterministically
+- a session whose model matched a since-deleted provider resolves to **unresolved**, not official, even when the id looks Anthropic-style
+- `claude-*` → official; unknown → `None`
+- the 200-session cap is applied **after** filtering and keeps the most recent by mtime
 
 **Frontend tests** follow the existing `__tests__` pattern: collapsed/expanded rendering, one-row-at-a-time expansion, search flattening the grouping, the two distinct empty states, resume calling the launcher with the resolved provider, and the picker appearing for an unresolved model.
 
