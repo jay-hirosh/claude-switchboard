@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=7 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=8 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [7_i64],
+            [8_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -161,9 +161,15 @@ impl Db {
                 .context("apply migration 0007")?;
         }
 
+        if current < 8 {
+            tracing::info!("migrating v7 -> v8 (re-ingest to backfill subagent transcripts)");
+            conn.execute_batch(include_str!("migrations/0008_reingest_subagents.sql"))
+                .context("apply migration 0008")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [7_i64],
+            [8_i64],
         )?;
         Ok(())
     }
@@ -580,14 +586,55 @@ mod tests {
         assert_eq!(after, 2, "migration 0007 must create both provider tables");
     }
 
+    /// 0008 must clear cursors (forcing a re-read from byte 0) without
+    /// deleting events: `event_id` is stable and UNIQUE, so re-reading is
+    /// idempotent for rows already stored and only adds the missing ones.
+    /// Deleting events here would throw away history the transcripts on disk
+    /// can no longer supply once Claude Code prunes them.
     #[test]
-    fn fresh_database_is_stamped_at_version_7() {
+    fn migration_0008_clears_cursors_but_keeps_events() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("v7.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+
+        conn.execute(
+            "INSERT INTO jsonl_cursors (file_path, last_mtime_ns, byte_offset)
+             VALUES ('/a/b.jsonl', 1, 4096)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_events
+               (ts, project, model, input_tokens, output_tokens,
+                cache_read_tokens, cost_usd, source_file, source_line, event_id)
+             VALUES (0, 'p', 'm', 1, 1, 0, 0.0, '/a/b.jsonl', 1, 'evt-1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(include_str!("migrations/0008_reingest_subagents.sql"))
+            .unwrap();
+
+        let cursors: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jsonl_cursors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cursors, 0, "cursors must be cleared to force a re-read");
+
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 1, "events must survive — re-ingest is idempotent");
+    }
+
+    #[test]
+    fn fresh_database_is_stamped_at_version_8() {
         let dir = tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let version: i64 = db
             .conn()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 7, "create_fresh_db and migrate() must both stamp 7");
+        assert_eq!(version, 8, "create_fresh_db and migrate() must both stamp 8");
     }
 }

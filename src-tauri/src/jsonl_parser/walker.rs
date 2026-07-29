@@ -36,6 +36,35 @@ pub fn discover_jsonl_files(root: &Path) -> Result<Vec<PathBuf>> {
             if fmeta.file_type().is_symlink() {
                 continue;
             }
+            // A session directory (`<sessionId>/`) may hold subagent
+            // transcripts at `<sessionId>/subagents/agent-*.jsonl`. The
+            // watcher already picks these up live (RecursiveMode::Recursive),
+            // so skipping them here made the backfill disagree with the
+            // watcher — 125 of 138 files were never ingested, and their API
+            // calls are real spend that the Cost tab is built to display.
+            if fmeta.is_dir() {
+                let subagents = fpath.join("subagents");
+                let Ok(entries) = fs::read_dir(&subagents) else {
+                    continue;
+                };
+                for s in entries {
+                    let s = s?;
+                    let spath = s.path();
+                    let smeta = fs::symlink_metadata(&spath)?;
+                    if smeta.file_type().is_symlink() || !smeta.is_file() {
+                        continue;
+                    }
+                    if spath.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    if smeta.len() > MAX_FILE_BYTES {
+                        tracing::warn!("skipping oversized file (>100MB): {}", spath.display());
+                        continue;
+                    }
+                    files.push(spath);
+                }
+                continue;
+            }
             if !fmeta.is_file() {
                 continue;
             }
@@ -246,5 +275,39 @@ mod tests {
         let key = path.to_str().expect("test path must be UTF-8").to_owned();
         let (_mtime, offset) = db.get_cursor(&key).unwrap().expect("cursor missing");
         assert_eq!(offset, file_len, "cursor must be at end-of-file");
+    }
+
+    #[test]
+    fn discovers_subagent_transcripts_one_level_deeper() {
+        let root = tempdir().unwrap();
+        let project = root.path().join("-Users-me-proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("sess-1.jsonl"), "{}\n").unwrap();
+
+        let subagents = project.join("sess-1").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::write(subagents.join("agent-aaa.jsonl"), "{}\n").unwrap();
+        std::fs::write(subagents.join("agent-bbb.jsonl"), "{}\n").unwrap();
+
+        let found = discover_jsonl_files(root.path()).unwrap();
+        assert_eq!(found.len(), 3, "top-level transcript plus both subagents");
+        assert!(
+            found.iter().any(|p| p.ends_with("agent-aaa.jsonl")),
+            "subagent transcripts must be backfilled — their API calls cost money"
+        );
+    }
+
+    #[test]
+    fn ignores_non_subagent_subdirectories() {
+        let root = tempdir().unwrap();
+        let project = root.path().join("-Users-me-proj");
+        std::fs::create_dir_all(project.join("sess-1").join("something-else")).unwrap();
+        std::fs::write(
+            project.join("sess-1").join("something-else").join("x.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
+        let found = discover_jsonl_files(root.path()).unwrap();
+        assert!(found.is_empty(), "only subagents/ is descended into");
     }
 }

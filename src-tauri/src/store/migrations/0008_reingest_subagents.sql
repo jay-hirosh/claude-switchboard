@@ -1,0 +1,15 @@
+-- v7 → v8: re-ingest so subagent transcripts are counted.
+--
+-- `discover_jsonl_files` was a two-level read_dir that skipped
+-- `<sessionId>/` directories outright, while `watcher.rs` watched with
+-- RecursiveMode::Recursive. Subagent transcripts written while Switchboard
+-- was running were therefore ingested; anything written while it was closed
+-- never was. Measured before the fix: 13 of 138 files present, leaving
+-- 12,261,121 input and 104,520,949 cache-read tokens uncounted.
+--
+-- Clearing jsonl_cursors forces a re-read from byte 0 on the next backfill.
+-- session_events is NOT deleted: event_id is stable and UNIQUE, so re-reading
+-- is idempotent for rows already stored and simply adds the missing ones.
+-- (0006 had to delete because it changed the event_id derivation; this
+-- migration does not.)
+DELETE FROM jsonl_cursors;
