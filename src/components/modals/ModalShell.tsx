@@ -106,6 +106,13 @@ export function ModalShell({
       style={{
         zIndex: z,
         background: 'var(--color-overlay)',
+        // `position: fixed` resolves against the viewport — the full,
+        // sharp-cornered window rect — and #root's `overflow: hidden` does
+        // NOT clip it, because a fixed element escapes ancestor overflow.
+        // So the scrim paints into the four corners that #root's radius
+        // leaves bare, and the window grows dark wedges around its rounded
+        // shell for as long as a modal is open. Repeat the window radius.
+        borderRadius: 'var(--window-radius, var(--radius-lg))',
       }}
     >
       <div

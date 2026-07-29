@@ -147,4 +147,19 @@ describe('ModalShell', () => {
     expect(document.activeElement).toBe(prev);
     document.body.removeChild(prev);
   });
+
+  // The backdrop is `position: fixed`, so it is laid out against the viewport —
+  // the full, sharp-cornered window rect — and #root's `overflow: hidden` does
+  // not clip it. Without its own radius the scrim paints into the corners the
+  // window shell leaves bare, which reads as dark wedges around the rounded
+  // corners for as long as a modal is open.
+  it('clips the backdrop to the window radius', () => {
+    render(
+      <ModalShell onDismiss={() => {}} id="m1">
+        <p>x</p>
+      </ModalShell>,
+    );
+    const backdrop = screen.getByTestId('modal-backdrop');
+    expect(backdrop.style.borderRadius).toBe('var(--window-radius, var(--radius-lg))');
+  });
 });

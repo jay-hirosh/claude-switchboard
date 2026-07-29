@@ -63,6 +63,44 @@ pub(crate) fn move_to_tray_center<R: tauri::Runtime>(window: &tauri::WebviewWind
     });
 }
 
+/// Ask DWM to round the window's corners (Windows 11 only).
+///
+/// The frontend deliberately draws NO corner radius on Windows. tao registers
+/// the window class with a NULL `hbrBackground` and does not set
+/// `WS_EX_NOREDIRECTIONBITMAP` for a `transparent: true` window, so the HWND
+/// keeps a redirection surface that nothing erases. Any pixel WebView2 does
+/// not paint — the area outside a CSS `border-radius`, for instance —
+/// composites as opaque black, which is where the black corner wedges came
+/// from. DWM clips the window *after* the webview has painted, so it is the
+/// one way to round a corner without leaving an unpainted pixel behind, and
+/// it matches the system radius exactly instead of guessing at it.
+///
+/// Windows 10 rejects the attribute; the error is ignored and the window
+/// keeps square corners, which is the native look there anyway.
+#[cfg(target_os = "windows")]
+fn round_window_corners<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let preference = DWMWCP_ROUND;
+    // SAFETY: `hwnd` is a live window handle owned by Tauri for the lifetime
+    // of the app, and the pointer/size pair matches the attribute's documented
+    // type (DWM_WINDOW_CORNER_PREFERENCE, a 32-bit enum). A pre-Windows-11 DWM
+    // returns E_INVALIDARG and writes nothing.
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd.0 as _,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            std::ptr::addr_of!(preference).cast(),
+            std::mem::size_of_val(&preference) as u32,
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let log_dir = logging::log_dir();
@@ -398,11 +436,10 @@ pub fn run() {
                 );
             }
             #[cfg(target_os = "windows")]
-            if let Some(_popover) = app.get_webview_window("popover") {
-                // We do not apply mica/acrylic on Windows because it fills the entire
-                // sharp rectangular bounds of the frameless window, causing white/gray
-                // corners to be visible outside our CSS `border-radius`. The CSS fallback
-                // (oklch 0.86 alpha) looks better than having sharp artifact corners.
+            if let Some(popover) = app.get_webview_window("popover") {
+                // Still no mica/acrylic: it fills the sharp rectangular bounds
+                // of the frameless window and shows outside our rounded shell.
+                round_window_corners(&popover);
             }
 
             // Tray icon — configure the one Tauri auto-created from the

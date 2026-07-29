@@ -78,27 +78,43 @@ body[data-view-mode="expanded"] #root {
   background: var(--color-bg-base);
 }
 
-/* Windows specific: DOM-based animation requires transparent #root and background on the container */
+/* ─── Windows ───
+ *
+ * Every pixel of the client area MUST be painted, because an unpainted one is
+ * black, not transparent. tao registers the window class with a NULL
+ * hbrBackground and only sets WS_EX_NOREDIRECTIONBITMAP when its private
+ * `no_redirection_bitmap` attribute is on — which Tauri never sets. So the
+ * HWND keeps a redirection surface that nothing ever erases, WebView2 paints
+ * only where the DOM has a background, and whatever is left over composites
+ * as opaque black. That is the source of the black wedges outside a CSS
+ * `border-radius`, and of the black flash around the container mid-resize.
+ *
+ * So: no CSS corner radius here, and #root paints edge to edge. The rounding
+ * comes from DWMWA_WINDOW_CORNER_PREFERENCE instead (see lib.rs), which clips
+ * the composited window *after* the webview has painted — the one place a
+ * corner can be cut without leaving an unpainted pixel behind. Windows 10
+ * rejects that attribute and keeps square corners, which is native there.
+ */
+body[data-os="windows"] {
+  --window-radius: 0px;
+}
+
 body[data-os="windows"] #root {
-  background: transparent !important;
-}
-
-body[data-os="windows"][data-view-mode="compact"] .win-animated-container {
   background: var(--color-bg-base);
-  border-radius: var(--window-radius, var(--radius-lg));
 }
 
-body[data-os="windows"][data-theme="dark"][data-view-mode="compact"] .win-animated-container {
+body[data-os="windows"][data-theme="dark"] #root {
   background:
     radial-gradient(120% 80% at 0% 0%, oklch(72% 0.10 55 / 0.06), transparent 55%),
     radial-gradient(120% 80% at 100% 100%, oklch(70% 0.140 38 / 0.04), transparent 55%),
     var(--color-bg-base);
-  border-radius: var(--window-radius, var(--radius-lg));
 }
 
-body[data-os="windows"][data-view-mode="expanded"] .win-animated-container {
-  background: var(--color-bg-base);
-  border-radius: var(--window-radius, var(--radius-lg));
+/* The resize animation scales a container inside #root. It no longer carries
+ * the background — #root does, so the area the container has not yet grown
+ * into is painted rather than black. */
+body[data-os="windows"] .win-animated-container {
+  background: transparent;
 }
 
 /* The drag-region elements get the system "default" cursor so they don't show

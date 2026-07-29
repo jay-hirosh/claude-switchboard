@@ -42,8 +42,10 @@ export function App() {
 
   useEffect(() => {
     document.body.dataset.viewMode = viewMode;
+    // The Windows corner radius lives in globals.css, not here: it has to be
+    // 0 so the webview paints every pixel of the client area, and the OS does
+    // the rounding. Setting it from JS as well left two sources of truth.
     if (navigator.userAgent.includes('Windows')) {
-      document.documentElement.style.setProperty('--window-radius', '18px');
       document.body.dataset.os = 'windows';
     }
     return () => { delete document.body.dataset.viewMode; };

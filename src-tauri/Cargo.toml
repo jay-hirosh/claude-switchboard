@@ -62,7 +62,13 @@ which = "8.0.5"
 [target.'cfg(target_os = "macos")'.dependencies]
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Security_Authorization", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = [
+  "Win32_Security_Authorization",
+  "Win32_Foundation",
+  # DwmSetWindowAttribute — the popover's rounded corners come from DWM, not
+  # from CSS, because an unpainted pixel on Windows is black. See lib.rs.
+  "Win32_Graphics_Dwm",
+] }
 winreg = "0.55"
 
 [dev-dependencies]
