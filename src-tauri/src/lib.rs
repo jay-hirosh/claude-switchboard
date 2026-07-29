@@ -13,6 +13,7 @@ pub mod providers;
 pub mod os_scheduler;
 pub mod scheduler;
 pub mod scheduler_glue;
+pub mod sessions;
 pub mod store;
 mod tray;
 mod tray_icon;
