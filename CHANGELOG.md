@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Custom model providers.** Run Claude Code against third-party Anthropic-compatible endpoints (GLM, Kimi, DeepSeek, MiniMax, OpenRouter, or a custom URL) by launching provider-scoped terminal sessions from the new Providers tab. Sessions use per-process environment variables, so several providers can run at once and your own launch scripts keep working.
 - **Optional global default.** A provider can additionally be set as the default for bare `claude` invocations. This writes `~/.claude/settings.json` and is guarded by a backup, an undo manifest and a confirmation prompt — it overrides `ANTHROPIC_*` variables exported by your shell.
+- **Session browser.** A new Sessions tab lists past Claude Code sessions grouped by project, each expanding to show Claude Code's own end-of-session recap, what you asked, where you left off, and which files it touched. One click resumes any session in a new terminal running the provider it originally used — resuming always forks, so a session still open elsewhere is never disturbed. The previous Sessions tab, which reports tokens and cost, is now called **Cost**.
+
+### Fixed
+
+- **Subagent usage was under-counted.** The startup backfill skipped subagent transcripts that the live watcher already collected, so sessions run while the app was closed never had their subagent API calls counted. Existing data is re-ingested automatically on upgrade.
 
 ## v1.2.0 — 2026-07-27
 

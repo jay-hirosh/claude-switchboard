@@ -15,9 +15,11 @@ import { handleDragStart, closeWindow } from '../lib/window-chrome';
 import { AccountsSidebar } from '../accounts/AccountsSidebar';
 import { SettingsModal } from '../components/modals/SettingsModal';
 import { ProvidersTab } from '../providers/ProvidersTab';
+import { SessionsBrowserTab } from '../sessions/SessionsBrowserTab';
 
 const TAB_CONFIG = [
-  { id: 'sessions', label: 'Sessions' },
+  { id: 'browse', label: 'Sessions' },
+  { id: 'cost', label: 'Cost' },
   { id: 'models', label: 'Models' },
   { id: 'trends', label: 'Trends' },
   { id: 'projects', label: 'Projects' },
@@ -27,7 +29,8 @@ const TAB_CONFIG = [
 ] as const;
 
 const TAB_COMPONENTS: Record<string, React.FC> = {
-  sessions: SessionsTab,
+  browse: SessionsBrowserTab,
+  cost: SessionsTab,
   models: ModelsTab,
   trends: TrendsTab,
   projects: ProjectsTab,
@@ -37,11 +40,11 @@ const TAB_COMPONENTS: Record<string, React.FC> = {
 };
 
 export function ExpandedReport() {
-  const [activeTab, setActiveTab] = useState<string>('sessions');
+  const [activeTab, setActiveTab] = useState<string>('browse');
   const [refreshing, setRefreshing] = useState(false);
   const [tabKey, setTabKey] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const prevTabRef = useRef<string>('sessions');
+  const prevTabRef = useRef<string>('browse');
   const stale = useAppStore((s) => s.stale);
   const toggleViewMode = useAppStore((s) => s.toggleViewMode);
 

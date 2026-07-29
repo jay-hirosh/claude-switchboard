@@ -74,3 +74,21 @@ Run on **both macOS and Windows**.
 - [ ] Tray tooltip names the default provider while one is set, and omits the line when none is
 - [ ] Settings → Terminal lists only installed terminals; choosing one is used by the next launch
 - [ ] **Windows**: launch works on a machine with neither `pwsh` nor `wt.exe` installed, and with ExecutionPolicy at its `Restricted` default
+
+## Session browser (added 2026-07-29)
+
+- [ ] Sessions tab lists real sessions grouped by project, newest project first
+- [ ] **No subagent transcripts appear** — cross-check `ls ~/.claude/projects/*/*/subagents/*.jsonl | wc -l` against the row count; the browser must show none of them
+- [ ] No headless (`-` project) sessions appear
+- [ ] Expanding a row shows Recap / Asked / Left off / Touched and collapses any other open row
+- [ ] **Recap matches the `※ recap:` line** shown at the bottom of that conversation in Claude Code, with no trailing `(disable recaps in /config)`
+- [ ] A session with several recaps shows the most recent one
+- [ ] **Left off is never tool output** — spot-check a session that ended on a tool result
+- [ ] Search matches title, project, model, Asked, Left off, and a touched filename; results are flat, not grouped
+- [ ] Empty-corpus and no-match states are distinct
+- [ ] **A `glm-5.2` session resolves to the GLM provider** and resumes without a prompt (regression: `[1m]` normalization)
+- [ ] A session with an unconfigured model opens the picker and warns about cross-model resume
+- [ ] Resume opens a new terminal in the session's own folder; `/status` shows the expected endpoint
+- [ ] **Resume a session that is still open in another terminal** — both windows keep working, the original transcript is unchanged, and the fork appears as a new row on rescan
+- [ ] Cost tab is unchanged apart from its label
+- [ ] Subagent backfill: `SELECT COUNT(DISTINCT source_file) FROM session_events WHERE source_file LIKE '%/subagents/agent-%'` returns the on-disk count, not 13
