@@ -69,6 +69,8 @@ A new **Sessions** tab becomes the browse-and-resume view described here.
 
 The rename is deliberate. Both views legitimately list sessions, but they answer different questions — *"where did my money go"* versus *"what was I doing"*. Naming the accounting view **Cost** makes that split legible instead of shipping two tabs that both claim the word "Sessions".
 
+**The rename carries no migration cost.** `activeTab` is component-local `useState` in `ExpandedReport.tsx`, not persisted in the Zustand store, so no user has a stale `'sessions'` tab id saved anywhere. The identifier appears in exactly three places, all in that one file (`TAB_CONFIG`, the `useState` initialiser, and `prevTabRef`). The file `SessionsTab.tsx` is **not** renamed — only its tab id and label — so the diff stays reviewable and its exported `modelLabel` / `isHeadlessProject` helpers keep working for both tabs.
+
 ---
 
 ## 3. What counts as a session
@@ -169,6 +171,16 @@ Clicking **Resume**:
 
 This opens a **new terminal** in the session's original working directory. Global configuration is never touched and the current session keeps its provider — resuming a `glm-5.2` session while working on Anthropic changes nothing about the session you are already in.
 
+### 7.1 Resume always forks
+
+The generated command is `claude --resume <id> --fork-session`, never a bare `--resume`.
+
+Without it, resuming a session that is **still open in another terminal** puts two Claude Code processes on the same `<sessionId>.jsonl`, both appending. Nothing in the transcript format arbitrates that, and the damage is to conversation history the user cannot reconstruct.
+
+Detecting the conflict instead was rejected: `process_detection.rs` counts CLI processes but cannot map one to a session id, so the check would be unreliable in exactly the case that matters. `--fork-session` removes the failure by construction rather than detecting it.
+
+The trade-off is accepted deliberately: continued work lands in a **new** transcript rather than appending to the original, so a resumed session appears as a sibling entry in the list on next scan. That is the correct semantics for a browse-and-reopen action — the thing you clicked stays exactly as you left it.
+
 `LaunchSpec.resume_session_id` and the `--resume` rendering in `launcher::script` are **already implemented and tested in Spec A**, so no new launch machinery is required.
 
 **Failure modes.** A session whose `cwd` no longer exists reports "folder no longer exists" and offers to pick a different one rather than launching into a missing directory. Terminal-missing and launch-failure paths are inherited from Spec A.
@@ -247,4 +259,6 @@ The existing `src/report/SessionsTab.tsx` is **not** renamed as a file — only 
 
 **Frontend tests** follow the existing `__tests__` pattern: collapsed/expanded rendering, one-row-at-a-time expansion, search flattening the grouping, the two distinct empty states, resume calling the launcher with the resolved provider, and the picker appearing for an unresolved model.
 
-**Manual smoke** (added to `docs/release-checklist.md`, both platforms): the tab lists real sessions grouped by project; a `glm-5.2` session resolves to the GLM provider; resuming opens a new terminal in the right folder and `/status` shows the expected endpoint; the original session is unaffected; an unconfigured model prompts rather than resuming; a session whose folder was deleted reports it.
+Additionally: the generated resume command always carries `--fork-session` (§7.1), asserted at the launcher boundary so a future refactor cannot drop it.
+
+**Manual smoke** (added to `docs/release-checklist.md`, both platforms): the tab lists real sessions grouped by project; a `glm-5.2` session resolves to the GLM provider; resuming opens a new terminal in the right folder and `/status` shows the expected endpoint; an unconfigured model prompts rather than resuming; a session whose folder was deleted reports it. Critically — **resume a session that is still open in another terminal**, confirm both windows keep working, and confirm the original transcript is unchanged while the forked one appears as a new entry on rescan.

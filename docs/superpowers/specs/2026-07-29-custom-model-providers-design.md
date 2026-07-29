@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS providers (
     base_url     TEXT,
     auth_token   TEXT,
     env_json     TEXT NOT NULL DEFAULT '{}',
+    extra_args   TEXT NOT NULL DEFAULT '[]',
     preset_id    TEXT,
     sort_index   INTEGER NOT NULL DEFAULT 0
 );
@@ -119,10 +120,19 @@ pub struct Provider {
     pub base_url: Option<String>,            // None for Official
     pub auth_token: Option<String>,          // plaintext — see below
     pub env: BTreeMap<String, String>,       // ANTHROPIC_MODEL, context knobs, …
+    pub extra_args: Vec<String>,             // appended to the claude invocation
     pub preset_id: Option<String>,
     pub sort_index: i64,
 }
 ```
+
+**`extra_args` exists because the generated script bypasses the user's shell.** Invoking the binary directly is deliberate — it is what makes the launch reproducible — but it also skips shell functions and aliases. The project owner's shell defines `claude()` as a wrapper injecting `--dangerously-skip-permissions`, and their launch scripts pass it explicitly:
+
+```bash
+exec /opt/homebrew/bin/claude --dangerously-skip-permissions
+```
+
+A flag-free generated script would therefore start prompting for permissions on every launch — a visible regression against the scripts this feature replaces. `extra_args` is per-provider rather than global so that a provider can be launched differently when wanted; it defaults to empty, and each element is quoted by the same function that quotes env values (§3.1), never concatenated as a single string.
 
 **`Anthropic (official)`** is a seeded row with `kind = Official` and an empty `env`. Launching it applies **no overrides**, so the session inherits whichever account the existing accounts feature has active. The provider row is a launch target only; identity ownership stays with the accounts subsystem. It sorts first and cannot be deleted.
 
@@ -160,8 +170,10 @@ export ANTHROPIC_BASE_URL='https://api.z.ai/api/anthropic'
 export ANTHROPIC_AUTH_TOKEN='…'
 export ANTHROPIC_MODEL='glm-5.2[1m]'
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW='1000000'
-exec '/opt/homebrew/bin/claude'
+exec '/opt/homebrew/bin/claude' '--dangerously-skip-permissions'
 ```
+
+The trailing arguments come from the provider's `extra_args` (§2), each quoted individually. Spec B's resume appends `--resume <id> --fork-session` after them.
 
 **Mode `0700`, not `0600`.** The terminal executes the script directly (`ghostty -e <script>`), which requires the owner execute bit; a `0600` script fails with exit 126 and an empty terminal window. `0700` is equally private — the secret protection comes from the group and other bits being clear, which both modes satisfy. The alternative (keep `0600` and invoke `/bin/sh <script>`) works too but adds an interpreter argument to every terminal's command shape for no gain.
 

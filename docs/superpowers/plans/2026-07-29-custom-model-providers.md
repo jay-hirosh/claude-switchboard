@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS providers (
     base_url     TEXT,
     auth_token   TEXT,
     env_json     TEXT NOT NULL DEFAULT '{}',
+    extra_args   TEXT NOT NULL DEFAULT '[]',
     preset_id    TEXT,
     sort_index   INTEGER NOT NULL DEFAULT 0
 );
@@ -164,6 +165,10 @@ pub struct Provider {
     pub base_url: Option<String>,
     pub auth_token: Option<String>,
     pub env: BTreeMap<String, String>,
+    /// Appended to the `claude` invocation. Needed because the generated
+    /// script execs the binary directly and so bypasses shell functions —
+    /// e.g. a `claude()` wrapper that injects --dangerously-skip-permissions.
+    pub extra_args: Vec<String>,
     pub preset_id: Option<String>,
     pub sort_index: i64,
 }
@@ -207,6 +212,7 @@ mod tests {
             base_url: Some("https://api.z.ai/api/anthropic".into()),
             auth_token: Some("tok".into()),
             env: BTreeMap::from([("ANTHROPIC_MODEL".to_string(), "glm-5.2".to_string())]),
+            extra_args: vec!["--dangerously-skip-permissions".to_string()],
             preset_id: Some("glm".into()),
             sort_index: 1,
         }
@@ -239,6 +245,7 @@ mod tests {
             base_url: None,
             auth_token: None,
             env: BTreeMap::new(),
+            extra_args: Vec::new(),
             preset_id: None,
             sort_index: 0,
         };
@@ -294,6 +301,8 @@ fn row_to_provider(row: &rusqlite::Row<'_>) -> rusqlite::Result<Provider> {
         base_url: row.get("base_url")?,
         auth_token: row.get("auth_token")?,
         env: serde_json::from_str(&env_json).unwrap_or_default(),
+        extra_args: serde_json::from_str::<Vec<String>>(&row.get::<_, String>("extra_args")?)
+            .unwrap_or_default(),
         preset_id: row.get("preset_id")?,
         sort_index: row.get("sort_index")?,
     })
@@ -303,7 +312,7 @@ impl Db {
     pub fn list_providers(&self) -> Result<Vec<Provider>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, kind, base_url, auth_token, env_json, preset_id, sort_index
+            "SELECT id, name, kind, base_url, auth_token, env_json, extra_args, preset_id, sort_index
              FROM providers ORDER BY sort_index ASC, name ASC",
         )?;
         let rows = stmt.query_map([], row_to_provider)?;
@@ -313,7 +322,7 @@ impl Db {
     pub fn get_provider(&self, id: &str) -> Result<Option<Provider>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, kind, base_url, auth_token, env_json, preset_id, sort_index
+            "SELECT id, name, kind, base_url, auth_token, env_json, extra_args, preset_id, sort_index
              FROM providers WHERE id = ?1",
         )?;
         Ok(stmt.query_row(params![id], row_to_provider).optional()?)
@@ -325,19 +334,22 @@ impl Db {
             ProviderKind::ThirdParty => "third_party",
         };
         let env_json = serde_json::to_string(&p.env).context("serialize provider env")?;
+        let extra_args_json =
+            serde_json::to_string(&p.extra_args).context("serialize provider extra_args")?;
         self.conn().execute(
             "INSERT INTO providers
-               (id, name, kind, base_url, auth_token, env_json, preset_id, sort_index)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+               (id, name, kind, base_url, auth_token, env_json, extra_args, preset_id, sort_index)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
                kind = excluded.kind,
                base_url = excluded.base_url,
                auth_token = excluded.auth_token,
                env_json = excluded.env_json,
+               extra_args = excluded.extra_args,
                preset_id = excluded.preset_id,
                sort_index = excluded.sort_index",
-            params![p.id, p.name, kind, p.base_url, p.auth_token, env_json, p.preset_id, p.sort_index],
+            params![p.id, p.name, kind, p.base_url, p.auth_token, env_json, extra_args_json, p.preset_id, p.sort_index],
         )?;
         Ok(())
     }
@@ -355,8 +367,8 @@ impl Db {
     pub fn seed_official_provider(&self) -> Result<()> {
         self.conn().execute(
             "INSERT OR IGNORE INTO providers
-               (id, name, kind, base_url, auth_token, env_json, preset_id, sort_index)
-             VALUES (?1, 'Anthropic (official)', 'official', NULL, NULL, '{}', NULL, 0)",
+               (id, name, kind, base_url, auth_token, env_json, extra_args, preset_id, sort_index)
+             VALUES (?1, 'Anthropic (official)', 'official', NULL, NULL, '{}', '[]', NULL, 0)",
             params![OFFICIAL_PROVIDER_ID],
         )?;
         Ok(())
@@ -430,6 +442,7 @@ mod tests {
             base_url: Some("https://api.z.ai/api/anthropic".into()),
             auth_token: Some("tok".into()),
             env: BTreeMap::from([("ANTHROPIC_MODEL".to_string(), "glm-5.2".to_string())]),
+            extra_args: vec!["--dangerously-skip-permissions".to_string()],
             preset_id: Some("glm".into()),
             sort_index: 1,
         }
@@ -743,6 +756,7 @@ impl Preset {
             base_url: Some(self.base_url.to_string()),
             auth_token: Some(auth_token),
             env: self.env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            extra_args: Vec::new(),
             preset_id: Some(self.id.to_string()),
             sort_index,
         }
@@ -860,48 +874,48 @@ pub fn render(
     cwd: &str,
     env: &BTreeMap<String, String>,
     claude_path: &str,
+    extra_args: &[String],
     resume: Option<&str>,
 ) -> String {
+    let q: fn(&str) -> String = match flavor {
+        ScriptFlavor::Sh => quote_sh,
+        ScriptFlavor::PowerShell => quote_ps,
+    };
+
+    let mut s = String::new();
     match flavor {
-        ScriptFlavor::Sh => render_sh(cwd, env, claude_path, resume),
-        ScriptFlavor::PowerShell => render_ps(cwd, env, claude_path, resume),
+        ScriptFlavor::Sh => {
+            s.push_str("#!/bin/sh\n# Generated by Claude Switchboard. Safe to delete.\n");
+            s.push_str(&format!("cd {} || exit 1\n", q(cwd)));
+            for (k, v) in env {
+                s.push_str(&format!("export {}={}\n", k, q(v)));
+            }
+            s.push_str(&format!("exec {}", q(claude_path)));
+        }
+        ScriptFlavor::PowerShell => {
+            s.push_str("# Generated by Claude Switchboard. Safe to delete.\n");
+            s.push_str(&format!("Set-Location {}\n", q(cwd)));
+            for (k, v) in env {
+                s.push_str(&format!("$env:{} = {}\n", k, q(v)));
+            }
+            s.push_str(&format!("& {}", q(claude_path)));
+        }
     }
-}
 
-fn render_sh(
-    cwd: &str,
-    env: &BTreeMap<String, String>,
-    claude_path: &str,
-    resume: Option<&str>,
-) -> String {
-    let mut s = String::from("#!/bin/sh\n# Generated by Claude Switchboard. Safe to delete.\n");
-    s.push_str(&format!("cd {} || exit 1\n", quote_sh(cwd)));
-    for (k, v) in env {
-        s.push_str(&format!("export {}={}\n", k, quote_sh(v)));
+    // Provider-supplied flags, each quoted individually — never joined into a
+    // single string, which would make one argument out of several.
+    for a in extra_args {
+        s.push(' ');
+        s.push_str(&q(a));
     }
-    s.push_str(&format!("exec {}", quote_sh(claude_path)));
-    if let Some(id) = resume {
-        s.push_str(&format!(" --resume {}", quote_sh(id)));
-    }
-    s.push('\n');
-    s
-}
 
-fn render_ps(
-    cwd: &str,
-    env: &BTreeMap<String, String>,
-    claude_path: &str,
-    resume: Option<&str>,
-) -> String {
-    let mut s = String::from("# Generated by Claude Switchboard. Safe to delete.\n");
-    s.push_str(&format!("Set-Location {}\n", quote_ps(cwd)));
-    for (k, v) in env {
-        s.push_str(&format!("$env:{} = {}\n", k, quote_ps(v)));
-    }
-    s.push_str(&format!("& {}", quote_ps(claude_path)));
+    // `--fork-session` is not optional (Spec B §7.1): resuming a session that
+    // is still open elsewhere would otherwise put two Claude Code processes on
+    // the same transcript file, corrupting history that cannot be rebuilt.
     if let Some(id) = resume {
-        s.push_str(&format!(" --resume {}", quote_ps(id)));
+        s.push_str(&format!(" --resume {} --fork-session", q(id)));
     }
+
     s.push('\n');
     s
 }
@@ -936,7 +950,7 @@ mod tests {
 
     #[test]
     fn sh_script_has_shebang_cd_exports_and_exec() {
-        let s = render(ScriptFlavor::Sh, "/tmp/my project", &env(), "/opt/homebrew/bin/claude", None);
+        let s = render(ScriptFlavor::Sh, "/tmp/my project", &env(), "/opt/homebrew/bin/claude", &[], None);
         assert!(s.starts_with("#!/bin/sh\n"));
         assert!(s.contains("cd '/tmp/my project' || exit 1"));
         assert!(s.contains("export ANTHROPIC_MODEL='glm-5.2'"));
@@ -945,8 +959,8 @@ mod tests {
 
     #[test]
     fn sh_script_appends_resume_flag() {
-        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", Some("57ca2089-1111"));
-        assert!(s.trim_end().ends_with("exec '/usr/bin/claude' --resume '57ca2089-1111'"));
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], Some("57ca2089-1111"));
+        assert!(s.trim_end().ends_with("exec '/usr/bin/claude' --resume '57ca2089-1111' --fork-session"));
     }
 
     #[test]
@@ -956,6 +970,7 @@ mod tests {
             r"C:\Users\me\my project",
             &env(),
             r"C:\Program Files\claude.exe",
+            &[],
             None,
         );
         assert!(s.contains(r"Set-Location 'C:\Users\me\my project'"));
@@ -967,7 +982,7 @@ mod tests {
     fn injection_attempt_in_token_stays_inside_the_string() {
         let mut e = env();
         e.insert("ANTHROPIC_AUTH_TOKEN".to_string(), "x'; rm -rf ~; echo '".to_string());
-        let s = render(ScriptFlavor::Sh, "/tmp", &e, "/usr/bin/claude", None);
+        let s = render(ScriptFlavor::Sh, "/tmp", &e, "/usr/bin/claude", &[], None);
         // The dangerous text must appear only inside a quoted export line.
         let line = s.lines().find(|l| l.starts_with("export ANTHROPIC_AUTH_TOKEN=")).unwrap();
         assert_eq!(line, r"export ANTHROPIC_AUTH_TOKEN='x'\''; rm -rf ~; echo '\'''");
@@ -982,7 +997,7 @@ mod tests {
     fn newlines_in_values_cannot_introduce_a_script_line() {
         let mut e = env();
         e.insert("ANTHROPIC_MODEL".to_string(), "glm\nrm -rf ~/Documents\n#".to_string());
-        let s = render(ScriptFlavor::Sh, "/tmp", &e, "/usr/bin/claude", None);
+        let s = render(ScriptFlavor::Sh, "/tmp", &e, "/usr/bin/claude", &[], None);
         for line in s.lines() {
             assert!(
                 !line.trim_start().starts_with("rm "),
@@ -990,7 +1005,7 @@ mod tests {
             );
         }
         // Same for the working directory.
-        let s2 = render(ScriptFlavor::Sh, "/tmp\nrm -rf ~\n", &env(), "/usr/bin/claude", None);
+        let s2 = render(ScriptFlavor::Sh, "/tmp\nrm -rf ~\n", &env(), "/usr/bin/claude", &[], None);
         for line in s2.lines() {
             assert!(!line.trim_start().starts_with("rm "), "cwd escaped its quoting");
         }
@@ -998,17 +1013,50 @@ mod tests {
 
     #[test]
     fn generated_script_never_interpolates_a_provider_name() {
-        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", None);
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None);
         assert!(
             s.contains("# Generated by Claude Switchboard. Safe to delete."),
             "header must be a fixed string, not built from provider data"
         );
     }
 
+    /// The generated script execs the binary directly, bypassing any shell
+    /// `claude()` wrapper — so flags the user relies on must be reproduced.
+    #[test]
+    fn extra_args_are_appended_and_quoted_individually() {
+        let args = vec![
+            "--dangerously-skip-permissions".to_string(),
+            "--append-system-prompt".to_string(),
+            "be terse; don't stop".to_string(),
+        ];
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &args, None);
+        assert!(s.trim_end().ends_with(
+            "exec '/usr/bin/claude' '--dangerously-skip-permissions' '--append-system-prompt' 'be terse; don'\\''t stop'"
+        ), "got: {}", s.trim_end());
+    }
+
+    #[test]
+    fn resume_always_forks_the_session() {
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], Some("abc-123"));
+        assert!(
+            s.contains("--fork-session"),
+            "resuming without --fork-session lets two processes share one transcript"
+        );
+        let ps = render(ScriptFlavor::PowerShell, "C:\\w", &env(), "claude.exe", &[], Some("abc-123"));
+        assert!(ps.contains("--fork-session"), "PowerShell path must fork too");
+    }
+
+    #[test]
+    fn no_fork_flag_when_not_resuming() {
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None);
+        assert!(!s.contains("--fork-session"));
+        assert!(!s.contains("--resume"));
+    }
+
     #[test]
     fn env_order_is_deterministic() {
-        let a = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", None);
-        let b = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", None);
+        let a = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None);
+        let b = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None);
         assert_eq!(a, b);
     }
 }
@@ -1208,6 +1256,7 @@ pub fn write_script(spec: &LaunchSpec, dir: &Path) -> Result<PathBuf> {
         &spec.cwd.to_string_lossy(),
         &spec.provider.resolved_env(),
         &claude.to_string_lossy(),
+        &spec.provider.extra_args,
         spec.resume_session_id.as_deref(),
     );
     let ext = match spec.terminal.flavor() {
@@ -1322,6 +1371,7 @@ mod tests {
             base_url: Some("https://api.z.ai/api/anthropic".into()),
             auth_token: Some("tok".into()),
             env: BTreeMap::from([("ANTHROPIC_MODEL".to_string(), "glm-5.2".to_string())]),
+            extra_args: vec!["--dangerously-skip-permissions".to_string()],
             preset_id: Some("glm".into()),
             sort_index: 1,
         }
@@ -2428,6 +2478,7 @@ function glm(): Provider {
     base_url: 'https://api.z.ai/api/anthropic',
     auth_token: 'tok',
     env: { ANTHROPIC_MODEL: 'glm-5.2' },
+    extra_args: [],
     preset_id: 'glm',
     sort_index: 1,
   };
@@ -2441,6 +2492,7 @@ function official(): Provider {
     base_url: null,
     auth_token: null,
     env: {},
+    extra_args: [],
     preset_id: null,
     sort_index: 0,
   };
@@ -2643,12 +2695,12 @@ import { ProvidersTab } from '../ProvidersTab';
 
 const official = {
   id: 'official', name: 'Anthropic (official)', kind: 'official',
-  base_url: null, auth_token: null, env: {}, preset_id: null, sort_index: 0,
+  base_url: null, auth_token: null, env: {}, extra_args: [], preset_id: null, sort_index: 0,
 };
 const glm = {
   id: 'p1', name: 'GLM', kind: 'third_party',
   base_url: 'https://api.z.ai/api/anthropic', auth_token: 'tok',
-  env: { ANTHROPIC_MODEL: 'glm-5.2' }, preset_id: 'glm', sort_index: 1,
+  env: { ANTHROPIC_MODEL: 'glm-5.2' }, extra_args: [], preset_id: 'glm', sort_index: 1,
 };
 
 describe('ProvidersTab', () => {
@@ -2929,6 +2981,25 @@ describe('ProviderForm', () => {
     expect(saved.kind).toBe('third_party');
   });
 
+  it('splits extra CLI arguments into separate argv entries', async () => {
+    render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: 'sk-test' } });
+    fireEvent.change(screen.getByLabelText(/extra cli arguments/i), {
+      target: { value: '--dangerously-skip-permissions  --verbose' },
+    });
+    await waitFor(() =>
+      expect((screen.getByLabelText(/base url/i) as HTMLInputElement).value).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(ipcMock.upsertProvider).toHaveBeenCalled());
+    expect(ipcMock.upsertProvider.mock.calls[0][0].extra_args).toEqual([
+      '--dangerously-skip-permissions',
+      '--verbose',
+    ]);
+  });
+
   it('refuses to save without a name and a base URL', async () => {
     render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
@@ -2988,6 +3059,7 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
   const [baseUrl, setBaseUrl] = useState('');
   const [token, setToken] = useState('');
   const [model, setModel] = useState('');
+  const [extraArgs, setExtraArgs] = useState('');
   const [env, setEnv] = useState<Record<string, string>>({});
   const [existing, setExisting] = useState<Provider | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -3007,6 +3079,7 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
       setBaseUrl(p.base_url ?? '');
       setToken(p.auth_token ?? '');
       setModel(p.env['ANTHROPIC_MODEL'] ?? '');
+      setExtraArgs(p.extra_args.join(' '));
       setEnv(p.env);
       setPresetId(p.preset_id ?? '');
     });
@@ -3044,6 +3117,9 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
         base_url: baseUrl.trim(),
         auth_token: token,
         env: merged,
+        // Whitespace-split is deliberate: each token becomes its own argv
+        // entry, quoted separately by the script renderer.
+        extra_args: extraArgs.trim() ? extraArgs.trim().split(/\s+/) : [],
         preset_id: presetId || null,
         sort_index: existing?.sort_index ?? Date.now() % 100000,
       };
@@ -3117,6 +3193,21 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
         <label className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)]">
           Model
           <input aria-label="Model" className={inputClass} value={model} onChange={(e) => setModel(e.target.value)} />
+        </label>
+
+        <label className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)]">
+          Extra CLI arguments
+          <input
+            aria-label="Extra CLI arguments"
+            className={inputClass}
+            value={extraArgs}
+            onChange={(e) => setExtraArgs(e.target.value)}
+            placeholder="--dangerously-skip-permissions"
+          />
+          <span className="text-[color:var(--color-text-muted)]">
+            Passed to <code className="mono">claude</code> on launch. The script runs the binary
+            directly, so shell aliases and functions do not apply.
+          </span>
         </label>
 
         <p className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
