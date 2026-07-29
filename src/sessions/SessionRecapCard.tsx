@@ -180,11 +180,22 @@ export function SessionRecapCard({
             </span>
           )}
         </span>
+        {/* Resuming is a `cd` into session.cwd, and Claude Code finds a
+            transcript only via the directory it is launched in — so a deleted
+            project folder makes resume impossible by any route, not merely
+            inconvenient. Disabled with the reason attached beats a button that
+            opens a terminal only to fail inside it. */}
         <Button
           variant="primary"
           size="sm"
+          disabled={!session.cwd_exists}
           onClick={() => onResume(session.session_id)}
           aria-label={`Resume ${session.title}`}
+          title={
+            session.cwd_exists
+              ? undefined
+              : `Cannot resume — the project folder no longer exists: ${session.cwd}`
+          }
         >
           <Play size={12} aria-hidden />
           Resume

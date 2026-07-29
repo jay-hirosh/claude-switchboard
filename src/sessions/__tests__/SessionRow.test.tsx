@@ -22,6 +22,7 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
     ended_at: '2026-07-29T01:14:00Z',
     total_tokens: 12_345,
     total_cost_usd: 1.23,
+    cwd_exists: true,
     ...over,
   };
 }
@@ -65,6 +66,37 @@ describe('SessionRow', () => {
     rerender(<SessionRow session={session()} expanded onToggle={vi.fn()} onResume={vi.fn()} />);
     expect(screen.getByText(/we need a to plan/)).toBeTruthy();
     expect(screen.getByText(/what about spec B/)).toBeTruthy();
+  });
+
+  // Resuming cds into session.cwd, and Claude Code locates a transcript only
+  // through the directory it is launched in — so a deleted project folder
+  // makes resume impossible, not just likely to fail.
+  it('disables Resume with a reason when the project folder is gone', () => {
+    const onResume = vi.fn();
+    render(
+      <SessionRow
+        session={session({ cwd_exists: false, cwd: '/w/deleted' })}
+        expanded
+        onToggle={vi.fn()}
+        onResume={onResume}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: /^Resume / }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toContain('/w/deleted');
+    fireEvent.click(btn);
+    expect(onResume).not.toHaveBeenCalled();
+  });
+
+  it('keeps Resume enabled when the project folder exists', () => {
+    const onResume = vi.fn();
+    render(
+      <SessionRow session={session()} expanded onToggle={vi.fn()} onResume={onResume} />,
+    );
+    const btn = screen.getByRole('button', { name: /^Resume / }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    fireEvent.click(btn);
+    expect(onResume).toHaveBeenCalledWith('029a3e04-fa36');
   });
 
   it('shows the recap first when present', () => {

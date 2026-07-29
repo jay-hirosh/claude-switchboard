@@ -550,7 +550,15 @@ total_tokens: number;
  * ingested usage (a transcript with no assistant turns, or one that
  * predates the store).
  */
-total_cost_usd: number }
+total_cost_usd: number; 
+/**
+ * Whether `cwd` still exists. Resuming is a `cd` into that directory, so
+ * a session whose project folder has been deleted cannot be resumed by
+ * any route — Claude Code offers no way to name a transcript directly.
+ * Surfaced so the button can be disabled with a reason rather than
+ * opening a terminal that immediately fails.
+ */
+cwd_exists: boolean }
 export type SetDefaultOutcome = { status: "applied" } | 
 /**
  * `settings.json` already carries provider env we do not own. The UI

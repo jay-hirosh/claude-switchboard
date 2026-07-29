@@ -32,6 +32,7 @@ function s(over: Partial<SessionSummary>): SessionSummary {
     ended_at: '2026-07-29T11:00:00Z',
     total_tokens: 12_345,
     total_cost_usd: 1.23,
+    cwd_exists: true,
     ...over,
   };
 }

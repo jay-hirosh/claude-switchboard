@@ -73,6 +73,59 @@ pub struct SessionSummary {
     /// ingested usage (a transcript with no assistant turns, or one that
     /// predates the store).
     pub total_cost_usd: f64,
+    /// Whether `cwd` still exists. Resuming is a `cd` into that directory, so
+    /// a session whose project folder has been deleted cannot be resumed by
+    /// any route — Claude Code offers no way to name a transcript directly.
+    /// Surfaced so the button can be disabled with a reason rather than
+    /// opening a terminal that immediately fails.
+    pub cwd_exists: bool,
+}
+
+/// Mirrors upstream `sanitizePath` (`sessionStoragePortable.ts:311`):
+/// `name.replace(/[^a-zA-Z0-9]/g, '-')`.
+///
+/// The JS regex runs over UTF-16 code units, so one astral character becomes
+/// *two* dashes; `len_utf16` reproduces that rather than approximating it.
+pub fn sanitize_path(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            for _ in 0..c.len_utf16() {
+                out.push('-');
+            }
+        }
+    }
+    out
+}
+
+/// The directory a session must be resumed from.
+///
+/// Claude Code stores a transcript at
+/// `~/.claude/projects/<sanitize_path(cwd)>/<session_id>.jsonl` and resolves
+/// `--resume <id>` *only* against the directory derived from the cwd it is
+/// launched in — there is no session-id→directory index and no parent walk
+/// (`sessionStoragePortable.ts:329`, and the explicit note at
+/// `sessionStorage.ts:216`: "we don't track a sessionId→projectDir map").
+///
+/// A session's cwd changes mid-run whenever the user cds elsewhere, which a
+/// git worktree makes routine. Taking the *last* cwd therefore points at a
+/// directory whose slug owns no transcript, and `claude --resume` exits with
+/// "No conversation found with session ID" — the feature dead for exactly the
+/// sessions most worth resuming.
+///
+/// Matching is forward-only: the slug is lossy (`\` and `:` and `.` all become
+/// `-`), so it can never be decoded back into a path.
+fn owning_cwd(cwds: &[String], path: &Path) -> Option<String> {
+    let dir = path.parent()?.file_name()?.to_string_lossy().to_string();
+    cwds.iter()
+        .find(|c| sanitize_path(c) == dir)
+        .cloned()
+        // Paths past upstream's 200-char cap get a Bun-specific hash suffix we
+        // cannot reproduce. The first cwd is the original one in every other
+        // case, so it is a strictly better guess than the last.
+        .or_else(|| cwds.first().cloned())
 }
 
 /// Total context held by one assistant turn — everything the model had to
@@ -139,7 +192,10 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
     }
     let text = std::fs::read_to_string(path).ok()?;
 
-    let mut cwd: Option<String> = None;
+    // Every cwd the session held, in order and de-duplicated. Not a single
+    // overwritten value: the last one is usually not the one that owns the
+    // transcript — see `owning_cwd`.
+    let mut cwds: Vec<String> = Vec::new();
     let mut git_branch: Option<String> = None;
     let mut ai_title: Option<String> = None;
     let mut away_summary: Option<String> = None;
@@ -158,8 +214,8 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         };
 
         if let Some(c) = v.get("cwd").and_then(Value::as_str) {
-            if !c.is_empty() {
-                cwd = Some(c.to_string());
+            if !c.is_empty() && !cwds.iter().any(|e| e == c) {
+                cwds.push(c.to_string());
             }
         }
         if let Some(b) = v.get("gitBranch").and_then(Value::as_str) {
@@ -231,7 +287,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         }
     }
 
-    let cwd = cwd?;
+    let cwd = owning_cwd(&cwds, path)?;
     let project_name = Path::new(&cwd).file_name()?.to_string_lossy().to_string();
     if project_name == "-" || turns == 0 {
         return None;
@@ -247,6 +303,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
 
     Some(SessionSummary {
         session_id: path.file_stem()?.to_string_lossy().to_string(),
+        cwd_exists: Path::new(&cwd).is_dir(),
         cwd,
         project_name,
         git_branch,
@@ -265,6 +322,120 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         total_tokens: 0,
         total_cost_usd: 0.0,
     })
+}
+
+#[cfg(test)]
+mod resume_directory_tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    fn at(cwd: &str, text: &str) -> Value {
+        json!({"cwd": cwd, "timestamp": "2026-07-29T10:00:00Z",
+               "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+    }
+
+    /// Writes a transcript into the project folder Claude Code would have
+    /// created for `original_cwd` — i.e. the real on-disk layout.
+    fn transcript_owned_by(root: &Path, original_cwd: &str, records: &[Value]) -> PathBuf {
+        let project = root.join(sanitize_path(original_cwd));
+        std::fs::create_dir_all(&project).unwrap();
+        let path = project.join("11111111-2222-3333-4444-555555555555.jsonl");
+        let body: String = records
+            .iter()
+            .map(|r| format!("{r}\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn slug_matches_upstream_sanitize_path() {
+        // The exact strings this machine has on disk.
+        assert_eq!(
+            sanitize_path(r"C:\Users\xue\nextGenRepo"),
+            "C--Users-xue-nextGenRepo"
+        );
+        assert_eq!(
+            sanitize_path(r"C:\Users\xue\nextGenRepo\.worktrees\Eric_copilot_integration\ZooKeeperTesting"),
+            "C--Users-xue-nextGenRepo--worktrees-Eric-copilot-integration-ZooKeeperTesting"
+        );
+        assert_eq!(sanitize_path("/Users/foo/my-project"), "-Users-foo-my-project");
+    }
+
+    /// The regression. A session that starts in the repo root and cds into a
+    /// worktree must still be resumed from the root: `claude --resume` derives
+    /// the project folder from the launch cwd, so launching in the worktree
+    /// fails with "No conversation found with session ID".
+    #[test]
+    fn cwd_is_the_directory_that_owns_the_transcript_not_the_last_one() {
+        let root = tempdir().unwrap();
+        let repo = r"C:\Users\xue\nextGenRepo";
+        let worktree = r"C:\Users\xue\nextGenRepo\.worktrees\Eric_copilot_integration\ZooKeeperTesting";
+
+        let path = transcript_owned_by(
+            root.path(),
+            repo,
+            &[at(repo, "start here"), at(worktree, "now in the worktree")],
+        );
+
+        let s = parse_session(&path).expect("session parses");
+        assert_eq!(
+            s.cwd, repo,
+            "must launch from the transcript's owning directory, not the last cwd"
+        );
+        assert_eq!(
+            sanitize_path(&s.cwd),
+            path.parent().unwrap().file_name().unwrap().to_string_lossy(),
+            "the chosen cwd must slug back to the folder holding the transcript"
+        );
+    }
+
+    /// A session that never moves is unaffected.
+    #[test]
+    fn a_single_cwd_session_is_unchanged() {
+        let root = tempdir().unwrap();
+        let dir = "/w/proj";
+        let path = transcript_owned_by(root.path(), dir, &[at(dir, "hello")]);
+        assert_eq!(parse_session(&path).unwrap().cwd, dir);
+    }
+
+    /// When no recorded cwd slugs to the folder name (upstream truncates and
+    /// hashes paths over 200 chars), the first cwd still beats the last.
+    #[test]
+    fn falls_back_to_the_first_cwd_when_no_slug_matches() {
+        let root = tempdir().unwrap();
+        let project = root.path().join("totally-unrelated-folder-name");
+        std::fs::create_dir_all(&project).unwrap();
+        let path = project.join("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl");
+        std::fs::write(
+            &path,
+            format!("{}\n{}\n", at("/first", "a"), at("/second", "b")),
+        )
+        .unwrap();
+        assert_eq!(parse_session(&path).unwrap().cwd, "/first");
+    }
+
+    /// Drives the disabled state of the Resume button.
+    #[test]
+    fn cwd_existence_is_reported() {
+        let root = tempdir().unwrap();
+        let real = root.path().join("live-project");
+        std::fs::create_dir_all(&real).unwrap();
+        let real_s = real.to_string_lossy().to_string();
+
+        let present = transcript_owned_by(root.path(), &real_s, &[at(&real_s, "hi")]);
+        assert!(parse_session(&present).unwrap().cwd_exists);
+
+        let gone = "/definitely/not/here";
+        let missing = transcript_owned_by(root.path(), gone, &[at(gone, "hi")]);
+        assert!(
+            !parse_session(&missing).unwrap().cwd_exists,
+            "a deleted project folder must be reported so Resume can be disabled"
+        );
+    }
 }
 
 #[cfg(test)]
