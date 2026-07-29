@@ -5,9 +5,11 @@ import { Play, Pencil, Trash2 } from '../lib/icons';
 
 interface Props {
   provider: Provider;
+  isDefault?: boolean;
   onLaunch: (id: string) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
+  onSetDefault?: (id: string) => void;
 }
 
 function hostOf(url: string | null): string {
@@ -19,7 +21,14 @@ function hostOf(url: string | null): string {
   }
 }
 
-export function ProviderRow({ provider, onLaunch, onEdit, onDelete }: Props) {
+export function ProviderRow({
+  provider,
+  isDefault = false,
+  onLaunch,
+  onEdit,
+  onDelete,
+  onSetDefault,
+}: Props) {
   const isOfficial = provider.kind === 'official';
   const model = provider.env['ANTHROPIC_MODEL'] ?? null;
 
@@ -45,6 +54,22 @@ export function ProviderRow({ provider, onLaunch, onEdit, onDelete }: Props) {
         <span className="mono shrink-0 text-[length:var(--text-micro)] text-[color:var(--color-text-secondary)]">
           {model}
         </span>
+      )}
+
+      {onSetDefault && !isOfficial && (
+        <button
+          type="button"
+          onClick={() => onSetDefault(provider.id)}
+          aria-label={`Set ${provider.name} as default`}
+          className={[
+            'shrink-0 text-[length:var(--text-micro)] hover:underline',
+            isDefault
+              ? 'text-[color:var(--color-warn)]'
+              : 'text-[color:var(--color-text-muted)]',
+          ].join(' ')}
+        >
+          {isDefault ? 'Default' : 'Set default'}
+        </button>
       )}
 
       <Button

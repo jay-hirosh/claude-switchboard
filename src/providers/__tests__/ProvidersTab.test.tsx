@@ -10,6 +10,8 @@ const ipcMock = vi.hoisted(() => ({
   getDefaultProvider: vi.fn().mockResolvedValue(null),
   upsertProvider: vi.fn().mockResolvedValue(undefined),
   deleteProvider: vi.fn().mockResolvedValue(undefined),
+  setDefaultProvider: vi.fn().mockResolvedValue({ status: 'applied' }),
+  clearDefaultProvider: vi.fn().mockResolvedValue([]), // returns drift-skipped keys
 }));
 vi.mock('../../lib/ipc', () => ({ ipc: ipcMock }));
 
@@ -86,5 +88,44 @@ describe('ProvidersTab', () => {
     await waitFor(() => expect(screen.getByText('GLM')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: /launch glm/i }));
     await waitFor(() => expect(ipcMock.launchProviderSession).not.toHaveBeenCalled());
+  });
+
+  it('asks for confirmation before overwriting unmanaged settings keys', async () => {
+    ipcMock.listProviders.mockResolvedValue([official, glm]);
+    ipcMock.setDefaultProvider = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'needs_confirmation',
+        unmanaged_keys: ['ANTHROPIC_BASE_URL'],
+      })
+      .mockResolvedValueOnce({ status: 'applied' });
+    ipcMock.clearDefaultProvider = vi.fn().mockResolvedValue([]);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<ProvidersTab />);
+    await waitFor(() => expect(screen.getByText('GLM')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /set glm as default/i }));
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    await waitFor(() => expect(ipcMock.setDefaultProvider).toHaveBeenCalledWith('p1', true));
+    confirmSpy.mockRestore();
+  });
+
+  it('does not force the write when the user declines confirmation', async () => {
+    ipcMock.listProviders.mockResolvedValue([official, glm]);
+    ipcMock.setDefaultProvider = vi.fn().mockResolvedValue({
+      status: 'needs_confirmation',
+      unmanaged_keys: ['ANTHROPIC_BASE_URL'],
+    });
+    ipcMock.clearDefaultProvider = vi.fn().mockResolvedValue([]);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    render(<ProvidersTab />);
+    await waitFor(() => expect(screen.getByText('GLM')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /set glm as default/i }));
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    expect(ipcMock.setDefaultProvider).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
   });
 });
