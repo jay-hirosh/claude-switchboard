@@ -4,7 +4,7 @@ import { ipc } from '../lib/ipc';
 import { ModalShell } from '../components/modals/ModalShell';
 import { Banner } from '../components/ui/Banner';
 import { Button } from '../components/ui/Button';
-import { Eye, EyeOff } from '../lib/icons';
+import { Check, Eye, EyeOff, Plus } from '../lib/icons';
 
 interface Props {
   providerId: string | null;
@@ -34,6 +34,10 @@ const hintClass =
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `p-${Date.now()}`;
 }
+
+/** Flags common enough to be worth one click. Kept short on purpose — this is
+ *  a shortcut for the usual case, not a catalogue of the CLI. */
+const COMMON_ARGS = ['--dangerously-skip-permissions', '--continue'] as const;
 
 export function ProviderForm({ providerId, onClose, onSaved }: Props) {
   const [presets, setPresets] = useState<PresetInfo[]>([]);
@@ -80,6 +84,16 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
   }
 
   const title = useMemo(() => (providerId ? 'Edit provider' : 'Add provider'), [providerId]);
+
+  function toggleArg(flag: string) {
+    setExtraArgs((cur) => {
+      const parts = cur.split(/\s+/).filter(Boolean);
+      const next = parts.includes(flag)
+        ? parts.filter((p) => p !== flag)
+        : [...parts, flag];
+      return next.join(' ');
+    });
+  }
 
   async function save() {
     if (!name.trim() || !baseUrl.trim()) {
@@ -209,12 +223,41 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
             className={`${inputClass} mono`}
             value={extraArgs}
             onChange={(e) => setExtraArgs(e.target.value)}
-            placeholder="--dangerously-skip-permissions"
+            placeholder="e.g. --verbose"
           />
           <span className={hintClass}>
             Passed to <code className="mono">claude</code> on launch. The script runs the binary
             directly, so shell aliases and functions do not apply.
           </span>
+          {/* The common flag was previously *only* a placeholder, which looks
+              like a prefilled value but is not one — nothing typed it, nothing
+              saved it, and there was no affordance to accept it. A one-click
+              chip that appends the real text removes the ambiguity. */}
+          <div className="flex flex-wrap items-center gap-[var(--space-2xs)] pt-[var(--space-2xs)]">
+            {COMMON_ARGS.map((flag) => {
+              const present = extraArgs.split(/\s+/).includes(flag);
+              return (
+                <button
+                  key={flag}
+                  type="button"
+                  onClick={() => toggleArg(flag)}
+                  aria-pressed={present}
+                  className={[
+                    'mono inline-flex items-center gap-[var(--space-2xs)]',
+                    'rounded-[var(--radius-pill)] px-[var(--space-xs)] py-[1px]',
+                    'text-[length:var(--text-micro)]',
+                    'transition-[background,color] duration-[var(--duration-fast)]',
+                    present
+                      ? 'bg-[var(--color-accent-dim)] text-[color:var(--color-accent)]'
+                      : 'bg-[var(--color-track)] text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-secondary)]',
+                  ].join(' ')}
+                >
+                  {present ? <Check size={10} aria-hidden /> : <Plus size={10} aria-hidden />}
+                  {flag}
+                </button>
+              );
+            })}
+          </div>
         </label>
 
         <div className="flex items-center justify-between gap-[var(--space-md)] border-t border-[var(--color-rule)] pt-[var(--space-md)]">

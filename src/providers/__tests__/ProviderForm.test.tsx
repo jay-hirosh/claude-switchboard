@@ -68,6 +68,56 @@ describe('ProviderForm', () => {
     ]);
   });
 
+  // The flag used to exist only as an input placeholder — it looked prefilled
+  // but nothing had typed it, nothing would save it, and there was no way to
+  // accept it. The chip has to put real text into the field.
+  it('adds a common flag to the field when its chip is clicked', async () => {
+    render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+
+    const field = screen.getByLabelText(/extra cli arguments/i) as HTMLInputElement;
+    expect(field.value).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: /--dangerously-skip-permissions/ }));
+    await waitFor(() => expect(field.value).toBe('--dangerously-skip-permissions'));
+
+    fireEvent.click(screen.getByRole('button', { name: /--continue/ }));
+    await waitFor(() =>
+      expect(field.value).toBe('--dangerously-skip-permissions --continue'),
+    );
+  });
+
+  it('removes a flag when its chip is clicked again, leaving the rest intact', async () => {
+    render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+
+    const field = screen.getByLabelText(/extra cli arguments/i) as HTMLInputElement;
+    fireEvent.change(field, {
+      target: { value: '--dangerously-skip-permissions --verbose' },
+    });
+
+    const chip = screen.getByRole('button', { name: /--dangerously-skip-permissions/ });
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(chip);
+    await waitFor(() => expect(field.value).toBe('--verbose'));
+  });
+
+  it('saves a flag added by chip', async () => {
+    render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
+    fireEvent.click(screen.getByRole('button', { name: /--dangerously-skip-permissions/ }));
+    await waitFor(() =>
+      expect((screen.getByLabelText(/base url/i) as HTMLInputElement).value).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(ipcMock.upsertProvider).toHaveBeenCalled());
+    expect(ipcMock.upsertProvider.mock.calls[0][0].extra_args).toEqual([
+      '--dangerously-skip-permissions',
+    ]);
+  });
+
   it('refuses to save without a name and a base URL', async () => {
     render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
