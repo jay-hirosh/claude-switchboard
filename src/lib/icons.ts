@@ -32,6 +32,7 @@ export {
   Pencil,
   Play,
   Plus,
+  ShieldOff,
   FolderOpen,
   GitBranch,
   Search,

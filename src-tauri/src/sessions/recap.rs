@@ -29,6 +29,22 @@ const INJECTION_MARKERS: [&str; 8] = [
     "<bash-stdout>",
 ];
 
+/// Exactly what `claude --permission-mode` accepts, verified against
+/// `claude --help` (2.1.220).
+///
+/// A transcript can record a mode outside this set — `default` is the common
+/// one — and an unrecognised value makes the CLI reject the entire
+/// invocation. Anything unlisted therefore degrades to no flag rather than to
+/// a launch that fails.
+const RESUMABLE_PERMISSION_MODES: [&str; 6] = [
+    "acceptEdits",
+    "auto",
+    "bypassPermissions",
+    "manual",
+    "dontAsk",
+    "plan",
+];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
 pub struct SessionSummary {
     pub session_id: String,
@@ -73,6 +89,12 @@ pub struct SessionSummary {
     /// ingested usage (a transcript with no assistant turns, or one that
     /// predates the store).
     pub total_cost_usd: f64,
+    /// The permission mode in force when the session ended, when it is one
+    /// `--permission-mode` accepts. Carried through so a resumed session
+    /// behaves the way the one it continues did — a session run under
+    /// `bypassPermissions` that comes back asking to approve every edit has
+    /// not really been resumed.
+    pub permission_mode: Option<String>,
     /// Whether `cwd` still exists. Resuming is a `cd` into that directory, so
     /// a session whose project folder has been deleted cannot be resumed by
     /// any route — Claude Code offers no way to name a transcript directly.
@@ -197,6 +219,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
     // transcript — see `owning_cwd`.
     let mut cwds: Vec<String> = Vec::new();
     let mut git_branch: Option<String> = None;
+    let mut permission_mode: Option<String> = None;
     let mut ai_title: Option<String> = None;
     let mut away_summary: Option<String> = None;
     let mut model: Option<String> = None;
@@ -216,6 +239,13 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         if let Some(c) = v.get("cwd").and_then(Value::as_str) {
             if !c.is_empty() && !cwds.iter().any(|e| e == c) {
                 cwds.push(c.to_string());
+            }
+        }
+        // Last wins: the user can switch modes mid-session, and the one in
+        // force at the end is the one a resumed session should continue under.
+        if let Some(m) = v.get("permissionMode").and_then(Value::as_str) {
+            if !m.is_empty() {
+                permission_mode = Some(m.to_string());
             }
         }
         if let Some(b) = v.get("gitBranch").and_then(Value::as_str) {
@@ -303,6 +333,8 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
 
     Some(SessionSummary {
         session_id: path.file_stem()?.to_string_lossy().to_string(),
+        permission_mode: permission_mode
+            .filter(|m| RESUMABLE_PERMISSION_MODES.contains(&m.as_str())),
         cwd_exists: Path::new(&cwd).is_dir(),
         cwd,
         project_name,
@@ -416,6 +448,58 @@ mod resume_directory_tests {
         )
         .unwrap();
         assert_eq!(parse_session(&path).unwrap().cwd, "/first");
+    }
+
+    /// The mode in force at the end is the one a resumed session continues
+    /// under, so a mid-session switch must be followed.
+    #[test]
+    fn permission_mode_is_the_one_in_force_at_the_end() {
+        let root = tempdir().unwrap();
+        let dir = "/w/proj";
+        let mut first = at(dir, "start");
+        first["permissionMode"] = json!("default");
+        let mut later = at(dir, "carry on");
+        later["permissionMode"] = json!("bypassPermissions");
+
+        let path = transcript_owned_by(root.path(), dir, &[first, later]);
+        assert_eq!(
+            parse_session(&path).unwrap().permission_mode.as_deref(),
+            Some("bypassPermissions")
+        );
+    }
+
+    /// `default` is recorded in transcripts but is not one of the values
+    /// `--permission-mode` accepts, and passing it would make the CLI reject
+    /// the whole invocation — so it must degrade to no flag.
+    #[test]
+    fn modes_the_cli_does_not_accept_are_dropped() {
+        let root = tempdir().unwrap();
+        let dir = "/w/proj";
+        for mode in ["default", "somethingNew", ""] {
+            let mut rec = at(dir, "hi");
+            rec["permissionMode"] = json!(mode);
+            let path = transcript_owned_by(root.path(), dir, &[rec]);
+            assert_eq!(
+                parse_session(&path).unwrap().permission_mode,
+                None,
+                "{mode:?} is not accepted by --permission-mode"
+            );
+        }
+    }
+
+    #[test]
+    fn every_mode_the_cli_accepts_survives() {
+        let root = tempdir().unwrap();
+        let dir = "/w/proj";
+        for mode in ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"] {
+            let mut rec = at(dir, "hi");
+            rec["permissionMode"] = json!(mode);
+            let path = transcript_owned_by(root.path(), dir, &[rec]);
+            assert_eq!(
+                parse_session(&path).unwrap().permission_mode.as_deref(),
+                Some(mode)
+            );
+        }
     }
 
     /// Drives the disabled state of the Resume button.

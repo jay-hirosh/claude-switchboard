@@ -38,6 +38,8 @@ const session = {
   turns: 2,
   started_at: '',
   ended_at: '',
+  permission_mode: 'bypassPermissions',
+  cwd_exists: true,
 };
 
 function Harness({ s }: { s: unknown }) {
@@ -53,7 +55,9 @@ function Harness({ s }: { s: unknown }) {
 describe('useResume', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('launches directly when the model resolves, with the session cwd', async () => {
+  // The permission mode rides along, so the continued session behaves the way
+  // the one it continues did.
+  it('launches directly when the model resolves, with the session cwd and mode', async () => {
     ipcMock.listProviders.mockResolvedValue([glmProvider]);
     render(<Harness s={session} />);
     fireEvent.click(screen.getByText('go'));
@@ -63,6 +67,22 @@ describe('useResume', () => {
         '/w/proj',
         'ghostty',
         'sess-1',
+        'bypassPermissions',
+      ),
+    );
+  });
+
+  it('passes no mode when the session recorded none', async () => {
+    ipcMock.listProviders.mockResolvedValue([glmProvider]);
+    render(<Harness s={{ ...session, permission_mode: null }} />);
+    fireEvent.click(screen.getByText('go'));
+    await waitFor(() =>
+      expect(ipcMock.launchProviderSession).toHaveBeenCalledWith(
+        'glm',
+        '/w/proj',
+        'ghostty',
+        'sess-1',
+        null,
       ),
     );
   });
@@ -103,6 +123,7 @@ describe('useResume', () => {
         '/w/proj',
         'ghostty',
         'sess-1',
+        'bypassPermissions',
       ),
     );
   });

@@ -352,9 +352,9 @@ async listAvailableTerminals() : Promise<Result<Terminal[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async launchProviderSession(providerId: string, cwd: string, terminal: Terminal, resumeSessionId: string | null) : Promise<Result<string, string>> {
+async launchProviderSession(providerId: string, cwd: string, terminal: Terminal, resumeSessionId: string | null, permissionMode: string | null) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("launch_provider_session", { providerId, cwd, terminal, resumeSessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("launch_provider_session", { providerId, cwd, terminal, resumeSessionId, permissionMode }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -551,6 +551,14 @@ total_tokens: number;
  * predates the store).
  */
 total_cost_usd: number; 
+/**
+ * The permission mode in force when the session ended, when it is one
+ * `--permission-mode` accepts. Carried through so a resumed session
+ * behaves the way the one it continues did — a session run under
+ * `bypassPermissions` that comes back asking to approve every edit has
+ * not really been resumed.
+ */
+permission_mode: string | null; 
 /**
  * Whether `cwd` still exists. Resuming is a `cd` into that directory, so
  * a session whose project folder has been deleted cannot be resumed by

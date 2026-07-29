@@ -53,6 +53,9 @@ pub struct LaunchSpec {
     pub cwd: PathBuf,
     pub terminal: Terminal,
     pub resume_session_id: Option<String>,
+    /// Validated by `sessions::recap` against the set the CLI accepts, so it
+    /// reaches the script verbatim.
+    pub permission_mode: Option<String>,
 }
 
 #[cfg(target_os = "macos")]
@@ -174,6 +177,7 @@ pub fn write_script_with_binary(
         &claude.to_string_lossy(),
         &spec.provider.extra_args,
         spec.resume_session_id.as_deref(),
+        spec.permission_mode.as_deref(),
     );
     let ext = match spec.terminal.flavor() {
         ScriptFlavor::Sh => "sh",
@@ -517,6 +521,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             terminal: Terminal::Ghostty,
             resume_session_id: None,
+            permission_mode: None,
         };
         // The binary path is supplied rather than resolved, so this runs even
         // where Claude Code is not installed — see write_script_with_binary.
@@ -547,6 +552,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             terminal: Terminal::Ghostty,
             resume_session_id: None,
+            permission_mode: None,
         };
         let path = write_script_with_binary(&spec, dir.path(), Path::new("/usr/bin/true")).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();

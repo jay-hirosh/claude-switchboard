@@ -1,8 +1,18 @@
 import type { ReactNode } from 'react';
 import type { SessionSummary } from '../lib/generated/bindings';
 import { Button } from '../components/ui/Button';
-import { Play } from '../lib/icons';
+import { Play, ShieldOff } from '../lib/icons';
 import { contextReadout } from './contextWindow';
+
+/** The CLI's mode names, in the words the app uses everywhere else. */
+const MODE_LABELS: Record<string, string> = {
+  bypassPermissions: 'bypass permissions',
+  acceptEdits: 'accept edits',
+  dontAsk: "don't ask",
+  plan: 'plan mode',
+  auto: 'auto',
+  manual: 'manual',
+};
 
 function span(startIso: string, endIso: string): string {
   const a = new Date(startIso).getTime();
@@ -180,6 +190,31 @@ export function SessionRecapCard({
             </span>
           )}
         </span>
+        {/* Mode and button travel together as one right-hand cluster —
+            justify-between would otherwise strand the mode in mid-row. */}
+        <span className="flex shrink-0 items-center gap-[var(--space-sm)]">
+        {/* Resuming re-applies the mode the session ended under. Skipping
+            straight past a permission prompt is exactly what the user asked
+            for, but it must never be a surprise — so the mode is stated next
+            to the button that will apply it, and bypass gets danger colour
+            because it is the one that removes a safety check. */}
+        {session.permission_mode && (
+          <span
+            className={[
+              'flex shrink-0 items-center gap-[var(--space-2xs)]',
+              'text-[length:var(--text-micro)]',
+              session.permission_mode === 'bypassPermissions'
+                ? 'text-[color:var(--color-danger)]'
+                : 'text-[color:var(--color-text-muted)]',
+            ].join(' ')}
+            title={`Resumes with --permission-mode ${session.permission_mode}, matching how this session ran`}
+          >
+            {session.permission_mode === 'bypassPermissions' && (
+              <ShieldOff size={11} aria-hidden />
+            )}
+            {MODE_LABELS[session.permission_mode] ?? session.permission_mode}
+          </span>
+        )}
         {/* Resuming is a `cd` into session.cwd, and Claude Code finds a
             transcript only via the directory it is launched in — so a deleted
             project folder makes resume impossible by any route, not merely
@@ -200,6 +235,7 @@ export function SessionRecapCard({
           <Play size={12} aria-hidden />
           Resume
         </Button>
+        </span>
       </div>
     </div>
   );

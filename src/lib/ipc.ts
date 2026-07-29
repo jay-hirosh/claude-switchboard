@@ -60,7 +60,11 @@ export const ipc = {
     cwd: string,
     terminal: import('./generated/bindings').Terminal,
     resumeSessionId: string | null = null,
-  ) => commands.launchProviderSession(providerId, cwd, terminal, resumeSessionId).then(unwrap),
+    permissionMode: string | null = null,
+  ) =>
+    commands
+      .launchProviderSession(providerId, cwd, terminal, resumeSessionId, permissionMode)
+      .then(unwrap),
   getProviderLaunchCommand: (
     providerId: string,
     cwd: string,

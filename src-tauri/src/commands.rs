@@ -1228,6 +1228,7 @@ pub async fn launch_provider_session(
     cwd: String,
     terminal: Terminal,
     resume_session_id: Option<String>,
+    permission_mode: Option<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
     let provider = state
@@ -1240,6 +1241,7 @@ pub async fn launch_provider_session(
         cwd: PathBuf::from(cwd),
         terminal,
         resume_session_id,
+        permission_mode,
     };
     launcher::launch(&spec)
         .map(|p| p.to_string_lossy().to_string())
@@ -1267,6 +1269,7 @@ pub async fn get_provider_launch_command(
         cwd: PathBuf::from(cwd.clone()),
         terminal,
         resume_session_id: None,
+        permission_mode: None,
     };
     let script =
         launcher::write_script(&spec, &launcher::script_dir()).map_err(|e| format!("{e:#}"))?;

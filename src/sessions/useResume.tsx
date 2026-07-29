@@ -30,7 +30,15 @@ export function useResume() {
       try {
         // The launcher appends --fork-session, so resuming a session that is
         // still open elsewhere cannot put two processes on one transcript.
-        await ipc.launchProviderSession(providerId, session.cwd, terminal, session.session_id);
+        // The permission mode rides along so the continued session behaves the
+        // way the one it continues did.
+        await ipc.launchProviderSession(
+          providerId,
+          session.cwd,
+          terminal,
+          session.session_id,
+          session.permission_mode,
+        );
         setNotice(null);
       } catch (e) {
         setNotice(e instanceof Error ? e.message : String(e));

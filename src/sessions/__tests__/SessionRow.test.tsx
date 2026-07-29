@@ -22,6 +22,7 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
     ended_at: '2026-07-29T01:14:00Z',
     total_tokens: 12_345,
     total_cost_usd: 1.23,
+    permission_mode: null,
     cwd_exists: true,
     ...over,
   };
@@ -97,6 +98,25 @@ describe('SessionRow', () => {
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
     expect(onResume).toHaveBeenCalledWith('029a3e04-fa36');
+  });
+
+  // Re-applying bypassPermissions is what the user wants, but it removes a
+  // safety check, so it must be stated next to the button that applies it.
+  it('states the permission mode the resume will re-apply', () => {
+    render(
+      <SessionRow
+        session={session({ permission_mode: 'bypassPermissions' })}
+        expanded
+        onToggle={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('bypass permissions')).toBeTruthy();
+  });
+
+  it('says nothing about permissions when the session recorded no mode', () => {
+    render(<SessionRow session={session()} expanded onToggle={vi.fn()} onResume={vi.fn()} />);
+    expect(screen.queryByText(/permission/i)).toBeNull();
   });
 
   it('shows the recap first when present', () => {
