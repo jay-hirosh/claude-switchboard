@@ -5,4 +5,7 @@
 //! transcripts (their API calls are real spend), while the browser must never
 //! list them (they are not resumable sessions).
 
+pub mod recap;
 pub mod scan;
+
+pub use recap::SessionSummary;
