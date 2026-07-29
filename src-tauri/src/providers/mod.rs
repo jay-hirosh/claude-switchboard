@@ -7,6 +7,7 @@
 //! overrides the user's own launch scripts. Launching with per-process env
 //! is therefore the default path; `default_env` is opt-in and guarded.
 
+pub mod launcher;
 pub mod model;
 pub mod presets;
 pub mod store;
