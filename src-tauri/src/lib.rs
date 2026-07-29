@@ -9,6 +9,7 @@ pub mod migration;
 pub mod notifier;
 mod poll_loop;
 mod process_detection;
+pub mod providers;
 pub mod os_scheduler;
 pub mod scheduler;
 pub mod scheduler_glue;

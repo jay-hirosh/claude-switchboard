@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=6 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=7 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [6_i64],
+            [7_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -155,9 +155,15 @@ impl Db {
             .context("apply migration 0006")?;
         }
 
+        if current < 7 {
+            tracing::info!("migrating v6 -> v7 (providers + provider_default tables)");
+            conn.execute_batch(include_str!("migrations/0007_providers.sql"))
+                .context("apply migration 0007")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [6_i64],
+            [7_i64],
         )?;
         Ok(())
     }
@@ -533,5 +539,55 @@ mod tests {
             )
             .unwrap();
         assert_eq!(consent, "0");
+    }
+
+    /// Mirrors `migration_0004_inserts_row_when_upgrading_from_v3`: build a
+    /// pre-migration database by hand, run the migration SQL directly, and
+    /// assert its effect. `Db::open` cannot be used here because it applies
+    /// `schema.sql`, which already contains the tables under test.
+    #[test]
+    fn migration_0007_creates_provider_tables_on_upgrade() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("v6.db");
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Simulate a v6 database: full schema, then drop what v7 introduces.
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        conn.execute_batch("DROP TABLE providers; DROP TABLE provider_default;")
+            .unwrap();
+        conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (6)", [])
+            .unwrap();
+
+        let before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('providers','provider_default')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 0, "precondition: the v6 database has neither table");
+
+        conn.execute_batch(include_str!("migrations/0007_providers.sql"))
+            .unwrap();
+
+        let after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('providers','provider_default')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 2, "migration 0007 must create both provider tables");
+    }
+
+    #[test]
+    fn fresh_database_is_stamped_at_version_7() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let version: i64 = db
+            .conn()
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 7, "create_fresh_db and migrate() must both stamp 7");
     }
 }
