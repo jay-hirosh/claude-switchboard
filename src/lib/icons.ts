@@ -55,6 +55,9 @@ export { BarChart3 as IconChart } from 'lucide-react';
 export { Calendar as IconHeatmap } from 'lucide-react';
 export { Clock as IconTimer } from 'lucide-react';
 export { CornerDownRight as IconSubagent } from 'lucide-react';
+// Compaction boundary in a session transcript — the context was summarised
+// and the remainder dropped.
+export { FoldVertical as IconCompact } from 'lucide-react';
 export { Database as IconCache } from 'lucide-react';
 export { Flame as IconUsage } from 'lucide-react';
 export { Gauge as IconThreshold } from 'lucide-react';

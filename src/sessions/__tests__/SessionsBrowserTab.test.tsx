@@ -30,6 +30,8 @@ function s(over: Partial<SessionSummary>): SessionSummary {
     turns: 3,
     started_at: '2026-07-29T10:00:00Z',
     ended_at: '2026-07-29T11:00:00Z',
+    total_tokens: 12_345,
+    total_cost_usd: 1.23,
     ...over,
   };
 }

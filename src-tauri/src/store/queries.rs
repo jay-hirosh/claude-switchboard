@@ -33,6 +33,44 @@ pub struct StoredSessionEvent {
     pub event_id: String,
 }
 
+/// A `/compact` boundary inside one session transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct StoredCompaction {
+    #[specta(type = String)]
+    pub ts: DateTime<Utc>,
+    pub source_file: String,
+    /// "manual" (`/compact`) or "auto" (context exhausted).
+    pub trigger: String,
+    /// Context size immediately before the compaction, in tokens.
+    pub pre_tokens: u64,
+    /// Context size that survived it.
+    pub post_tokens: u64,
+    pub uuid: String,
+}
+
+fn insert_compactions_in_tx(tx: &Transaction<'_>, rows: &[StoredCompaction]) -> Result<usize> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let mut stmt = tx.prepare(
+        "INSERT OR IGNORE INTO session_compactions
+         (ts, source_file, trigger_kind, pre_tokens, post_tokens, uuid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    let mut inserted = 0;
+    for c in rows {
+        inserted += stmt.execute(params![
+            c.ts.timestamp(),
+            c.source_file,
+            c.trigger,
+            c.pre_tokens as i64,
+            c.post_tokens as i64,
+            c.uuid,
+        ])?;
+    }
+    Ok(inserted)
+}
+
 fn insert_events_in_tx(tx: &Transaction<'_>, events: &[StoredSessionEvent]) -> Result<usize> {
     if events.is_empty() {
         return Ok(0);
@@ -269,6 +307,64 @@ impl Db {
         Ok(out)
     }
 
+    /// Lifetime `(input+output tokens, cost)` per conversation, keyed by the
+    /// parent transcript's path relative to the Claude projects root.
+    ///
+    /// Subagent transcripts (`<sessionId>/subagents/agent-*.jsonl`) fold onto
+    /// their parent, matching how the Cost tab aggregates: a subagent's API
+    /// calls are real spend that the parent transcript does not record, and
+    /// they are not separately resumable sessions.
+    pub fn session_totals(&self) -> Result<std::collections::HashMap<String, (u64, f64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT source_file, SUM(input_tokens + output_tokens), SUM(cost_usd)
+             FROM session_events GROUP BY source_file",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?))
+        })?;
+        let mut out: std::collections::HashMap<String, (u64, f64)> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (source_file, tokens, cost) = row?;
+            let key = match source_file.find("/subagents/") {
+                Some(i) => format!("{}.jsonl", &source_file[..i]),
+                None => source_file,
+            };
+            let slot = out.entry(key).or_insert((0, 0.0));
+            slot.0 += tokens.max(0) as u64;
+            slot.1 += cost;
+        }
+        Ok(out)
+    }
+
+    pub fn compactions_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<StoredCompaction>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT ts, source_file, trigger_kind, pre_tokens, post_tokens, uuid
+             FROM session_compactions WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts DESC",
+        )?;
+        let rows = stmt.query_map(params![from.timestamp(), to.timestamp()], |r| {
+            Ok(StoredCompaction {
+                ts: DateTime::from_timestamp(r.get(0)?, 0).unwrap(),
+                source_file: r.get(1)?,
+                trigger: r.get(2)?,
+                pre_tokens: r.get::<_, i64>(3)? as u64,
+                post_tokens: r.get::<_, i64>(4)? as u64,
+                uuid: r.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     pub fn prune_events_older_than(&self, cutoff: DateTime<Utc>) -> Result<usize> {
         let rows = self
             .conn()
@@ -313,12 +409,17 @@ impl Db {
         &self,
         file: &str,
         events: &[StoredSessionEvent],
+        compactions: &[StoredCompaction],
         mtime_ns: i64,
         byte_offset: i64,
     ) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let inserted = insert_events_in_tx(&tx, events)?;
+        // Same transaction as the events and the cursor: a compaction that
+        // landed while the cursor advanced past it could never be recovered,
+        // since the walker would not re-read those bytes.
+        insert_compactions_in_tx(&tx, compactions)?;
         tx.execute(
             "INSERT INTO jsonl_cursors (file_path, last_mtime_ns, byte_offset) VALUES (?1, ?2, ?3)
              ON CONFLICT(file_path) DO UPDATE SET
@@ -595,6 +696,44 @@ mod tests {
         };
         // Same event written at offsets 100, 1000, 2000 — only the first lands.
         assert_eq!(db.insert_events(&[mk(100), mk(1000), mk(2000)]).unwrap(), 1);
+    }
+
+    #[test]
+    fn session_totals_fold_subagents_onto_their_parent() {
+        let (_dir, db) = fresh_db();
+        let mk = |src: &str, id: &str, tokens: u64, cost: f64| StoredSessionEvent {
+            ts: Utc::now(),
+            project: "p".into(),
+            model: "claude-opus-5".into(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 9_999, // must NOT count toward total_tokens
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: cost,
+            source_file: src.into(),
+            source_line: 0,
+            event_id: id.into(),
+        };
+        db.insert_events(&[
+            mk("proj/abc.jsonl", "e1", 100, 1.0),
+            mk("proj/abc/subagents/agent-aaa.jsonl", "e2", 30, 0.5),
+            mk("proj/abc/subagents/agent-bbb.jsonl", "e3", 20, 0.25),
+            mk("proj/other.jsonl", "e4", 7, 0.1),
+        ])
+        .unwrap();
+
+        let totals = db.session_totals().unwrap();
+        assert_eq!(
+            totals.get("proj/abc.jsonl"),
+            Some(&(150, 1.75)),
+            "both subagents must roll up into the parent conversation"
+        );
+        assert_eq!(totals.get("proj/other.jsonl"), Some(&(7, 0.1)));
+        assert!(
+            !totals.contains_key("proj/abc/subagents/agent-aaa.jsonl"),
+            "a subagent is not a session and must not appear as its own key"
+        );
     }
 
     #[test]

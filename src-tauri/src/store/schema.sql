@@ -95,3 +95,24 @@ CREATE TABLE IF NOT EXISTS provider_default (
     managed_env   TEXT NOT NULL DEFAULT '{}',
     applied_at    INTEGER
 );
+
+-- One row per `/compact` (or auto-compaction) inside a Claude Code session.
+-- Claude Code records these as a `type:"system"` line carrying compactMetadata
+-- *in the middle of the same transcript* — compaction does NOT start a new
+-- session file. Without this, a session that was compacted looks like an
+-- ordinary day's work, giving no hint that its context was reset partway
+-- through and its cache re-created at full price.
+CREATE TABLE IF NOT EXISTS session_compactions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           INTEGER NOT NULL,
+    source_file  TEXT NOT NULL,
+    -- "manual" (/compact) or "auto" (context exhausted).
+    trigger_kind TEXT NOT NULL,
+    pre_tokens   INTEGER NOT NULL DEFAULT 0,
+    post_tokens  INTEGER NOT NULL DEFAULT 0,
+    -- The record's own uuid: stable across re-reads, so re-ingesting a file
+    -- is idempotent exactly the way event_id makes session_events idempotent.
+    uuid         TEXT NOT NULL,
+    UNIQUE (uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_compactions_ts ON session_compactions(ts DESC);

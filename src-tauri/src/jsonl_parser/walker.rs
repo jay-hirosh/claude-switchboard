@@ -1,6 +1,6 @@
-use super::record::parse_event_line;
+use super::record::{parse_compaction_line, parse_event_line};
 use super::pricing::PricingTable;
-use crate::store::{Db, StoredSessionEvent};
+use crate::store::{Db, StoredCompaction, StoredSessionEvent};
 use anyhow::{Context, Result, anyhow};
 use std::fs::{self, File};
 use std::io::{BufRead, Seek, SeekFrom};
@@ -132,6 +132,7 @@ pub fn ingest_file(
     let mut reader = std::io::BufReader::new(f);
     let mut buf = Vec::new();
     let mut stored = Vec::<StoredSessionEvent>::new();
+    let mut compactions = Vec::<StoredCompaction>::new();
     let mut consumed: i64 = offset;
 
     loop {
@@ -188,9 +189,20 @@ pub fn ingest_file(
                 source_line: line_start,
                 event_id,
             });
+        } else if let Some(c) = parse_compaction_line(text) {
+            // `else if`: a compaction is a `system` line, so it can never also
+            // be a usage-bearing assistant line — no need to test both.
+            compactions.push(StoredCompaction {
+                ts: c.ts,
+                source_file: source_file_path.clone(),
+                trigger: c.trigger,
+                pre_tokens: c.pre_tokens,
+                post_tokens: c.post_tokens,
+                uuid: c.uuid,
+            });
         }
     }
-    let inserted = db.ingest_atomic(&key, &stored, mtime_ns, consumed)?;
+    let inserted = db.ingest_atomic(&key, &stored, &compactions, mtime_ns, consumed)?;
     Ok(inserted)
 }
 

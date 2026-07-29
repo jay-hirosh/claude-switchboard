@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=8 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=9 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [8_i64],
+            [9_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -167,9 +167,15 @@ impl Db {
                 .context("apply migration 0008")?;
         }
 
+        if current < 9 {
+            tracing::info!("migrating v8 -> v9 (session_compactions + re-ingest to backfill)");
+            conn.execute_batch(include_str!("migrations/0009_session_compactions.sql"))
+                .context("apply migration 0009")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [8_i64],
+            [9_i64],
         )?;
         Ok(())
     }
@@ -628,13 +634,92 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_stamped_at_version_8() {
+    fn fresh_database_is_stamped_at_version_9() {
         let dir = tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let version: i64 = db
             .conn()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8, "create_fresh_db and migrate() must both stamp 8");
+        assert_eq!(version, 9, "create_fresh_db and migrate() must both stamp 9");
+    }
+
+    /// 0009 adds the compactions table and, like 0008, clears cursors so the
+    /// walker re-reads every transcript and backfills it. Events must survive:
+    /// deleting them would throw away history the transcripts on disk can no
+    /// longer supply once Claude Code prunes them.
+    #[test]
+    fn migration_0009_adds_compactions_table_and_reingests() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("v8.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        conn.execute_batch("DROP TABLE session_compactions;").unwrap();
+        conn.execute(
+            "INSERT INTO jsonl_cursors (file_path, last_mtime_ns, byte_offset)
+             VALUES ('/a/b.jsonl', 1, 4096)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_events
+               (ts, project, model, input_tokens, output_tokens,
+                cache_read_tokens, cost_usd, source_file, source_line, event_id)
+             VALUES (0, 'p', 'm', 1, 1, 0, 0.0, '/a/b.jsonl', 1, 'evt-1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(include_str!("migrations/0009_session_compactions.sql"))
+            .unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_compactions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 1, "migration 0009 must create session_compactions");
+
+        let cursors: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jsonl_cursors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cursors, 0, "cursors cleared so the new table is backfilled");
+
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 1, "events must survive — re-ingest is idempotent");
+    }
+
+    /// The compaction dedup key is the record's own uuid, so re-reading a
+    /// transcript (which 0009 deliberately forces) must not duplicate rows.
+    #[test]
+    fn compactions_dedupe_on_uuid() {
+        use crate::store::StoredCompaction;
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let c = StoredCompaction {
+            ts: chrono::Utc::now(),
+            source_file: "p/s.jsonl".into(),
+            trigger: "manual".into(),
+            pre_tokens: 495_927,
+            post_tokens: 16_608,
+            uuid: "u-1".into(),
+        };
+        db.ingest_atomic("p/s.jsonl", &[], std::slice::from_ref(&c), 1, 10).unwrap();
+        db.ingest_atomic("p/s.jsonl", &[], std::slice::from_ref(&c), 2, 20).unwrap();
+        let n: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM session_compactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "same uuid must not be stored twice");
+
+        let from = chrono::Utc::now() - chrono::Duration::days(1);
+        let got = db.compactions_between(from, chrono::Utc::now() + chrono::Duration::days(1)).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].trigger, "manual");
+        assert_eq!(got[0].pre_tokens, 495_927);
     }
 }

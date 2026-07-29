@@ -29,6 +29,18 @@ async getSessionHistory(days: number) : Promise<Result<StoredSessionEvent[], str
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Compaction boundaries in the same window as `get_session_history`, so the
+ * Cost tab can mark which sessions had their context reset partway through.
+ */
+async getCompactions(days: number) : Promise<Result<StoredCompaction[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_compactions", { days }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getDailyTrends(days: number) : Promise<Result<DailyBucket[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_daily_trends", { days }) };
@@ -521,7 +533,24 @@ recap: string | null; asked: string; left_off: string | null; touched_files: str
  * 
  * `None` for a transcript with no usage-bearing assistant turn.
  */
-peak_context_tokens: number | null; turns: number; started_at: string; ended_at: string }
+peak_context_tokens: number | null; turns: number; started_at: string; ended_at: string; 
+/**
+ * Lifetime input + output tokens for this session, subagents included.
+ * 
+ * Deliberately not computed here: `parse_session` reads one transcript
+ * in isolation, so it can neither dedupe an API call written to several
+ * lines nor price it. Both already happen during ingestion, so
+ * `list_resumable_sessions` fills these in from `session_events` — which
+ * also guarantees a session's number here equals what the Cost tab shows
+ * for the same conversation.
+ */
+total_tokens: number; 
+/**
+ * Lifetime cost in USD, subagents included. Zero when the session has no
+ * ingested usage (a transcript with no assistant turns, or one that
+ * predates the store).
+ */
+total_cost_usd: number }
 export type SetDefaultOutcome = { status: "applied" } | 
 /**
  * `settings.json` already carries provider env we do not own. The UI
@@ -541,6 +570,22 @@ stagger_gap_secs: number; thresholds: number[]; theme: string; launch_at_login: 
  * `#[serde(default)]` keeps settings written before this field readable.
  */
 terminal?: Terminal | null }
+/**
+ * A `/compact` boundary inside one session transcript.
+ */
+export type StoredCompaction = { ts: string; source_file: string; 
+/**
+ * "manual" (`/compact`) or "auto" (context exhausted).
+ */
+trigger: string; 
+/**
+ * Context size immediately before the compaction, in tokens.
+ */
+pre_tokens: number; 
+/**
+ * Context size that survived it.
+ */
+post_tokens: number; uuid: string }
 export type StoredSessionEvent = { ts: string; project: string; model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_5m_tokens: number; cache_creation_1h_tokens: number; cost_usd: number; source_file: string; source_line: number; 
 /**
  * Stable per-API-call key used for dedup. Format: "{requestId}:{message.id}"

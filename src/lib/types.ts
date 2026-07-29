@@ -20,6 +20,7 @@ export type {
 // StoredSessionEvent is the Rust name. Re-export as SessionEvent for
 // backwards-compat with existing imports throughout the frontend.
 export type { StoredSessionEvent as SessionEvent } from './generated/bindings';
+export type { StoredCompaction as Compaction } from './generated/bindings';
 
 // Frontend-only types — no Rust equivalent, not in generated bindings.
 export interface HeatmapCell {

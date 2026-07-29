@@ -60,6 +60,19 @@ pub struct SessionSummary {
     pub turns: u32,
     pub started_at: String,
     pub ended_at: String,
+    /// Lifetime input + output tokens for this session, subagents included.
+    ///
+    /// Deliberately not computed here: `parse_session` reads one transcript
+    /// in isolation, so it can neither dedupe an API call written to several
+    /// lines nor price it. Both already happen during ingestion, so
+    /// `list_resumable_sessions` fills these in from `session_events` — which
+    /// also guarantees a session's number here equals what the Cost tab shows
+    /// for the same conversation.
+    pub total_tokens: u64,
+    /// Lifetime cost in USD, subagents included. Zero when the session has no
+    /// ingested usage (a transcript with no assistant turns, or one that
+    /// predates the store).
+    pub total_cost_usd: f64,
 }
 
 /// Total context held by one assistant turn — everything the model had to
@@ -248,6 +261,9 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         turns,
         started_at: timestamps.first().cloned().unwrap_or_default(),
         ended_at: timestamps.last().cloned().unwrap_or_default(),
+        // Filled in by the caller from the event store — see the field docs.
+        total_tokens: 0,
+        total_cost_usd: 0.0,
     })
 }
 

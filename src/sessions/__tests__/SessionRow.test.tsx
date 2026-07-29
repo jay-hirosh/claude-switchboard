@@ -20,6 +20,8 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
     turns: 12,
     started_at: '2026-07-28T23:07:00Z',
     ended_at: '2026-07-29T01:14:00Z',
+    total_tokens: 12_345,
+    total_cost_usd: 1.23,
     ...over,
   };
 }
@@ -176,6 +178,29 @@ describe('SessionRow', () => {
       />,
     );
     expect(screen.queryByText(/ of (1M|200K)/)).toBeNull();
+  });
+
+  it('shows the session’s lifetime tokens and cost on the collapsed row', () => {
+    render(
+      <SessionRow session={session()} expanded={false} onToggle={vi.fn()} onResume={vi.fn()} />,
+    );
+    expect(screen.getByText('12.3K')).toBeTruthy();
+    expect(screen.getByText('$1.23')).toBeTruthy();
+  });
+
+  // A transcript with no ingested usage must render blank, not "0 $0.00" —
+  // a zero here would read as a measurement rather than an absence.
+  it('renders nothing for a session with no ingested usage', () => {
+    render(
+      <SessionRow
+        session={session({ total_tokens: 0, total_cost_usd: 0 })}
+        expanded={false}
+        onToggle={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('$0.00')).toBeNull();
+    expect(screen.queryByText(/^0$/)).toBeNull();
   });
 
   it('calls onResume with the session id', () => {

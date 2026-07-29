@@ -1,6 +1,7 @@
 import type { SessionSummary } from '../lib/generated/bindings';
 import { ModelBadge } from '../components/ui/ModelBadge';
 import { ChevronDown, ChevronRight } from '../lib/icons';
+import { formatCost, formatTokens } from '../lib/format';
 import { SessionRecapCard } from './SessionRecapCard';
 
 interface Props {
@@ -74,8 +75,28 @@ export function SessionRow({
           </span>
         </span>
         <ModelBadge model={session.model} />
-        {/* Fixed width + right alignment so the age column reads as a column
-            rather than drifting with each badge's width. */}
+        {/* Lifetime totals for the whole conversation, subagents included —
+            one number each, because a session can switch models partway and a
+            per-model split would not fit a browse row. Fixed widths keep all
+            three trailing values reading as columns rather than drifting with
+            each badge's width. A session with no ingested usage renders blank
+            rather than "0 $0.00", which would read as a measurement. */}
+        <span
+          className="
+            mono shrink-0 min-w-[52px] text-right tabular-nums
+            text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]
+          "
+        >
+          {session.total_tokens > 0 ? formatTokens(session.total_tokens) : ''}
+        </span>
+        <span
+          className="
+            mono shrink-0 min-w-[46px] text-right tabular-nums
+            text-[length:var(--text-micro)] text-[color:var(--color-text-secondary)]
+          "
+        >
+          {session.total_tokens > 0 ? formatCost(session.total_cost_usd) : ''}
+        </span>
         <span
           className="
             mono shrink-0 min-w-[34px] text-right tabular-nums

@@ -88,6 +88,19 @@ pub async fn get_session_history(
     state.db.events_between(from, to).map_err(err_to_string)
 }
 
+/// Compaction boundaries in the same window as `get_session_history`, so the
+/// Cost tab can mark which sessions had their context reset partway through.
+#[command]
+#[specta::specta]
+pub async fn get_compactions(
+    days: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<crate::store::StoredCompaction>, String> {
+    let to = Utc::now();
+    let from = to - Duration::days(days as i64);
+    state.db.compactions_between(from, to).map_err(err_to_string)
+}
+
 #[command]
 #[specta::specta]
 pub async fn get_daily_trends(
@@ -1378,9 +1391,24 @@ pub async fn list_resumable_sessions(
     // The cap applies to sessions AFTER filtering, not files scanned — a
     // pre-filter cap would let one session's subagent transcripts evict real
     // sessions. Scanning is cheap; the result list is what needs bounding.
+    // One grouped scan of session_events for the whole list — a per-session
+    // query would be 200 round-trips to show one column.
+    let totals = state.db.session_totals().unwrap_or_default();
+
     let mut rows: Vec<SessionSummary> = Vec::new();
     for f in &files {
-        if let Some(s) = recap::parse_session(f) {
+        if let Some(mut s) = recap::parse_session(f) {
+            // `session_events.source_file` is stored relative to the projects
+            // root (P1-7, so the value is not machine-specific), so the
+            // lookup key has to be built the same way.
+            if let Some((tokens, cost)) = f
+                .strip_prefix(&root)
+                .ok()
+                .and_then(|rel| totals.get(rel.to_string_lossy().as_ref()))
+            {
+                s.total_tokens = *tokens;
+                s.total_cost_usd = *cost;
+            }
             rows.push(s);
             if rows.len() >= MAX_SESSIONS {
                 break;

@@ -157,9 +157,116 @@ pub fn parse_event_line(line: &str, fallback_project: &str) -> Option<SessionEve
     })
 }
 
+/// One compaction inside a session: the point where Claude Code summarised
+/// the conversation and dropped the rest of the context.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionEvent {
+    pub ts: DateTime<Utc>,
+    /// The record's own uuid — the dedup key, mirroring `event_id`.
+    pub uuid: String,
+    /// "manual" when the user ran `/compact`, "auto" when the context filled up.
+    pub trigger: String,
+    pub pre_tokens: u64,
+    pub post_tokens: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompactionRecord {
+    #[serde(rename = "type")]
+    record_type: String,
+    timestamp: DateTime<Utc>,
+    uuid: String,
+    #[serde(rename = "compactMetadata")]
+    compact_metadata: CompactMetadata,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompactMetadata {
+    #[serde(default)]
+    trigger: Option<String>,
+    #[serde(default, rename = "preTokens")]
+    pre_tokens: u64,
+    #[serde(default, rename = "postTokens")]
+    post_tokens: u64,
+}
+
+/// Parse a compaction record. Returns `None` for every other line type.
+///
+/// Claude Code writes this as `type:"system"` **in the middle of the same
+/// transcript** — compaction does not open a new session file, which is why
+/// a compacted session otherwise looks like an unbroken run of turns.
+///
+/// The cheap `contains` guard matters: the walker calls this for every line
+/// it reads, and without it every non-assistant line would be handed to serde
+/// a second time just to be rejected.
+pub fn parse_compaction_line(line: &str) -> Option<CompactionEvent> {
+    if !line.contains("compactMetadata") {
+        return None;
+    }
+    let rec: CompactionRecord = serde_json::from_str(line).ok()?;
+    if rec.record_type != "system" {
+        return None;
+    }
+    Some(CompactionEvent {
+        ts: rec.timestamp,
+        uuid: rec.uuid,
+        // Absent trigger is possible on older writers; "auto" is the safer
+        // guess than claiming the user asked for it.
+        trigger: rec.compact_metadata.trigger.unwrap_or_else(|| "auto".into()),
+        pre_tokens: rec.compact_metadata.pre_tokens,
+        post_tokens: rec.compact_metadata.post_tokens,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const COMPACTION_LINE: &str = r#"{
+      "type": "system",
+      "subtype": "compact_boundary",
+      "uuid": "22a1c0de-0000-4000-8000-000000000001",
+      "timestamp": "2026-07-29T03:17:26.033Z",
+      "compactMetadata": {
+        "trigger": "manual",
+        "preTokens": 495927,
+        "postTokens": 16608,
+        "cumulativeDroppedTokens": 479319
+      }
+    }"#;
+
+    #[test]
+    fn parses_compaction_record() {
+        let c = parse_compaction_line(COMPACTION_LINE).expect("should parse");
+        assert_eq!(c.trigger, "manual");
+        assert_eq!(c.pre_tokens, 495_927);
+        assert_eq!(c.post_tokens, 16_608);
+        assert_eq!(c.uuid, "22a1c0de-0000-4000-8000-000000000001");
+    }
+
+    #[test]
+    fn compaction_parser_ignores_ordinary_lines() {
+        assert!(parse_compaction_line(ASSISTANT_LINE).is_none());
+        assert!(parse_compaction_line(USER_LINE).is_none());
+        assert!(parse_compaction_line("not json").is_none());
+    }
+
+    /// A `system` line without compactMetadata is a plain log entry, and an
+    /// assistant line that merely mentions the word must not be mistaken for
+    /// a boundary.
+    #[test]
+    fn compaction_parser_requires_the_metadata_object() {
+        let plain_system = r#"{"type":"system","uuid":"u","timestamp":"2026-07-29T03:17:26.033Z"}"#;
+        assert!(parse_compaction_line(plain_system).is_none());
+        let mentions_it = r#"{"type":"user","uuid":"u","timestamp":"2026-07-29T03:17:26.033Z","message":{"content":"what is compactMetadata?"}}"#;
+        assert!(parse_compaction_line(mentions_it).is_none());
+    }
+
+    #[test]
+    fn compaction_trigger_defaults_to_auto_when_absent() {
+        let line = r#"{"type":"system","uuid":"u","timestamp":"2026-07-29T03:17:26.033Z","compactMetadata":{"preTokens":10,"postTokens":2}}"#;
+        assert_eq!(parse_compaction_line(line).unwrap().trigger, "auto");
+    }
 
     const ASSISTANT_LINE: &str = r#"{
       "parentUuid": "abc",
