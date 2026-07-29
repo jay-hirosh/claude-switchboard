@@ -159,6 +159,17 @@ pub fn write_script(spec: &LaunchSpec, dir: &Path) -> Result<PathBuf> {
     write_script_with_binary(spec, dir, &claude)
 }
 
+/// Whether Switchboard is itself running inside a Claude Code session, which
+/// is the case whenever it was started with `pnpm tauri dev` from the CLI.
+///
+/// Used to decide whether inherited colour suppression is the parent agent's
+/// setting rather than the user's own — see `COLOR_SUPPRESSORS` in `script`.
+pub fn inside_claude_code_session() -> bool {
+    ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some())
+}
+
 /// The body of `write_script` with the `claude` path supplied rather than
 /// resolved. Split out so the permission and content assertions run on
 /// machines without Claude Code installed — the `0700` mode is the C1
@@ -177,7 +188,8 @@ pub fn write_script_with_binary(
         &claude.to_string_lossy(),
         &spec.provider.extra_args,
         spec.resume_session_id.as_deref(),
-        spec.permission_mode.as_deref(),
+        spec.permission_mode.as_deref(),
+        inside_claude_code_session(),
     );
     let ext = match spec.terminal.flavor() {
         ScriptFlavor::Sh => "sh",
