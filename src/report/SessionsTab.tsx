@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
+import { ModelBadge } from '../components/ui/ModelBadge';
 import { EmptyState } from '../components/ui/EmptyState';
 import { formatTokens, formatCost } from '../lib/format';
 import { ChevronDown, ChevronRight, IconSessions, IconSubagent } from '../lib/icons';
@@ -10,36 +10,10 @@ import { useAppStore } from '../lib/store';
 import type { PricingEntry, SessionEvent } from '../lib/types';
 import { costPerCategory, lookupPricing } from '../lib/pricing';
 
-const MODEL_BADGE: Record<string, 'opus' | 'sonnet' | 'haiku' | 'default'> = {
-  opus: 'opus',
-  sonnet: 'sonnet',
-  haiku: 'haiku',
-};
-
-function modelKey(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.includes('opus')) return 'opus';
-  if (lower.includes('sonnet')) return 'sonnet';
-  if (lower.includes('haiku')) return 'haiku';
-  return 'default';
-}
-
-/** Badge text for a model. Anthropic families collapse to their tier name
- * (opus/sonnet/haiku/fable); third-party / relay models keep a cleaned
- * version of their real name so the badge says "glm-5.2" or "k3" instead of
- * a generic "default" — the family color variant is still driven by
- * `modelKey` (which stays "default", i.e. neutral, for non-Anthropic). */
-export function modelLabel(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.includes('opus')) return 'opus';
-  if (lower.includes('sonnet')) return 'sonnet';
-  if (lower.includes('haiku')) return 'haiku';
-  if (lower.includes('fable')) return 'fable';
-  return name
-    .replace(/-(highspeed|streaming)$/i, '')
-    .replace(/-\d{8}$/, '')
-    .replace(/-for-coding$/i, '');
-}
+// `modelLabel` now lives in ./modelDisplay alongside modelKey/MODEL_VARIANT so
+// the shared <ModelBadge> can reach it without importing a tab component.
+// Re-exported here because this module was its original public home.
+export { modelLabel } from './modelDisplay';
 
 /** A session whose transcript had no working directory (`cwd` absent) lands
  * in ~/.claude/projects/-/ and resolves to project "-". These are headless /
@@ -344,7 +318,6 @@ function BreakdownTable({
 
 /** An indented, muted row for one subagent under its parent session. */
 function SubagentRow({ sub }: { sub: SubagentSession }) {
-  const key = modelKey(sub.dominant_model);
   return (
     <div
       className={[
@@ -356,7 +329,7 @@ function SubagentRow({ sub }: { sub: SubagentSession }) {
       <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] truncate flex-1 min-w-0">
         {sub.label}
       </span>
-      <Badge variant={MODEL_BADGE[key] ?? 'default'}>{modelLabel(sub.dominant_model)}</Badge>
+      <ModelBadge model={sub.dominant_model} />
       <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums min-w-[64px] text-right">
         {formatTokens(sub.headline_tokens)}
       </span>
@@ -431,7 +404,6 @@ export function SessionsTab() {
 
       <div className="flex flex-col">
         {sessions.slice(0, 100).map((session) => {
-          const key = modelKey(session.dominant_model);
           const isOpen = expandedId === session.id;
           const Chevron = isOpen ? ChevronDown : ChevronRight;
           const agentCount = session.subagents.length;
@@ -468,9 +440,7 @@ export function SessionsTab() {
                     >
                       {headless ? 'headless' : session.project}
                     </span>
-                    <Badge variant={MODEL_BADGE[key] ?? 'default'}>
-                      {modelLabel(session.dominant_model)}
-                    </Badge>
+                    <ModelBadge model={session.dominant_model} />
                   </div>
                   <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
                     {formatTime(session.latest_ts)} · {session.turn_count} {session.turn_count === 1 ? 'turn' : 'turns'}{agentCount > 0 ? ` · ${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}` : ''}

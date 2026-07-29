@@ -1,7 +1,9 @@
 import type { Provider } from '../lib/generated/bindings';
+import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { IconButton } from '../components/ui/IconButton';
-import { Play, Pencil, Trash2 } from '../lib/icons';
+import { ModelBadge } from '../components/ui/ModelBadge';
+import { Play, Pencil, Trash2, Star } from '../lib/icons';
 
 interface Props {
   provider: Provider;
@@ -36,13 +38,18 @@ export function ProviderRow({
     <div
       className="
         flex items-center gap-[var(--space-sm)]
-        rounded-[var(--radius-sm)] border border-[var(--color-border)]
-        bg-[var(--color-bg-card)]
-        px-[var(--space-sm)] py-[var(--space-xs)]
+        px-[var(--space-md)] py-[var(--space-sm)]
+        transition-[background] duration-[var(--duration-fast)] ease-[var(--ease-out)]
+        hover:bg-[var(--color-bg-card-hover)]
       "
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-[var(--space-2xs)]">
-        <span className="truncate text-[length:var(--text-body)] text-[color:var(--color-text)]">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span
+          className="
+            truncate text-[length:var(--text-body)] leading-[var(--leading-title)]
+            font-[var(--weight-medium)] text-[color:var(--color-text)]
+          "
+        >
           {provider.name}
         </span>
         <span className="truncate text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
@@ -50,27 +57,30 @@ export function ProviderRow({
         </span>
       </div>
 
-      {model && (
-        <span className="mono shrink-0 text-[length:var(--text-micro)] text-[color:var(--color-text-secondary)]">
-          {model}
-        </span>
-      )}
+      <ModelBadge model={model} />
 
-      {onSetDefault && !isOfficial && (
-        <button
-          type="button"
-          onClick={() => onSetDefault(provider.id)}
-          aria-label={`Set ${provider.name} as default`}
-          className={[
-            'shrink-0 text-[length:var(--text-micro)] hover:underline',
-            isDefault
-              ? 'text-[color:var(--color-warn)]'
-              : 'text-[color:var(--color-text-muted)]',
-          ].join(' ')}
-        >
-          {isDefault ? 'Default' : 'Set default'}
-        </button>
-      )}
+      {/* Every trailing control lives in a fixed-width slot, present even when
+          empty. The official row has no default toggle and no edit/delete, so
+          without reserved slots its Launch button sat further right than every
+          other row's — the ragged edge that made the list read as broken. */}
+      <div className="flex w-[84px] shrink-0 justify-end">
+        {!isOfficial &&
+          onSetDefault &&
+          (isDefault ? (
+            <Badge variant="accent" icon={<Star size={10} aria-hidden />}>
+              Default
+            </Badge>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onSetDefault(provider.id)}
+              aria-label={`Set ${provider.name} as default`}
+            >
+              Set default
+            </Button>
+          ))}
+      </div>
 
       <Button
         variant="primary"
@@ -78,22 +88,24 @@ export function ProviderRow({
         onClick={() => onLaunch(provider.id)}
         aria-label={`Launch ${provider.name}`}
       >
-        <Play size={13} aria-hidden />
+        <Play size={12} aria-hidden />
         Launch
       </Button>
 
-      {!isOfficial && (
-        <>
-          {/* IconButton takes a required `label` prop and applies it as
-              aria-label itself — do not pass aria-label directly. */}
-          <IconButton label={`Edit ${provider.name}`} onClick={() => onEdit(provider.id)}>
-            <Pencil size={14} aria-hidden />
-          </IconButton>
-          <IconButton label={`Delete ${provider.name}`} onClick={() => onDelete(provider.id)}>
-            <Trash2 size={14} aria-hidden />
-          </IconButton>
-        </>
-      )}
+      <div className="flex w-[62px] shrink-0 justify-end gap-[2px]">
+        {!isOfficial && (
+          <>
+            {/* IconButton takes a required `label` prop and applies it as
+                aria-label itself — do not pass aria-label directly. */}
+            <IconButton label={`Edit ${provider.name}`} onClick={() => onEdit(provider.id)}>
+              <Pencil size={13} aria-hidden />
+            </IconButton>
+            <IconButton label={`Delete ${provider.name}`} onClick={() => onDelete(provider.id)}>
+              <Trash2 size={13} aria-hidden />
+            </IconButton>
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -19,6 +19,7 @@
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "opener:default",
+    "dialog:default",
     "autostart:default",
     "notification:default",
     "os:default",

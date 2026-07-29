@@ -24,14 +24,34 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
 }
 
 describe('SessionRow', () => {
-  it('shows title, project, branch and model when collapsed', () => {
+  it('shows title, branch and model when collapsed', () => {
     render(
       <SessionRow session={session()} expanded={false} onToggle={vi.fn()} onResume={vi.fn()} />,
     );
     expect(screen.getByText('Plan custom model swapping feature')).toBeTruthy();
-    expect(screen.getByText(/claude-switchboard/)).toBeTruthy();
     expect(screen.getByText(/main/)).toBeTruthy();
     expect(screen.getByText('glm-5.2')).toBeTruthy();
+  });
+
+  // Grouped mode puts the project in the section header directly above, so
+  // repeating it on every row is noise. Search flattens the grouping and the
+  // project becomes the missing context, so it comes back.
+  it('omits the project when grouped and shows it when searching', () => {
+    const { rerender } = render(
+      <SessionRow session={session()} expanded={false} onToggle={vi.fn()} onResume={vi.fn()} />,
+    );
+    expect(screen.queryByText(/claude-switchboard/)).toBeNull();
+
+    rerender(
+      <SessionRow
+        session={session()}
+        expanded={false}
+        showProject
+        onToggle={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/claude-switchboard/)).toBeTruthy();
   });
 
   it('hides the recap until expanded', () => {
@@ -91,6 +111,10 @@ describe('SessionRow', () => {
     expect(screen.queryByText(/left off/i)).toBeNull();
   });
 
+  // The assertion used to demand the literal word "unknown", contradicting the
+  // test's own name: a transcript with no assistant `model` is missing data,
+  // not a model called "unknown", and printing it put a full-weight chip in
+  // the column where every other row carries real information.
   it('renders an unknown-model session without a badge', () => {
     render(
       <SessionRow
@@ -100,7 +124,8 @@ describe('SessionRow', () => {
         onResume={vi.fn()}
       />,
     );
-    expect(screen.getByText(/unknown/i)).toBeTruthy();
+    expect(screen.queryByText(/unknown/i)).toBeNull();
+    expect(screen.getByText('Plan custom model swapping feature')).toBeTruthy();
   });
 
   it('calls onResume with the session id', () => {

@@ -35,10 +35,28 @@ use std::sync::Arc;
 /// We check `current_monitor()` ourselves first and fall back to
 /// `Position::TopRight` (monitor work-area only, never tray-dependent) when
 /// there's no current monitor — the same fallback used during first-run setup.
+///
+/// There is a second panic on the same path: `TrayCenter` also unwraps the
+/// tray rect the plugin caches from tray events, panicking with "Tray
+/// position not set" if none has been seen yet. That is reachable — the tray
+/// menu's "Show" item can fire without the plugin ever observing a pointer
+/// event on the icon (accessibility activation does exactly this), and it
+/// killed the whole app. `resize_window` in commands.rs already gated its own
+/// calls on `tray_position_known`; the check belongs here instead, where no
+/// caller can forget it.
 pub(crate) fn move_to_tray_center<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    use tauri::Manager;
     use tauri_plugin_positioner::{Position, WindowExt};
     let on_monitor = window.current_monitor().ok().flatten().is_some();
-    let _ = window.move_window(if on_monitor {
+    let tray_known = window
+        .app_handle()
+        .try_state::<Arc<AppState>>()
+        .map(|s| {
+            s.tray_position_known
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
+        .unwrap_or(false);
+    let _ = window.move_window(if on_monitor && tray_known {
         Position::TrayCenter
     } else {
         Position::TopRight

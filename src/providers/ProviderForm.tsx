@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import type { PresetInfo, Provider } from '../lib/generated/bindings';
 import { ipc } from '../lib/ipc';
 import { ModalShell } from '../components/modals/ModalShell';
+import { Banner } from '../components/ui/Banner';
 import { Button } from '../components/ui/Button';
+import { Eye, EyeOff } from '../lib/icons';
 
 interface Props {
   providerId: string | null;
@@ -10,8 +12,24 @@ interface Props {
   onSaved: () => void | Promise<void>;
 }
 
-const inputClass =
-  'w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg-base)] px-[var(--space-xs)] py-[var(--space-2xs)] text-[length:var(--text-body)] text-[color:var(--color-text)]';
+const inputClass = [
+  'w-full rounded-[var(--radius-sm)]',
+  'border border-[var(--color-border)] bg-[var(--color-bg-base)]',
+  'px-[var(--space-sm)] py-[var(--space-xs)]',
+  'text-[length:var(--text-body)] text-[color:var(--color-text)]',
+  'placeholder:text-[color:var(--color-text-muted)]',
+  'transition-[border-color] duration-[var(--duration-fast)]',
+  'focus:border-[var(--color-border-focus)] focus:outline-none',
+].join(' ');
+
+const labelClass = [
+  'text-[length:var(--text-micro)] font-[var(--weight-medium)]',
+  'uppercase tracking-[var(--tracking-label)]',
+  'text-[color:var(--color-text-muted)]',
+].join(' ');
+
+const hintClass =
+  'text-[length:var(--text-micro)] leading-[var(--leading-body)] text-[color:var(--color-text-muted)]';
 
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `p-${Date.now()}`;
@@ -29,6 +47,7 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
   const [existing, setExisting] = useState<Provider | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [revealToken, setRevealToken] = useState(false);
 
   useEffect(() => {
     void ipc.listProviderPresets().then(setPresets);
@@ -101,18 +120,13 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
     // ModalShell's dismiss prop is `onDismiss`, and `id` is required — it keys
     // the modal in the app store's modal stack.
     <ModalShell id="provider-form" title={title} onDismiss={onClose}>
-      <div className="flex flex-col gap-[var(--space-sm)]">
-        {error && (
-          <div
-            role="alert"
-            className="rounded-[var(--radius-sm)] border border-[var(--color-danger)] bg-[var(--color-danger-dim)] px-[var(--space-sm)] py-[var(--space-2xs)] text-[length:var(--text-micro)]"
-          >
-            {error}
-          </div>
-        )}
+      {/* ModalShell renders children raw — the padding has to come from here,
+          or every field runs flush into the modal border. */}
+      <div className="flex flex-col gap-[var(--space-md)] px-[var(--space-md)] py-[var(--space-md)]">
+        {error && <Banner variant="error">{error}</Banner>}
 
-        <label className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)]">
-          Preset
+        <label className="flex flex-col gap-[var(--space-2xs)]">
+          <span className={labelClass}>Preset</span>
           <select
             aria-label="Preset"
             className={inputClass}
@@ -128,8 +142,8 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
           </select>
         </label>
 
-        <label className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)]">
-          Name
+        <label className="flex flex-col gap-[var(--space-2xs)]">
+          <span className={labelClass}>Name</span>
           <input
             aria-label="Name"
             className={inputClass}
@@ -138,66 +152,84 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
           />
         </label>
 
-        <label className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)]">
-          Base URL
+        <label className="flex flex-col gap-[var(--space-2xs)]">
+          <span className={labelClass}>Base URL</span>
           <input
             aria-label="Base URL"
-            className={inputClass}
+            className={`${inputClass} mono`}
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="https://api.example.com/anthropic"
           />
         </label>
 
-        <label className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)]">
-          API key
-          <input
-            aria-label="API key"
-            type="password"
-            className={inputClass}
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-          />
+        <label className="flex flex-col gap-[var(--space-2xs)]">
+          <span className={labelClass}>API key</span>
+          <div className="relative">
+            <input
+              aria-label="API key"
+              type={revealToken ? 'text' : 'password'}
+              className={`${inputClass} mono pr-[34px]`}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <button
+              type="button"
+              onClick={() => setRevealToken((v) => !v)}
+              /* Deliberately not "…API key": that string would also match the
+                 field's own label and make getByLabelText ambiguous. */
+              aria-label={revealToken ? 'Hide key' : 'Show key'}
+              className="
+                absolute right-[var(--space-2xs)] top-1/2 -translate-y-1/2
+                inline-flex h-[24px] w-[24px] items-center justify-center
+                rounded-[var(--radius-sm)] text-[color:var(--color-text-muted)]
+                transition-colors duration-[var(--duration-fast)]
+                hover:text-[color:var(--color-text-secondary)]
+              "
+            >
+              {revealToken ? <EyeOff size={13} aria-hidden /> : <Eye size={13} aria-hidden />}
+            </button>
+          </div>
         </label>
 
-        <label className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)]">
-          Model
+        <label className="flex flex-col gap-[var(--space-2xs)]">
+          <span className={labelClass}>Model</span>
           <input
             aria-label="Model"
-            className={inputClass}
+            className={`${inputClass} mono`}
             value={model}
             onChange={(e) => setModel(e.target.value)}
           />
         </label>
 
-        <label className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)]">
-          Extra CLI arguments
+        <label className="flex flex-col gap-[var(--space-2xs)]">
+          <span className={labelClass}>Extra CLI arguments</span>
           <input
             aria-label="Extra CLI arguments"
-            className={inputClass}
+            className={`${inputClass} mono`}
             value={extraArgs}
             onChange={(e) => setExtraArgs(e.target.value)}
             placeholder="--dangerously-skip-permissions"
           />
-          <span className="text-[color:var(--color-text-muted)]">
+          <span className={hintClass}>
             Passed to <code className="mono">claude</code> on launch. The script runs the binary
             directly, so shell aliases and functions do not apply.
           </span>
         </label>
 
-        <p className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
-          {Object.keys(env).length} environment variable
-          {Object.keys(env).length === 1 ? '' : 's'} will be set for sessions launched with this
-          provider.
-        </p>
-
-        <div className="flex justify-end gap-[var(--space-xs)]">
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button variant="primary" size="sm" onClick={save} disabled={saving}>
-            Save
-          </Button>
+        <div className="flex items-center justify-between gap-[var(--space-md)] border-t border-[var(--color-rule)] pt-[var(--space-md)]">
+          <span className={hintClass}>
+            {Object.keys(env).length} environment variable
+            {Object.keys(env).length === 1 ? '' : 's'} set on launch.
+          </span>
+          <div className="flex shrink-0 gap-[var(--space-xs)]">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={save} disabled={saving}>
+              Save
+            </Button>
+          </div>
         </div>
       </div>
     </ModalShell>

@@ -81,20 +81,40 @@ const CANDIDATES: &[Terminal] = &[
 #[cfg(not(target_os = "macos"))]
 const CANDIDATES: &[Terminal] = &[Terminal::PowerShell, Terminal::WindowsTerminal];
 
+/// Every place a given terminal's bundle can legitimately live, in probe
+/// order.
+///
+/// Terminal.app is the reason this is a list rather than one bundle name: it
+/// is an OS component, so since macOS Catalina it lives on the read-only
+/// system volume at `/System/Applications/Utilities/`, never in `/Applications`.
+/// Probing only `/Applications` meant the one terminal present on *every* Mac
+/// was the one we always reported as missing — a user with neither Ghostty
+/// nor iTerm got "No supported terminal found" while Terminal.app sat right
+/// there. The pre-Catalina `/Applications/Utilities` path is kept for 10.14.
 #[cfg(target_os = "macos")]
-fn is_installed(t: Terminal) -> bool {
-    let app = match t {
+fn app_paths(t: Terminal) -> Vec<PathBuf> {
+    let bundle = match t {
         Terminal::Ghostty => "Ghostty.app",
         Terminal::TerminalApp => "Terminal.app",
         Terminal::Iterm2 => "iTerm.app",
         Terminal::Kitty => "kitty.app",
         Terminal::WezTerm => "WezTerm.app",
-        _ => return false,
+        _ => return Vec::new(),
     };
-    Path::new("/Applications").join(app).exists()
-        || dirs_home()
-            .map(|h| h.join("Applications").join(app).exists())
-            .unwrap_or(false)
+    let mut roots = vec![PathBuf::from("/Applications")];
+    if t == Terminal::TerminalApp {
+        roots.insert(0, PathBuf::from("/System/Applications/Utilities"));
+        roots.push(PathBuf::from("/Applications/Utilities"));
+    }
+    if let Some(home) = dirs_home() {
+        roots.push(home.join("Applications"));
+    }
+    roots.into_iter().map(|r| r.join(bundle)).collect()
+}
+
+#[cfg(target_os = "macos")]
+fn is_installed(t: Terminal) -> bool {
+    app_paths(t).iter().any(|p| p.exists())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -349,6 +369,41 @@ mod tests {
         assert_eq!(Terminal::Ghostty.flavor(), ScriptFlavor::Sh);
         assert_eq!(Terminal::WindowsTerminal.flavor(), ScriptFlavor::PowerShell);
         assert_eq!(Terminal::PowerShell.flavor(), ScriptFlavor::PowerShell);
+    }
+
+    /// Terminal.app is on the read-only system volume, so a probe that only
+    /// looks in /Applications reports the one terminal every Mac has as
+    /// missing — and the tab then claims no terminal is available at all.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn terminal_app_is_probed_on_the_system_volume() {
+        let paths = app_paths(Terminal::TerminalApp);
+        assert!(
+            paths.contains(&PathBuf::from("/System/Applications/Utilities/Terminal.app")),
+            "expected the Catalina+ location, got {paths:?}"
+        );
+        assert!(
+            is_installed(Terminal::TerminalApp),
+            "Terminal.app ships with macOS and must always be detected"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn third_party_terminals_are_not_probed_on_the_system_volume() {
+        for t in [Terminal::Ghostty, Terminal::Iterm2, Terminal::Kitty, Terminal::WezTerm] {
+            let paths = app_paths(t);
+            assert!(
+                !paths.iter().any(|p| p.starts_with("/System")),
+                "{t:?} cannot be installed on the read-only system volume"
+            );
+            assert!(paths.contains(&PathBuf::from("/Applications").join(match t {
+                Terminal::Ghostty => "Ghostty.app",
+                Terminal::Iterm2 => "iTerm.app",
+                Terminal::Kitty => "kitty.app",
+                _ => "WezTerm.app",
+            })));
+        }
     }
 
     #[test]

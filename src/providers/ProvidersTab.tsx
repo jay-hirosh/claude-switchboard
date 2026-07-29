@@ -6,7 +6,9 @@ import { useProviders } from './useProviders';
 import { ProviderRow } from './ProviderRow';
 import { ProviderForm } from './ProviderForm';
 import { DefaultProviderBanner } from './DefaultProviderBanner';
+import { Banner } from '../components/ui/Banner';
 import { Button } from '../components/ui/Button';
+import { Card } from '../components/ui/Card';
 import { Plus } from '../lib/icons';
 
 export function ProvidersTab() {
@@ -66,13 +68,22 @@ export function ProvidersTab() {
 
   const handleLaunch = useCallback(
     async (id: string) => {
-      const dir = await openDialog({ directory: true, multiple: false, title: 'Choose a folder' });
-      if (typeof dir !== 'string') return;
       if (!terminal) {
         setNotice('No supported terminal found. Install Ghostty or Windows Terminal.');
         return;
       }
       try {
+        // The folder picker is inside the try on purpose. It was outside, so
+        // when the dialog plugin rejected — as it did for every launch until
+        // `dialog:default` was added to the window's capabilities — the
+        // rejection escaped as an unhandled promise and the button did
+        // nothing at all, with no error anywhere in the UI.
+        const dir = await openDialog({
+          directory: true,
+          multiple: false,
+          title: 'Choose a folder',
+        });
+        if (typeof dir !== 'string') return; // user cancelled
         await ipc.launchProviderSession(id, dir, terminal, null);
         setNotice(null);
       } catch (e) {
@@ -93,22 +104,17 @@ export function ProvidersTab() {
   const thirdParty = providers.filter((p) => p.kind !== 'official');
 
   return (
-    <div className="flex flex-col gap-[var(--space-sm)] p-[var(--space-md)]">
-      {error && (
-        <div
-          role="alert"
-          className="rounded-[var(--radius-sm)] border border-[var(--color-danger)] bg-[var(--color-danger-dim)] px-[var(--space-sm)] py-[var(--space-2xs)] text-[length:var(--text-micro)]"
-        >
-          {error}
-        </div>
-      )}
+    <div className="flex flex-col gap-[var(--space-md)]">
+      <p className="text-[length:var(--text-label)] leading-[var(--leading-body)] text-[color:var(--color-text-muted)]">
+        Launch opens a terminal with this provider&rsquo;s credentials scoped to that one
+        session. Nothing global changes, so several providers can run side by side.
+      </p>
+
+      {error && <Banner variant="error">{error}</Banner>}
       {notice && (
-        <div
-          role="status"
-          className="rounded-[var(--radius-sm)] border border-[var(--color-warn)] bg-[var(--color-warn-dim)] px-[var(--space-sm)] py-[var(--space-2xs)] text-[length:var(--text-micro)]"
-        >
+        <Banner variant="warning" role="status">
           {notice}
-        </div>
+        </Banner>
       )}
 
       {defaultState && (
@@ -120,30 +126,32 @@ export function ProvidersTab() {
         />
       )}
 
-      {!loading &&
-        providers.map((p) => (
-          <ProviderRow
-            key={p.id}
-            provider={p}
-            isDefault={defaultState?.provider_id === p.id}
-            onLaunch={handleLaunch}
-            onEdit={setEditing}
-            onDelete={handleDelete}
-            onSetDefault={handleSetDefault}
-          />
-        ))}
-
-      {!loading && !error && thirdParty.length === 0 && (
-        <p className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
-          Add a provider to run Claude Code against a custom endpoint.
-        </p>
+      {!loading && providers.length > 0 && (
+        <Card className="overflow-hidden [&>*+*]:border-t [&>*+*]:border-[var(--color-border-subtle)]">
+          {providers.map((p) => (
+            <ProviderRow
+              key={p.id}
+              provider={p}
+              isDefault={defaultState?.provider_id === p.id}
+              onLaunch={handleLaunch}
+              onEdit={setEditing}
+              onDelete={handleDelete}
+              onSetDefault={handleSetDefault}
+            />
+          ))}
+        </Card>
       )}
 
-      <div>
+      <div className="flex items-center gap-[var(--space-md)]">
         <Button variant="ghost" size="sm" onClick={() => setEditing('new')}>
           <Plus size={13} aria-hidden />
           Add provider
         </Button>
+        {!loading && !error && thirdParty.length === 0 && (
+          <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
+            Add a provider to run Claude Code against a custom endpoint.
+          </span>
+        )}
       </div>
 
       {editing && (
