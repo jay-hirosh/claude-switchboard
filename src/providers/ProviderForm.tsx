@@ -5,6 +5,7 @@ import { ModalShell } from '../components/modals/ModalShell';
 import { Banner } from '../components/ui/Banner';
 import { Button } from '../components/ui/Button';
 import { Check, Eye, EyeOff, Plus } from '../lib/icons';
+import { applyModelEnv } from './modelEnv';
 
 interface Props {
   providerId: string | null;
@@ -46,6 +47,7 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
   const [baseUrl, setBaseUrl] = useState('');
   const [token, setToken] = useState('');
   const [model, setModel] = useState('');
+  const [quickModel, setQuickModel] = useState('');
   const [extraArgs, setExtraArgs] = useState('');
   const [env, setEnv] = useState<Record<string, string>>({});
   const [existing, setExisting] = useState<Provider | null>(null);
@@ -67,6 +69,7 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
       setBaseUrl(p.base_url ?? '');
       setToken(p.auth_token ?? '');
       setModel(p.env['ANTHROPIC_MODEL'] ?? '');
+      setQuickModel(p.env['ANTHROPIC_SMALL_FAST_MODEL'] ?? '');
       setExtraArgs(p.extra_args.join(' '));
       setEnv(p.env as Record<string, string>);
       setPresetId(p.preset_id ?? '');
@@ -81,6 +84,7 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
     setBaseUrl(p.base_url);
     setEnv(p.env as Record<string, string>);
     setModel(p.env['ANTHROPIC_MODEL'] ?? '');
+    setQuickModel(p.env['ANTHROPIC_SMALL_FAST_MODEL'] ?? '');
   }
 
   const title = useMemo(() => (providerId ? 'Edit provider' : 'Add provider'), [providerId]);
@@ -106,8 +110,7 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
     }
     setSaving(true);
     try {
-      const merged = { ...env };
-      if (model.trim()) merged['ANTHROPIC_MODEL'] = model.trim();
+      const merged = applyModelEnv(env, model, quickModel);
       const provider: Provider = {
         id: existing?.id ?? providerId ?? newId(),
         name: name.trim(),
@@ -206,15 +209,36 @@ export function ProviderForm({ providerId, onClose, onSaved }: Props) {
           </div>
         </label>
 
-        <label className="flex flex-col gap-[var(--space-2xs)]">
-          <span className={labelClass}>Model</span>
-          <input
-            aria-label="Model"
-            className={`${inputClass} mono`}
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
-        </label>
+        <div className="flex flex-col gap-[var(--space-2xs)]">
+          <div className="flex gap-[var(--space-sm)]">
+            <label className="flex min-w-0 flex-1 flex-col gap-[var(--space-2xs)]">
+              <span className={labelClass}>Model</span>
+              <input
+                aria-label="Model"
+                className={`${inputClass} mono`}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+            </label>
+            <label className="flex min-w-0 flex-1 flex-col gap-[var(--space-2xs)]">
+              <span className={labelClass}>Quick model</span>
+              <input
+                aria-label="Quick model"
+                className={`${inputClass} mono`}
+                value={quickModel}
+                onChange={(e) => setQuickModel(e.target.value)}
+                placeholder="same as Model"
+              />
+            </label>
+          </div>
+          <span className={hintClass}>
+            The quick model runs background work — titles, summaries, file
+            classification. Leave it blank to let the provider decide. Both fields also
+            set the <code className="mono">/model</code> aliases, so{' '}
+            <code className="mono">opus</code> and <code className="mono">sonnet</code> point
+            at Model and <code className="mono">haiku</code> at Quick model.
+          </span>
+        </div>
 
         <label className="flex flex-col gap-[var(--space-2xs)]">
           <span className={labelClass}>Extra CLI arguments</span>

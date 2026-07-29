@@ -8,7 +8,11 @@ const ipcMock = vi.hoisted(() => ({
       name: 'GLM (z.ai)',
       base_url: 'https://api.z.ai/api/anthropic',
       website: 'https://z.ai',
-      env: { ANTHROPIC_MODEL: 'glm-5.2', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000' },
+      env: {
+        ANTHROPIC_MODEL: 'glm-5.2',
+        ANTHROPIC_SMALL_FAST_MODEL: 'glm-5-turbo',
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
+      },
     },
   ]),
   listProviders: vi.fn().mockResolvedValue([]),
@@ -116,6 +120,60 @@ describe('ProviderForm', () => {
     expect(ipcMock.upsertProvider.mock.calls[0][0].extra_args).toEqual([
       '--dangerously-skip-permissions',
     ]);
+  });
+
+  it('prefills the quick model from the preset', async () => {
+    render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
+    await waitFor(() =>
+      expect((screen.getByLabelText(/quick model/i) as HTMLInputElement).value).toBe(
+        'glm-5-turbo',
+      ),
+    );
+  });
+
+  // Before this, the form wrote ANTHROPIC_MODEL alone. A custom provider got no
+  // aliases at all, so `/model opus` resolved to a first-party Anthropic id and
+  // the third-party endpoint rejected it.
+  it('expands both model fields into the aliases Claude Code reads', async () => {
+    render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText(/name/i)).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'Custom' } });
+    fireEvent.change(screen.getByLabelText(/base url/i), {
+      target: { value: 'https://api.example.com/anthropic' },
+    });
+    fireEvent.change(screen.getByLabelText(/^model/i), { target: { value: 'big-1' } });
+    fireEvent.change(screen.getByLabelText(/quick model/i), { target: { value: 'fast-1' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(ipcMock.upsertProvider).toHaveBeenCalled());
+    expect(ipcMock.upsertProvider.mock.calls[0][0].env).toEqual({
+      ANTHROPIC_MODEL: 'big-1',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'big-1',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'big-1',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'big-1',
+      ANTHROPIC_SMALL_FAST_MODEL: 'fast-1',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'fast-1',
+    });
+  });
+
+  it('rewrites a preset’s aliases when the model is edited', async () => {
+    render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText(/preset/i)).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
+    await waitFor(() =>
+      expect((screen.getByLabelText(/^model/i) as HTMLInputElement).value).toBe('glm-5.2'),
+    );
+    fireEvent.change(screen.getByLabelText(/^model/i), { target: { value: 'glm-6' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(ipcMock.upsertProvider).toHaveBeenCalled());
+    const { env } = ipcMock.upsertProvider.mock.calls[0][0];
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('glm-6');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('glm-6');
+    // Unrelated preset knobs survive the rewrite.
+    expect(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('1000000');
   });
 
   it('refuses to save without a name and a base URL', async () => {

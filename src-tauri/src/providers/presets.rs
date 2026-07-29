@@ -31,6 +31,7 @@ static PRESETS: &[Preset] = &[
             ("ANTHROPIC_MODEL", "glm-5.2"),
             ("ANTHROPIC_SMALL_FAST_MODEL", "glm-5-turbo"),
             ("ANTHROPIC_DEFAULT_OPUS_MODEL", "glm-5.2"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "glm-5.2"),
             ("ANTHROPIC_DEFAULT_SONNET_MODEL", "glm-5.2"),
             ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "glm-5-turbo"),
             ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "1000000"),
@@ -47,6 +48,7 @@ static PRESETS: &[Preset] = &[
             ("ANTHROPIC_MODEL", "k3"),
             ("ANTHROPIC_SMALL_FAST_MODEL", "kimi-for-coding-highspeed"),
             ("ANTHROPIC_DEFAULT_OPUS_MODEL", "k3"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "k3"),
             ("ANTHROPIC_DEFAULT_SONNET_MODEL", "k3"),
             ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "kimi-for-coding-highspeed"),
             ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "262144"),
@@ -63,6 +65,7 @@ static PRESETS: &[Preset] = &[
             ("ANTHROPIC_MODEL", "deepseek-chat"),
             ("ANTHROPIC_SMALL_FAST_MODEL", "deepseek-chat"),
             ("ANTHROPIC_DEFAULT_OPUS_MODEL", "deepseek-chat"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "deepseek-chat"),
             ("ANTHROPIC_DEFAULT_SONNET_MODEL", "deepseek-chat"),
             ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "deepseek-chat"),
             ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "131072"),
@@ -79,6 +82,7 @@ static PRESETS: &[Preset] = &[
             ("ANTHROPIC_MODEL", "MiniMax-M2"),
             ("ANTHROPIC_SMALL_FAST_MODEL", "MiniMax-M2"),
             ("ANTHROPIC_DEFAULT_OPUS_MODEL", "MiniMax-M2"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "MiniMax-M2"),
             ("ANTHROPIC_DEFAULT_SONNET_MODEL", "MiniMax-M2"),
             ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "MiniMax-M2"),
             ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "204800"),
@@ -94,6 +98,13 @@ static PRESETS: &[Preset] = &[
         env: &[
             ("ANTHROPIC_MODEL", "anthropic/claude-sonnet-4.5"),
             ("ANTHROPIC_SMALL_FAST_MODEL", "anthropic/claude-haiku-4.5"),
+            // Pinned even though OpenRouter proxies Anthropic: an unset alias
+            // falls back to a bare `claude-…` id, and OpenRouter needs the
+            // `anthropic/` vendor prefix.
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "anthropic/claude-opus-4.5"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "anthropic/claude-sonnet-4.5"),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "anthropic/claude-sonnet-4.5"),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "anthropic/claude-haiku-4.5"),
             ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "200000"),
             ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "200000"),
             ("API_TIMEOUT_MS", "3000000"),
@@ -166,6 +177,32 @@ mod tests {
                 "{} must declare ANTHROPIC_MODEL",
                 p.id
             );
+        }
+    }
+
+    // Every `/model <alias>` that is left unset falls back to a first-party
+    // Anthropic id, which a third-party endpoint cannot serve — so a preset
+    // that pins only ANTHROPIC_MODEL leaves `/model opus` broken. The quick
+    // model is separate again: Claude Code reads ANTHROPIC_SMALL_FAST_MODEL
+    // first and only then the haiku alias.
+    #[test]
+    fn every_preset_pins_every_model_alias() {
+        for p in all() {
+            let keys: Vec<&str> = p.env.iter().map(|(k, _)| *k).collect();
+            for required in [
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                "ANTHROPIC_SMALL_FAST_MODEL",
+            ] {
+                assert!(
+                    keys.contains(&required),
+                    "{} must declare {required} — an unset alias resolves to a \
+                     first-party Anthropic id this endpoint cannot serve",
+                    p.id
+                );
+            }
         }
     }
 
