@@ -299,6 +299,96 @@ async osSchedulerIsRegistered() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async listProviders() : Promise<Result<Provider[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_providers") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async upsertProvider(provider: Provider) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("upsert_provider", { provider }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteProvider(id: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_provider", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listProviderPresets() : Promise<Result<PresetInfo[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_provider_presets") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listAvailableTerminals() : Promise<Result<Terminal[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_available_terminals") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async launchProviderSession(providerId: string, cwd: string, terminal: Terminal, resumeSessionId: string | null) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("launch_provider_session", { providerId, cwd, terminal, resumeSessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The shell one-liner equivalent of a launch, for users whose terminal we
+ * do not drive. Deliberately returns the script path rather than inlining
+ * secrets into a string the user will paste somewhere.
+ */
+async getProviderLaunchCommand(providerId: string, cwd: string, terminal: Terminal) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_provider_launch_command", { providerId, cwd, terminal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getDefaultProvider() : Promise<Result<DefaultProviderState | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_default_provider") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setDefaultProvider(providerId: string, force: boolean) : Promise<Result<SetDefaultOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_default_provider", { providerId, force }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Returns the keys left untouched because the user edited them by hand while
+ * the default was active (§4.2) — the UI reports these rather than silently
+ * reverting someone's edit.
+ */
+async clearDefaultProvider() : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_default_provider") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -344,12 +434,22 @@ export type CacheStats = { total_cache_read_tokens: number; total_cache_creation
 export type CachedUsage = { snapshot: UsageSnapshot; account_id: string; account_email: string; last_error: string | null; burn_rate?: BurnRateProjection | null; auth_source: AuthSource }
 export type DailyBucket = { date: string; input_tokens: number; output_tokens: number; cost_usd: number }
 export type DailyModelBucket = { date: string; models: ModelStats[] }
+/**
+ * What Switchboard wrote into `~/.claude/settings.json`, and what each key
+ * held beforehand (`None` = the key was absent). This is both the manifest
+ * of what we own and the undo record.
+ */
+export type DefaultProviderState = { provider_id: string; managed_env: Partial<{ [key in string]: string | null }>; applied_at: number }
 export type ExtraUsage = { is_enabled?: boolean; monthly_limit_cents?: number; used_credits_cents?: number; utilization?: number | null; resets_at?: string | null }
 /**
  * Wall-clock time-of-day in user's local timezone.
  */
 export type HhMm = { hour: number; minute: number }
 export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number }
+/**
+ * Serializable mirror of `Preset` for the frontend.
+ */
+export type PresetInfo = { id: string; name: string; base_url: string; website: string; env: Partial<{ [key in string]: string }> }
 export type PricingEntry = { prefix: string; input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_5m_per_mtok: number; cache_1h_per_mtok: number; 
 /**
  * Optional 1M-context tier (Sonnet 4 only at time of writing). When
@@ -359,6 +459,18 @@ export type PricingEntry = { prefix: string; input_per_mtok: number; output_per_
 tier?: PricingTier | null }
 export type PricingTier = { above_tokens: number; input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_5m_per_mtok: number; cache_1h_per_mtok: number }
 export type ProjectStats = { project: string; session_count: number; total_cost_usd: number }
+export type Provider = { id: string; name: string; kind: ProviderKind; base_url: string | null; auth_token: string | null; env: Partial<{ [key in string]: string }>; 
+/**
+ * Appended to the `claude` invocation. Needed because the generated
+ * script execs the binary directly and so bypasses shell functions —
+ * e.g. a `claude()` wrapper that injects --dangerously-skip-permissions.
+ */
+extra_args: string[]; preset_id: string | null; sort_index: number }
+export type ProviderKind = 
+/**
+ * Anthropic via the accounts subsystem. Applies no env overrides.
+ */
+"official" | "third_party"
 export type RefreshScope = 
 /**
  * Re-fetch only the currently active slot. Inactive slots stay on
@@ -381,6 +493,12 @@ export type RunningClaudeCode = { cli_processes: number; vscode_with_extension: 
  * {"type":"Custom","times":[{"hour":7,"minute":30},{"hour":17,"minute":0}]}
  */
 export type Schedule = { type: "Off" } | { type: "Every5h"; anchor: HhMm } | { type: "Custom"; times: HhMm[] }
+export type SetDefaultOutcome = { status: "applied" } | 
+/**
+ * `settings.json` already carries provider env we do not own. The UI
+ * must confirm before we overwrite hand-written configuration.
+ */
+{ status: "needs_confirmation"; unmanaged_keys: string[] }
 export type Settings = { polling_interval_secs: number; 
 /**
  * Base spacing between consecutive per-slot polls within one round.
@@ -397,6 +515,7 @@ export type StoredSessionEvent = { ts: string; project: string; model: string; i
  */
 event_id: string }
 export type SwapReport = { new_active_slot: number; running: RunningClaudeCode }
+export type Terminal = "ghostty" | "terminal_app" | "iterm_2" | "kitty" | "wez_term" | "windows_terminal" | "power_shell"
 export type UsageSnapshot = { five_hour: Utilization | null; seven_day: Utilization | null; seven_day_sonnet: Utilization | null; seven_day_opus: Utilization | null; extra_usage: ExtraUsage | null; fetched_at?: string }
 export type Utilization = { utilization: number; resets_at?: string | null }
 /**

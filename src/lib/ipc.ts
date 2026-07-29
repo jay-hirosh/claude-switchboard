@@ -46,4 +46,28 @@ export const ipc = {
   osSchedulerRegister: () => commands.osSchedulerRegister().then(unwrap),
   osSchedulerUnregister: () => commands.osSchedulerUnregister().then(unwrap),
   osSchedulerIsRegistered: () => commands.osSchedulerIsRegistered().then(unwrap),
+
+  // Providers pillar
+  listProviders: () => commands.listProviders().then(unwrap),
+  upsertProvider: (p: import('./generated/bindings').Provider) =>
+    commands.upsertProvider(p).then(unwrap),
+  deleteProvider: (id: string) => commands.deleteProvider(id).then(unwrap),
+  listProviderPresets: () => commands.listProviderPresets().then(unwrap),
+  listAvailableTerminals: () => commands.listAvailableTerminals().then(unwrap),
+  launchProviderSession: (
+    providerId: string,
+    cwd: string,
+    terminal: import('./generated/bindings').Terminal,
+    resumeSessionId: string | null = null,
+  ) => commands.launchProviderSession(providerId, cwd, terminal, resumeSessionId).then(unwrap),
+  getProviderLaunchCommand: (
+    providerId: string,
+    cwd: string,
+    terminal: import('./generated/bindings').Terminal,
+  ) => commands.getProviderLaunchCommand(providerId, cwd, terminal).then(unwrap),
+  getDefaultProvider: () => commands.getDefaultProvider().then(unwrap),
+  setDefaultProvider: (providerId: string, force: boolean) =>
+    commands.setDefaultProvider(providerId, force).then(unwrap),
+  /** Resolves to the keys left untouched because the user edited them (spec §4.2). */
+  clearDefaultProvider: () => commands.clearDefaultProvider().then(unwrap),
 };

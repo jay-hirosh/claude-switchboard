@@ -49,6 +49,117 @@ pub fn run() {
     let log_dir = logging::log_dir();
     let _log_guard = logging::init(log_dir.clone());
 
+    // Built and exported before the DB is opened: the export is a pure
+    // function of the command list, and doing it here means `cargo run`
+    // regenerates bindings.ts even when another instance already holds
+    // the DB lock (which otherwise exits the process first).
+    // tauri-specta's Builder::commands replaces previously registered commands rather
+    // than appending, so debug-only handlers must be folded into the same collect_commands! call.
+    #[cfg(not(debug_assertions))]
+    let specta_builder = tauri_specta::Builder::<tauri::Wry>::new()
+        .commands(tauri_specta::collect_commands![
+            commands::get_current_usage,
+            commands::get_pricing,
+            commands::get_session_history,
+            commands::get_daily_trends,
+            commands::get_model_breakdown,
+            commands::get_daily_model_breakdown,
+            commands::get_project_breakdown,
+            commands::get_cache_stats,
+            commands::start_oauth_flow,
+            commands::has_claude_code_creds,
+            commands::update_settings,
+            commands::get_settings,
+            commands::resize_window,
+            commands::force_refresh,
+            commands::check_for_updates_now,
+            commands::install_update,
+            commands::list_accounts,
+            commands::add_account_from_claude_code,
+            commands::remove_account,
+            commands::swap_to_account,
+            commands::detect_running_claude_code,
+            commands::refresh_account,
+            commands::warmup_account_now,
+            commands::set_account_schedule,
+            commands::set_warmup_enabled,
+            commands::grant_warmup_consent,
+            commands::revoke_warmup_consent,
+            commands::get_warmup_consent_granted,
+            commands::get_warmup_state,
+            commands::os_scheduler_register,
+            commands::os_scheduler_unregister,
+            commands::os_scheduler_is_registered,
+            commands::list_providers,
+            commands::upsert_provider,
+            commands::delete_provider,
+            commands::list_provider_presets,
+            commands::list_available_terminals,
+            commands::launch_provider_session,
+            commands::get_provider_launch_command,
+            commands::get_default_provider,
+            commands::set_default_provider,
+            commands::clear_default_provider,
+        ]);
+
+    #[cfg(debug_assertions)]
+    let specta_builder = tauri_specta::Builder::<tauri::Wry>::new()
+        .commands(tauri_specta::collect_commands![
+            commands::get_current_usage,
+            commands::get_pricing,
+            commands::get_session_history,
+            commands::get_daily_trends,
+            commands::get_model_breakdown,
+            commands::get_daily_model_breakdown,
+            commands::get_project_breakdown,
+            commands::get_cache_stats,
+            commands::start_oauth_flow,
+            commands::has_claude_code_creds,
+            commands::update_settings,
+            commands::get_settings,
+            commands::resize_window,
+            commands::force_refresh,
+            commands::check_for_updates_now,
+            commands::install_update,
+            commands::list_accounts,
+            commands::add_account_from_claude_code,
+            commands::remove_account,
+            commands::swap_to_account,
+            commands::detect_running_claude_code,
+            commands::refresh_account,
+            commands::debug_force_threshold,
+            commands::warmup_account_now,
+            commands::set_account_schedule,
+            commands::set_warmup_enabled,
+            commands::grant_warmup_consent,
+            commands::revoke_warmup_consent,
+            commands::get_warmup_consent_granted,
+            commands::get_warmup_state,
+            commands::os_scheduler_register,
+            commands::os_scheduler_unregister,
+            commands::os_scheduler_is_registered,
+            commands::list_providers,
+            commands::upsert_provider,
+            commands::delete_provider,
+            commands::list_provider_presets,
+            commands::list_available_terminals,
+            commands::launch_provider_session,
+            commands::get_provider_launch_command,
+            commands::get_default_provider,
+            commands::set_default_provider,
+            commands::clear_default_provider,
+        ]);
+
+    #[cfg(debug_assertions)]
+    specta_builder
+        .export(
+            specta_typescript::Typescript::default()
+                .bigint(specta_typescript::BigIntExportBehavior::Number)
+                .header("// @ts-nocheck"),
+            "../src/lib/generated/bindings.ts",
+        )
+        .expect("failed to export specta bindings");
+
     let data_dir = store::default_dir();
 
     let db_result = store::Db::open(&data_dir).unwrap_or_else(|e| {
@@ -154,92 +265,6 @@ pub fn run() {
         }
     }
 
-    // tauri-specta's Builder::commands replaces previously registered commands rather
-    // than appending, so debug-only handlers must be folded into the same collect_commands! call.
-    #[cfg(not(debug_assertions))]
-    let specta_builder = tauri_specta::Builder::<tauri::Wry>::new()
-        .commands(tauri_specta::collect_commands![
-            commands::get_current_usage,
-            commands::get_pricing,
-            commands::get_session_history,
-            commands::get_daily_trends,
-            commands::get_model_breakdown,
-            commands::get_daily_model_breakdown,
-            commands::get_project_breakdown,
-            commands::get_cache_stats,
-            commands::start_oauth_flow,
-            commands::has_claude_code_creds,
-            commands::update_settings,
-            commands::get_settings,
-            commands::resize_window,
-            commands::force_refresh,
-            commands::check_for_updates_now,
-            commands::install_update,
-            commands::list_accounts,
-            commands::add_account_from_claude_code,
-            commands::remove_account,
-            commands::swap_to_account,
-            commands::detect_running_claude_code,
-            commands::refresh_account,
-            commands::warmup_account_now,
-            commands::set_account_schedule,
-            commands::set_warmup_enabled,
-            commands::grant_warmup_consent,
-            commands::revoke_warmup_consent,
-            commands::get_warmup_consent_granted,
-            commands::get_warmup_state,
-            commands::os_scheduler_register,
-            commands::os_scheduler_unregister,
-            commands::os_scheduler_is_registered,
-        ]);
-
-    #[cfg(debug_assertions)]
-    let specta_builder = tauri_specta::Builder::<tauri::Wry>::new()
-        .commands(tauri_specta::collect_commands![
-            commands::get_current_usage,
-            commands::get_pricing,
-            commands::get_session_history,
-            commands::get_daily_trends,
-            commands::get_model_breakdown,
-            commands::get_daily_model_breakdown,
-            commands::get_project_breakdown,
-            commands::get_cache_stats,
-            commands::start_oauth_flow,
-            commands::has_claude_code_creds,
-            commands::update_settings,
-            commands::get_settings,
-            commands::resize_window,
-            commands::force_refresh,
-            commands::check_for_updates_now,
-            commands::install_update,
-            commands::list_accounts,
-            commands::add_account_from_claude_code,
-            commands::remove_account,
-            commands::swap_to_account,
-            commands::detect_running_claude_code,
-            commands::refresh_account,
-            commands::debug_force_threshold,
-            commands::warmup_account_now,
-            commands::set_account_schedule,
-            commands::set_warmup_enabled,
-            commands::grant_warmup_consent,
-            commands::revoke_warmup_consent,
-            commands::get_warmup_consent_granted,
-            commands::get_warmup_state,
-            commands::os_scheduler_register,
-            commands::os_scheduler_unregister,
-            commands::os_scheduler_is_registered,
-        ]);
-
-    #[cfg(debug_assertions)]
-    specta_builder
-        .export(
-            specta_typescript::Typescript::default()
-                .bigint(specta_typescript::BigIntExportBehavior::Number)
-                .header("// @ts-nocheck"),
-            "../src/lib/generated/bindings.ts",
-        )
-        .expect("failed to export specta bindings");
 
     tauri::Builder::default()
         .manage(app_state)
@@ -269,6 +294,34 @@ pub fn run() {
             use tauri::Manager;
             let handle = app.handle().clone();
             let state: Arc<AppState> = app.state::<Arc<AppState>>().inner().clone();
+
+            // The official provider row must exist before the Providers tab
+            // can render a list. Idempotent, so it also repairs a row deleted
+            // by hand and populates databases created before this feature.
+            if let Err(e) = state.db.seed_official_provider() {
+                tracing::warn!("failed to seed official provider row: {e:#}");
+            }
+            match crate::providers::launcher::sweep_scripts(
+                &crate::providers::launcher::script_dir(),
+            ) {
+                Ok(n) if n > 0 => tracing::info!("swept {n} stale launch script(s)"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("launch script sweep failed: {e:#}"),
+            }
+            // Recurring sweep — a startup-only pass leaves token-bearing
+            // scripts on disk for the entire uptime of a resident menu-bar app.
+            tokio::spawn(async {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(1800));
+                tick.tick().await; // consume the immediate first tick
+                loop {
+                    tick.tick().await;
+                    if let Err(e) = crate::providers::launcher::sweep_scripts(
+                        &crate::providers::launcher::script_dir(),
+                    ) {
+                        tracing::warn!("periodic launch script sweep failed: {e:#}");
+                    }
+                }
+            });
 
             // Regular activation policy on macOS: the app shows up in
             // Cmd+Tab and gets a Dock icon, alongside the tray icon. The

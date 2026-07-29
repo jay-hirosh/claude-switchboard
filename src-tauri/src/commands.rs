@@ -1122,3 +1122,217 @@ mod tests {
         assert_eq!(x, 100.0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Custom model providers
+// ---------------------------------------------------------------------------
+
+use crate::providers::launcher::{self, LaunchSpec, Terminal};
+use crate::providers::model::Provider;
+use crate::providers::presets::{self, PresetInfo};
+use crate::providers::{default_env, DefaultProviderState};
+use std::path::PathBuf;
+
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum SetDefaultOutcome {
+    Applied,
+    /// `settings.json` already carries provider env we do not own. The UI
+    /// must confirm before we overwrite hand-written configuration.
+    NeedsConfirmation { unmanaged_keys: Vec<String> },
+}
+
+fn claude_settings_path() -> Result<PathBuf, String> {
+    crate::auth::paths::claude_config_home()
+        .map(|d| d.join("settings.json"))
+        .ok_or_else(|| "could not resolve the Claude config directory".to_string())
+}
+
+#[command]
+#[specta::specta]
+pub async fn list_providers(state: State<'_, Arc<AppState>>) -> Result<Vec<Provider>, String> {
+    state.db.list_providers().map_err(|e| e.to_string())
+}
+
+#[command]
+#[specta::specta]
+pub async fn upsert_provider(
+    provider: Provider,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.db.upsert_provider(&provider).map_err(|e| e.to_string())
+}
+
+#[command]
+#[specta::specta]
+pub async fn delete_provider(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    // Deleting the active default would leave settings.json holding orphaned
+    // env, so undo the default first. `ON DELETE SET NULL` is only a backstop:
+    // a nulled provider_id beside a populated managed_env is an orphaned
+    // manifest with no UI path to undo the mutation it describes.
+    if let Ok(Some(d)) = state.db.get_default_provider() {
+        if d.provider_id == id {
+            let path = claude_settings_path()?;
+            // What we wrote is the provider's own resolved env — §4.1 requires
+            // every edit to an active default to go through clear-then-apply,
+            // so the stored manifest always corresponds to the current row.
+            let written = state
+                .db
+                .get_provider(&id)
+                .map_err(|e| e.to_string())?
+                .map(|p| p.resolved_env())
+                .unwrap_or_default();
+            default_env::clear(&path, &d.managed_env, &written).map_err(|e| e.to_string())?;
+            state.db.clear_default_provider().map_err(|e| e.to_string())?;
+        }
+    }
+    state.db.delete_provider(&id).map_err(|e| e.to_string())
+}
+
+#[command]
+#[specta::specta]
+pub async fn list_provider_presets() -> Result<Vec<PresetInfo>, String> {
+    Ok(presets::all_info())
+}
+
+#[command]
+#[specta::specta]
+pub async fn list_available_terminals() -> Result<Vec<Terminal>, String> {
+    Ok(launcher::available_terminals())
+}
+
+#[command]
+#[specta::specta]
+pub async fn launch_provider_session(
+    provider_id: String,
+    cwd: String,
+    terminal: Terminal,
+    resume_session_id: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let provider = state
+        .db
+        .get_provider(&provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no provider with id {provider_id}"))?;
+    let spec = LaunchSpec {
+        provider,
+        cwd: PathBuf::from(cwd),
+        terminal,
+        resume_session_id,
+    };
+    launcher::launch(&spec)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// The shell one-liner equivalent of a launch, for users whose terminal we
+/// do not drive. Deliberately returns the script path rather than inlining
+/// secrets into a string the user will paste somewhere.
+#[command]
+#[specta::specta]
+pub async fn get_provider_launch_command(
+    provider_id: String,
+    cwd: String,
+    terminal: Terminal,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let provider = state
+        .db
+        .get_provider(&provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no provider with id {provider_id}"))?;
+    let spec = LaunchSpec {
+        provider,
+        cwd: PathBuf::from(cwd.clone()),
+        terminal,
+        resume_session_id: None,
+    };
+    let script =
+        launcher::write_script(&spec, &launcher::script_dir()).map_err(|e| format!("{e:#}"))?;
+    let (program, args) = launcher::build_command(terminal, &script, &PathBuf::from(cwd));
+    Ok(format!("{program} {}", args.join(" ")))
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_default_provider(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<DefaultProviderState>, String> {
+    state.db.get_default_provider().map_err(|e| e.to_string())
+}
+
+#[command]
+#[specta::specta]
+pub async fn set_default_provider(
+    provider_id: String,
+    force: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<SetDefaultOutcome, String> {
+    let provider = state
+        .db
+        .get_provider(&provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no provider with id {provider_id}"))?;
+    let path = claude_settings_path()?;
+    let prev = state.db.get_default_provider().map_err(|e| e.to_string())?;
+
+    // ORDER IS LOAD-BEARING (spec §4.1): the foreign-key check must run
+    // BEFORE clear(prev), against the *previous* manifest.
+    //
+    // Clearing first restores the user's original values into the file, which
+    // the check would then report as foreign — so every ordinary A→B switch
+    // would prompt, and declining would leave the previous default already
+    // undone with no record of it.
+    if !force {
+        let known = prev.as_ref().map(|p| p.managed_env.clone()).unwrap_or_default();
+        let foreign =
+            default_env::foreign_provider_keys(&path, &known).map_err(|e| e.to_string())?;
+        if !foreign.is_empty() {
+            return Ok(SetDefaultOutcome::NeedsConfirmation { unmanaged_keys: foreign });
+        }
+    }
+
+    // Only now undo the previous default, so its keys cannot linger and the
+    // new manifest is computed against the user's true prior state (§4.1).
+    if let Some(prev) = prev {
+        let prev_written = state
+            .db
+            .get_provider(&prev.provider_id)
+            .map_err(|e| e.to_string())?
+            .map(|p| p.resolved_env())
+            .unwrap_or_default();
+        default_env::clear(&path, &prev.managed_env, &prev_written).map_err(|e| e.to_string())?;
+    }
+
+    let env = provider.resolved_env();
+    let manifest = default_env::apply(&path, &env).map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_default_provider(&provider_id, &manifest, Utc::now().timestamp())
+        .map_err(|e| e.to_string())?;
+    Ok(SetDefaultOutcome::Applied)
+}
+
+/// Returns the keys left untouched because the user edited them by hand while
+/// the default was active (§4.2) — the UI reports these rather than silently
+/// reverting someone's edit.
+#[command]
+#[specta::specta]
+pub async fn clear_default_provider(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<String>, String> {
+    let Some(d) = state.db.get_default_provider().map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    let path = claude_settings_path()?;
+    let written = state
+        .db
+        .get_provider(&d.provider_id)
+        .map_err(|e| e.to_string())?
+        .map(|p| p.resolved_env())
+        .unwrap_or_default();
+    let skipped = default_env::clear(&path, &d.managed_env, &written).map_err(|e| e.to_string())?;
+    state.db.clear_default_provider().map_err(|e| e.to_string())?;
+    Ok(skipped)
+}
