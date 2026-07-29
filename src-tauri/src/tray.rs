@@ -28,14 +28,41 @@ pub fn set_level(
 
     // Numbers live in the icon now — no separate title text alongside.
     let _ = tray.set_title(None::<&str>);
-    let _ = tray.set_tooltip(Some(tooltip(
+    let tooltip = tooltip(
         five_hour,
         seven_day,
         five_hour_resets_at,
         seven_day_resets_at,
         paused,
         Utc::now(),
-    )));
+    );
+
+    // A global provider default means the usage bars no longer describe where
+    // the user's work is going. Name it rather than let the bars mislead.
+    // Sessions launched from the Providers tab get no marker — those are
+    // explicit acts in visible windows, and several may run at once.
+    let tooltip = match default_provider_name(app) {
+        Some(name) => format!("{tooltip}\nDefault provider: {name}"),
+        None => tooltip,
+    };
+
+    let _ = tray.set_tooltip(Some(tooltip));
+}
+
+/// Name of the provider currently set as the global default, if any.
+fn default_provider_name(app: &AppHandle) -> Option<String> {
+    use tauri::Manager;
+    let state = app.try_state::<std::sync::Arc<crate::app_state::AppState>>()?;
+    let default = state.db.get_default_provider().ok().flatten()?;
+    Some(
+        state
+            .db
+            .get_provider(&default.provider_id)
+            .ok()
+            .flatten()
+            .map(|p| p.name)
+            .unwrap_or_else(|| "a custom provider".to_string()),
+    )
 }
 
 fn tooltip(
