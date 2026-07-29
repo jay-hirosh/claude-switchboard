@@ -245,10 +245,45 @@ pub fn build_command(terminal: Terminal, script: &Path, cwd: &Path) -> (String, 
     }
 }
 
+/// Gives a console-mode terminal a console of its own instead of whatever
+/// Switchboard inherited.
+///
+/// `powershell.exe` is a console app, so with no intervention it attaches to
+/// the parent's console. Under `tauri dev` the parent is `cargo run`, whose
+/// console is a background task nobody is looking at — the session launches,
+/// runs correctly, and is completely invisible, which is indistinguishable
+/// from a dead button. Starting the app from any terminal does the same.
+///
+/// `CREATE_NEW_CONSOLE` does **not** fix it. Rust hard-codes
+/// `STARTF_USESTDHANDLES` on every spawn (rust-lang/rust#101645), and Windows
+/// only replaces the passed std handles with the new console's "unless the
+/// existing value is NULL or a console pseudohandle". A GUI parent has NULL
+/// handles so it works there by luck; a parent holding a real console keeps
+/// writing to that console even though a new empty window was allocated.
+///
+/// `cmd /C start` sidesteps the handle rule entirely: `start` builds the
+/// console itself and hands the child clean handles for it. The empty `""` is
+/// the window title — `start` reads a leading quoted argument as the title, so
+/// dropping it would swallow a program path containing spaces.
+///
+/// Windows Terminal is exempt: `wt.exe` is a GUI app that always opens its own
+/// window, and wrapping it would only add a cmd flash.
+///
+/// Pure — asserted in tests without spawning.
+pub fn console_host(terminal: Terminal, program: String, args: Vec<String>) -> (String, Vec<String>) {
+    if terminal != Terminal::PowerShell {
+        return (program, args);
+    }
+    let mut wrapped = vec!["/C".to_string(), "start".to_string(), String::new(), program];
+    wrapped.extend(args);
+    ("cmd.exe".to_string(), wrapped)
+}
+
 pub fn launch(spec: &LaunchSpec) -> Result<PathBuf> {
     let dir = script_dir();
     let script_path = write_script(spec, &dir)?;
     let (program, args) = build_command(spec.terminal, &script_path, &spec.cwd);
+    let (program, args) = console_host(spec.terminal, program, args);
     std::process::Command::new(&program)
         .args(&args)
         .spawn()
@@ -362,6 +397,50 @@ mod tests {
             assert!(!joined.contains("tok"), "{t:?} leaked a token into argv");
             assert!(!joined.contains("ANTHROPIC"), "{t:?} leaked env into argv");
         }
+    }
+
+    /// The regression: a bare `powershell.exe` spawn inherits Switchboard's
+    /// console, so under `tauri dev` the session opens inside an invisible
+    /// background console and the button looks dead.
+    #[test]
+    fn powershell_is_given_a_console_of_its_own() {
+        let (prog, args) = build_command(
+            Terminal::PowerShell,
+            Path::new(r"C:\scripts\a.ps1"),
+            Path::new(r"C:\work"),
+        );
+        let (prog, args) = console_host(Terminal::PowerShell, prog, args);
+        assert_eq!(prog, "cmd.exe");
+        assert_eq!(args[0], "/C");
+        assert_eq!(args[1], "start");
+        assert_eq!(args[2], "", "start reads a leading quoted arg as the window title");
+        assert_eq!(args[3], "powershell.exe");
+        assert_eq!(args.last().unwrap(), r"C:\scripts\a.ps1");
+    }
+
+    /// wt.exe is a GUI app and always opens its own window; wrapping it would
+    /// only add a cmd flash.
+    #[test]
+    fn windows_terminal_is_not_wrapped() {
+        let (prog, args) =
+            build_command(Terminal::WindowsTerminal, Path::new("a.ps1"), Path::new("/w"));
+        let (wrapped_prog, wrapped_args) =
+            console_host(Terminal::WindowsTerminal, prog.clone(), args.clone());
+        assert_eq!((wrapped_prog, wrapped_args), (prog, args));
+    }
+
+    /// The wrapper must not become a new way to leak a token into argv.
+    #[test]
+    fn console_wrapping_carries_no_secret() {
+        let (prog, args) = build_command(
+            Terminal::PowerShell,
+            Path::new(r"C:\scripts\a.ps1"),
+            Path::new(r"C:\work"),
+        );
+        let (prog, args) = console_host(Terminal::PowerShell, prog, args);
+        let joined = format!("{prog} {}", args.join(" "));
+        assert!(!joined.contains("tok"));
+        assert!(!joined.contains("ANTHROPIC"));
     }
 
     #[test]
