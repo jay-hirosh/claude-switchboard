@@ -129,31 +129,41 @@ describe('SessionRow', () => {
     expect(screen.getByText('Plan custom model swapping feature')).toBeTruthy();
   });
 
-  // Claude Code strips the [1m] suffix before writing a transcript, so the
-  // configured window is not recorded. Exceeding the 200K standard window is
-  // the only surviving evidence that a session ran on a 1M one.
-  it('infers a 1M window when peak context exceeds the standard 200K', () => {
+  // The window comes from the model's registry entry, not from how full the
+  // session got. Sonnet 5 / Opus 4.7+ / Fable 5 carry `native_1m: true` and
+  // run at 1M with no `[1m]` suffix, so a quiet session on one of them is
+  // still a 1M session.
+  it('reports the model’s real window even when the session stayed small', () => {
     render(
       <SessionRow
-        session={session({ peak_context_tokens: 410_000 })}
+        session={session({ model: 'claude-fable-5', peak_context_tokens: 155_837 })}
         expanded
         onToggle={vi.fn()}
         onResume={vi.fn()}
       />,
     );
-    expect(screen.getByText(/410\.0K of 1M/)).toBeTruthy();
+    expect(screen.getByText(/155\.8K of 1M/)).toBeTruthy();
   });
 
-  it('assumes the standard window when peak context stays under it', () => {
+  it('reports 200K for an older model in the same family', () => {
     render(
       <SessionRow
-        session={session({ peak_context_tokens: 57_000 })}
+        session={session({ model: 'claude-sonnet-4-6', peak_context_tokens: 57_000 })}
         expanded
         onToggle={vi.fn()}
         onResume={vi.fn()}
       />,
     );
-    expect(screen.getByText(/57\.0K of 200K/)).toBeTruthy();
+    expect(screen.getByText(/57K of 200K/)).toBeTruthy();
+  });
+
+  // The fixture's model is glm-5.2 — a third-party window is provider-set and
+  // absent from the transcript, so no denominator is invented.
+  it('shows a bare token count for a third-party model', () => {
+    render(
+      <SessionRow session={session()} expanded onToggle={vi.fn()} onResume={vi.fn()} />,
+    );
+    expect(screen.getByText(/^410K$/)).toBeTruthy();
   });
 
   it('omits the context readout when no turn reported usage', () => {
