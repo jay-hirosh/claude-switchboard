@@ -88,6 +88,98 @@ describe('aggregateSessions — subagent nesting', () => {
   });
 });
 
+describe('aggregateSessions — per-day attribution', () => {
+  // The regression this suite exists for: a conversation that spans days used
+  // to collapse into ONE row stamped with its most recent turn while summing
+  // cost across every turn. Resuming an old conversation therefore parked its
+  // entire historical cost under today. Measured on real data before the fix:
+  // session 57ca2089 rendered as "today, $12.33" when only $1.13 was spent
+  // that day — the other $11.20 belonged to the three preceding days.
+  it('splits a conversation that spans days into one row per day', () => {
+    const events = [
+      mk({ source_file: `${PROJ}/spanning.jsonl`, project: 'p', ts: '2026-07-26T03:00:00Z', cost_usd: 11.2 }),
+      mk({ source_file: `${PROJ}/spanning.jsonl`, project: 'p', ts: '2026-07-29T03:00:00Z', cost_usd: 1.13 }),
+    ];
+    const sessions = aggregateSessions(events, null);
+
+    expect(sessions).toHaveLength(2);
+    // Newest day first, carrying only that day's money.
+    expect(sessions[0].total_cost_usd).toBeCloseTo(1.13, 5);
+    expect(sessions[1].total_cost_usd).toBeCloseTo(11.2, 5);
+    // Rows must not collide in React's key space.
+    expect(sessions[0].id).not.toBe(sessions[1].id);
+  });
+
+  it('keeps same-day turns of one conversation in a single row', () => {
+    const sessions = aggregateSessions(
+      [
+        mk({ source_file: `${PROJ}/oneday.jsonl`, project: 'p', ts: '2026-07-29T01:00:00Z', cost_usd: 1 }),
+        mk({ source_file: `${PROJ}/oneday.jsonl`, project: 'p', ts: '2026-07-29T05:00:00Z', cost_usd: 2 }),
+      ],
+      null,
+    );
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].turn_count).toBe(2);
+    expect(sessions[0].total_cost_usd).toBeCloseTo(3, 5);
+  });
+
+  it('attributes a subagent to the day it ran, under that day’s parent row', () => {
+    const sessions = aggregateSessions(
+      [
+        mk({ source_file: `${PROJ}/s.jsonl`, project: 'p', ts: '2026-07-26T03:00:00Z', cost_usd: 0.5 }),
+        mk({ source_file: `${PROJ}/s/subagents/agent-aaa.jsonl`, project: 'p', ts: '2026-07-29T03:00:00Z', cost_usd: 2 }),
+      ],
+      null,
+    );
+    expect(sessions).toHaveLength(2);
+    const today = sessions[0];
+    expect(today.total_cost_usd).toBeCloseTo(2, 5);
+    expect(today.subagents).toHaveLength(1);
+    // The Jul 26 row must not inherit the Jul 29 subagent.
+    expect(sessions[1].subagents).toHaveLength(0);
+  });
+
+  it('still preserves the grand total once rows are split by day', () => {
+    const events = [
+      mk({ source_file: `${PROJ}/a.jsonl`, project: 'p', ts: '2026-07-26T03:00:00Z', cost_usd: 0.3 }),
+      mk({ source_file: `${PROJ}/a.jsonl`, project: 'p', ts: '2026-07-27T03:00:00Z', cost_usd: 0.7 }),
+      mk({ source_file: `${PROJ}/a/subagents/agent-x.jsonl`, project: 'p', ts: '2026-07-27T04:00:00Z', cost_usd: 1.1 }),
+      mk({ source_file: `-/headless.jsonl`, project: '-', ts: '2026-07-29T03:00:00Z', cost_usd: 0.12 }),
+    ];
+    const sessions = aggregateSessions(events, null);
+    expect(sessions.reduce((t, s) => t + s.total_cost_usd, 0)).toBeCloseTo(
+      events.reduce((t, e) => t + e.cost_usd, 0),
+      5,
+    );
+  });
+});
+
+describe('compaction row keys', () => {
+  // The Cost tab looks compactions up by the row id `<parentFile>#<day>`.
+  // A compaction recorded against a subagent transcript must therefore fold
+  // onto the parent's key, exactly like its events do — otherwise the marker
+  // silently never renders.
+  it('a compaction keys onto the same row id as the turns it sits between', () => {
+    const events = [
+      mk({ source_file: `${PROJ}/s.jsonl`, project: 'p', ts: '2026-07-29T01:00:00Z' }),
+      mk({ source_file: `${PROJ}/s/subagents/agent-aaa.jsonl`, project: 'p', ts: '2026-07-29T02:00:00Z' }),
+    ];
+    const [row] = aggregateSessions(events, null);
+    // Mirrors the component's `${parentKeyOf(c.source_file)}#${localDayKey(c.ts)}`.
+    const parentKey = `${PROJ}/s.jsonl`;
+    const day = localDayKeyOf('2026-07-29T03:17:00Z');
+    expect(row.id).toBe(`${parentKey}#${day}`);
+    expect(row.day).toBe(day);
+  });
+});
+
+/** Local-day key, duplicated from SessionsTab so the test asserts the shape
+ *  independently of the module-private helper. */
+function localDayKeyOf(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 describe('modelLabel', () => {
   it('collapses Anthropic families to their tier name', () => {
     expect(modelLabel('claude-opus-4-7')).toBe('opus');

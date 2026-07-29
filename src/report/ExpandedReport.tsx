@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { IconButton } from '../components/ui/IconButton';
-import { SessionsTab } from './SessionsTab';
+import { SessionsTab, WINDOW_DAYS } from './SessionsTab';
 import { ModelsTab } from './ModelsTab';
 import { TrendsTab } from './TrendsTab';
 import { ProjectsTab } from './ProjectsTab';
@@ -27,6 +27,22 @@ const TAB_CONFIG = [
   { id: 'cache', label: 'Cache' },
   { id: 'providers', label: 'Providers' },
 ] as const;
+
+/** How far back each tab actually queries. The header used to hardcode
+ *  "last 30 days" for every tab, which was wrong for Cost (7) and Heatmap
+ *  (180) — a Cost total that omitted three weeks of spend was labelled as if
+ *  it included them. Keep these in step with the `ipc.get*(n)` call in each
+ *  tab; `undefined` means the tab has no time window of its own. */
+const TAB_WINDOW_DAYS: Record<string, number | undefined> = {
+  browse: undefined,
+  cost: WINDOW_DAYS,
+  models: 30,
+  trends: 30,
+  projects: 30,
+  heatmap: 180,
+  cache: 30,
+  providers: undefined,
+};
 
 const TAB_COMPONENTS: Record<string, React.FC> = {
   browse: SessionsBrowserTab,
@@ -93,7 +109,8 @@ export function ExpandedReport() {
                 Claude
               </span>
               <span className="text-[length:var(--text-label)] tracking-[var(--tracking-label)] uppercase text-[color:var(--color-text-muted)]">
-                · {stale ? 'Stale' : 'Live'} · last 30 days
+                · {stale ? 'Stale' : 'Live'}
+                {TAB_WINDOW_DAYS[activeTab] ? ` · last ${TAB_WINDOW_DAYS[activeTab]} days` : ''}
               </span>
             </div>
             <div className="flex items-center gap-[2px]">

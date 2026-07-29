@@ -3,11 +3,11 @@ import { Button } from '../components/ui/Button';
 import { ModelBadge } from '../components/ui/ModelBadge';
 import { EmptyState } from '../components/ui/EmptyState';
 import { formatTokens, formatCost } from '../lib/format';
-import { ChevronDown, ChevronRight, IconSessions, IconSubagent } from '../lib/icons';
+import { ChevronDown, ChevronRight, IconCompact, IconSessions, IconSubagent } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
-import type { PricingEntry, SessionEvent } from '../lib/types';
+import type { Compaction, PricingEntry, SessionEvent } from '../lib/types';
 import { costPerCategory, lookupPricing } from '../lib/pricing';
 
 // `modelLabel` now lives in ./modelDisplay alongside modelKey/MODEL_VARIANT so
@@ -24,13 +24,37 @@ export function isHeadlessProject(project: string): boolean {
   return !project || project === '-';
 }
 
-function formatTime(iso: string): string {
+function formatClock(iso: string): string {
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+/** Local calendar day of `iso` as `YYYY-MM-DD`.
+ *
+ * Built from the Date's local getters rather than `toISOString()` (which is
+ * UTC) or a locale format (which varies by machine), because this string is
+ * the grouping key for a row's cost. It has to agree with the backend's
+ * `get_daily_trends`, which buckets on `chrono::Local` — otherwise the Cost
+ * tab and the Trends bar for the same day would disagree near midnight. */
+function localDayKey(iso: string): string {
   const d = new Date(iso);
-  const now = new Date();
-  const isToday = d.toDateString() === now.toDateString();
-  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  if (isToday) return time;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + time;
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+function formatDayLabel(dayKey: string): string {
+  const today = localDayKey(new Date().toISOString());
+  if (dayKey === today) return 'Today';
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (dayKey === localDayKey(yesterday.toISOString())) return 'Yesterday';
+  // Parse as local midnight — `new Date('2026-07-26')` would be parsed as UTC
+  // and could render the previous day west of Greenwich.
+  const [y, m, d] = dayKey.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 type Breakdown = {
@@ -58,6 +82,10 @@ interface SubagentSession {
 interface AggregatedSession {
   id: string;
   project: string;
+  /** Local calendar day (`YYYY-MM-DD`) this row's turns happened on. A row
+   * covers exactly one day, so `total_cost_usd` is money actually spent on
+   * that date — see `aggregateSessions`. */
+  day: string;
   latest_ts: string;
   turn_count: number;
   /** Headline tokens shown on the collapsed row: input + output only.
@@ -79,6 +107,14 @@ interface AggregatedSession {
    * order. Empty for sessions that never used the Task/Agent tool. */
   subagents: SubagentSession[];
 }
+
+/** Splitting rows by day multiplies their count, so the cap is higher than
+ *  the old per-conversation 100 — it still bounds the DOM on a heavy month. */
+const MAX_ROWS = 250;
+
+/** Days of history this tab aggregates. Mirrored by `TAB_WINDOW_DAYS` in
+ *  ExpandedReport so the header label cannot drift from what is queried. */
+export const WINDOW_DAYS = 7;
 
 const EMPTY_BREAKDOWN: Breakdown = {
   input: 0,
@@ -118,6 +154,7 @@ function pickDominant(modelTokens: Map<string, number>, fallback: string): strin
 
 interface ParentAgg {
   project: string;
+  day: string;
   latest_ts: string;
   turn_count: number;
   headline_tokens: number;
@@ -140,11 +177,21 @@ interface SubAgg {
 }
 
 /**
- * Group raw assistant-message events into one row per Claude Code
- * conversation. Each unique parent `source_file` (a JSONL path under
- * ~/.claude/projects/) is one session; the lines inside it are the
- * conversation turns. Subagent transcripts (Task/Agent tool) are nested
- * under their parent instead of shown as duplicate top-level rows.
+ * Group raw assistant-message events into one row per conversation **per day**.
+ * Each unique parent `source_file` (a JSONL path under ~/.claude/projects/) is
+ * one conversation; the lines inside it are its turns. Subagent transcripts
+ * (Task/Agent tool) are nested under their parent instead of shown as
+ * duplicate top-level rows.
+ *
+ * The day is part of the key, not just a label. Grouping on `source_file`
+ * alone produced one row per conversation stamped with its *most recent* turn
+ * while summing cost across *every* turn — so resuming a conversation after a
+ * few days moved its whole accumulated cost under today. Real case from a user
+ * database: a conversation spanning Jul 26–29 rendered as "today · $12.33"
+ * when $1.13 was spent that day and $11.20 belonged to the three days before.
+ *
+ * With the day in the key, each row's total is money spent on that date, so
+ * the rows under a day header sum to that day's bar in the Trends tab.
  */
 export function aggregateSessions(
   events: SessionEvent[],
@@ -154,11 +201,15 @@ export function aggregateSessions(
 
   for (const e of events) {
     const isSub = e.source_file.includes(SUBAGENT_SEGMENT);
-    const pkey = parentKeyOf(e.source_file);
+    const day = localDayKey(e.ts);
+    // `#` cannot occur in a day key and does not appear in Claude Code's
+    // session paths, so it is an unambiguous separator for the composite key.
+    const pkey = `${parentKeyOf(e.source_file)}#${day}`;
     let p = parents.get(pkey);
     if (!p) {
       p = {
         project: e.project,
+        day,
         latest_ts: e.ts,
         turn_count: 0,
         headline_tokens: 0,
@@ -248,6 +299,7 @@ export function aggregateSessions(
     result.push({
       id,
       project: p.project,
+      day: p.day,
       latest_ts: p.latest_ts,
       turn_count: p.turn_count,
       headline_tokens: p.headline_tokens,
@@ -316,6 +368,51 @@ function BreakdownTable({
   );
 }
 
+/** Compaction boundaries that fall inside one session-day row.
+ *
+ * Worth surfacing because a compaction is invisible in the turn count but
+ * explains two things a bare row cannot: why a single day's session appears
+ * to hold more history than its turns suggest, and why cost steps up right
+ * afterwards — the surviving context is re-written to a cold cache at full
+ * price on the next call. */
+function CompactionRows({ items }: { items: Compaction[] }) {
+  return (
+    <div className="flex flex-col">
+      {items.map((c) => {
+        const dropped = c.pre_tokens > c.post_tokens ? c.pre_tokens - c.post_tokens : 0;
+        return (
+          <div
+            key={c.uuid}
+            className="
+              flex items-center gap-[var(--space-sm)]
+              pl-[calc(var(--space-sm)+14px+var(--space-sm))] pr-[var(--space-sm)]
+              py-[var(--space-2xs)]
+            "
+          >
+            <IconCompact
+              size={12}
+              aria-hidden
+              className="shrink-0 text-[color:var(--color-warn)] opacity-80"
+            />
+            <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-secondary)]">
+              Context compacted{c.trigger === 'manual' ? '' : ' automatically'} at{' '}
+              {formatClock(c.ts)}
+            </span>
+            <span className="mono text-[length:var(--text-micro)] tabular-nums text-[color:var(--color-text-muted)]">
+              {formatTokens(c.pre_tokens)} → {formatTokens(c.post_tokens)}
+            </span>
+            {dropped > 0 && (
+              <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
+                ({formatTokens(dropped)} dropped)
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** An indented, muted row for one subagent under its parent session. */
 function SubagentRow({ sub }: { sub: SubagentSession }) {
   return (
@@ -342,10 +439,14 @@ function SubagentRow({ sub }: { sub: SubagentSession }) {
 
 export function SessionsTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
-  const { data: events, error, loading, reload } = useTabData(
-    () => ipc.getSessionHistory(7),
+  const { data, error, loading, reload } = useTabData(
+    () =>
+      Promise.all([ipc.getSessionHistory(WINDOW_DAYS), ipc.getCompactions(WINDOW_DAYS)]).then(
+        ([events, compactions]) => ({ events, compactions }),
+      ),
     [version],
   );
+  const events = data?.events ?? null;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [pricing, setPricing] = useState<PricingEntry[] | null>(null);
 
@@ -366,6 +467,47 @@ export function SessionsTab() {
     () => sessions.reduce((sum, s) => sum + s.total_cost_usd, 0),
     [sessions],
   );
+
+  /** Compactions keyed exactly like a session row (`<parentFile>#<day>`), so
+   * an expanded row can look up its own boundaries in O(1). */
+  const compactionsByRow = useMemo(() => {
+    const map = new Map<string, Compaction[]>();
+    for (const c of data?.compactions ?? []) {
+      const key = `${parentKeyOf(c.source_file)}#${localDayKey(c.ts)}`;
+      const list = map.get(key);
+      if (list) list.push(c);
+      else map.set(key, [c]);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    }
+    return map;
+  }, [data?.compactions]);
+
+  /** Distinct conversations, not rows: a conversation worked on across three
+   * days is one session that produced three rows. Counting rows here would
+   * inflate the headline the same way the old cost attribution did. */
+  const conversationCount = useMemo(
+    () => new Set(sessions.map((s) => s.id.slice(0, s.id.lastIndexOf('#')))).size,
+    [sessions],
+  );
+
+  /** Rows bucketed under their day, newest first. `sessions` is already
+   * sorted by `latest_ts` descending and every row covers a single day, so a
+   * linear pass produces day groups in order without a second sort. */
+  const days = useMemo(() => {
+    const out: Array<{ day: string; rows: AggregatedSession[]; cost: number }> = [];
+    for (const s of sessions.slice(0, MAX_ROWS)) {
+      let group = out[out.length - 1];
+      if (!group || group.day !== s.day) {
+        group = { day: s.day, rows: [], cost: 0 };
+        out.push(group);
+      }
+      group.rows.push(s);
+      group.cost += s.total_cost_usd;
+    }
+    return out;
+  }, [sessions]);
 
   if (error) {
     return (
@@ -395,7 +537,7 @@ export function SessionsTab() {
     <div className="flex flex-col gap-[var(--space-sm)]">
       <div className="flex items-center justify-between px-[var(--space-2xs)]">
         <span className="text-[length:var(--text-label)] text-[color:var(--color-text-muted)]">
-          {sessions.length} {sessions.length === 1 ? 'session' : 'sessions'}
+          {conversationCount} {conversationCount === 1 ? 'session' : 'sessions'}
         </span>
         <span className="mono text-[length:var(--text-label)] text-[color:var(--color-text-secondary)]">
           {formatCost(totalCost)}
@@ -403,11 +545,37 @@ export function SessionsTab() {
       </div>
 
       <div className="flex flex-col">
-        {sessions.slice(0, 100).map((session) => {
+        {days.map((group) => (
+          <div key={group.day} className="flex flex-col">
+            {/* The day total is the point of the header, not decoration: it is
+                what the Trends bar for this date shows, so the two tabs can be
+                reconciled by eye. */}
+            <div
+              className="
+                sticky top-0 z-[1] flex items-baseline justify-between
+                bg-[var(--color-bg-base)] px-[var(--space-sm)]
+                pt-[var(--space-md)] pb-[var(--space-2xs)]
+              "
+            >
+              <span
+                className="
+                  text-[length:var(--text-micro)] font-[var(--weight-medium)]
+                  uppercase tracking-[var(--tracking-label)]
+                  text-[color:var(--color-text-muted)]
+                "
+              >
+                {formatDayLabel(group.day)}
+              </span>
+              <span className="mono text-[length:var(--text-micro)] tabular-nums text-[color:var(--color-text-muted)]">
+                {formatCost(group.cost)}
+              </span>
+            </div>
+            {group.rows.map((session) => {
           const isOpen = expandedId === session.id;
           const Chevron = isOpen ? ChevronDown : ChevronRight;
           const agentCount = session.subagents.length;
           const headless = isHeadlessProject(session.project);
+          const compactions = compactionsByRow.get(session.id) ?? [];
           return (
             <div key={session.id} className="border-b border-[var(--color-border-subtle)]">
               <button
@@ -441,9 +609,19 @@ export function SessionsTab() {
                       {headless ? 'headless' : session.project}
                     </span>
                     <ModelBadge model={session.dominant_model} />
+                    {/* Collapsed-row marker: without it the boundary is only
+                        discoverable by expanding every row one at a time. */}
+                    {compactions.length > 0 && (
+                      <span
+                        title={`Context compacted ${compactions.length}×`}
+                        className="inline-flex shrink-0 items-center text-[color:var(--color-warn)] opacity-80"
+                      >
+                        <IconCompact size={11} aria-label="Context compacted" />
+                      </span>
+                    )}
                   </div>
                   <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
-                    {formatTime(session.latest_ts)} · {session.turn_count} {session.turn_count === 1 ? 'turn' : 'turns'}{agentCount > 0 ? ` · ${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}` : ''}
+                    {formatClock(session.latest_ts)} · {session.turn_count} {session.turn_count === 1 ? 'turn' : 'turns'}{agentCount > 0 ? ` · ${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}` : ''}
                   </span>
                 </div>
 
@@ -458,6 +636,7 @@ export function SessionsTab() {
               </button>
               {isOpen && (
                 <>
+                  {compactions.length > 0 && <CompactionRows items={compactions} />}
                   {agentCount > 0 && (
                     <div className="flex flex-col py-[var(--space-2xs)]">
                       {session.subagents.map((sub) => (
@@ -473,10 +652,12 @@ export function SessionsTab() {
               )}
             </div>
           );
-        })}
-        {sessions.length > 100 && (
+            })}
+          </div>
+        ))}
+        {sessions.length > MAX_ROWS && (
           <div className="py-[var(--space-md)] text-center text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
-            Showing latest 100 sessions.
+            Showing the latest {MAX_ROWS} rows.
           </div>
         )}
       </div>
