@@ -39,32 +39,51 @@ export function ProvidersTab() {
     void reloadDefault();
   }, [reloadDefault]);
 
-  const handleSetDefault = useCallback(
-    async (id: string) => {
-      const outcome = await ipc.setDefaultProvider(id, false);
-      if (outcome.status === 'needs_confirmation') {
-        const keys = outcome.unmanaged_keys.join(', ');
-        const ok = window.confirm(
-          `~/.claude/settings.json already sets ${keys}. Switchboard did not write these — another tool or a manual edit did.\n\nOverwrite them?`,
-        );
-        if (!ok) return;
-        await ipc.setDefaultProvider(id, true);
-      }
-      await reloadDefault();
-    },
-    [reloadDefault],
-  );
-
   const handleClearDefault = useCallback(async () => {
-    // Returns keys left untouched because the user hand-edited them while the
-    // default was active (spec §4.2). Silently reverting someone's edit would
-    // be worse than leaving it, so say what was skipped.
-    const skipped = await ipc.clearDefaultProvider();
-    if (skipped.length > 0) {
-      setNotice(`Default turned off. Left your own edits to ${skipped.join(', ')} in place.`);
+    try {
+      // Returns keys left untouched because the user hand-edited them while the
+      // default was active (spec §4.2). Silently reverting someone's edit would
+      // be worse than leaving it, so say what was skipped.
+      const skipped = await ipc.clearDefaultProvider();
+      setNotice(
+        skipped.length > 0
+          ? `Default turned off. Left your own edits to ${skipped.join(', ')} in place.`
+          : null,
+      );
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e));
     }
     await reloadDefault();
   }, [reloadDefault]);
+
+  const handleSetDefault = useCallback(
+    async (id: string) => {
+      // Choosing the official provider as the default means having no provider
+      // default at all: its credentials come from the active account, so there
+      // is no env block to write — the entire operation is undoing whatever a
+      // third-party default put in settings.json.
+      if (providers.find((p) => p.id === id)?.kind === 'official') {
+        await handleClearDefault();
+        return;
+      }
+      try {
+        const outcome = await ipc.setDefaultProvider(id, false);
+        if (outcome.status === 'needs_confirmation') {
+          const keys = outcome.unmanaged_keys.join(', ');
+          const ok = window.confirm(
+            `~/.claude/settings.json already sets ${keys}. Switchboard did not write these — another tool or a manual edit did.\n\nOverwrite them?`,
+          );
+          if (!ok) return;
+          await ipc.setDefaultProvider(id, true);
+        }
+        setNotice(null);
+      } catch (e) {
+        setNotice(e instanceof Error ? e.message : String(e));
+      }
+      await reloadDefault();
+    },
+    [providers, handleClearDefault, reloadDefault],
+  );
 
   const handleLaunch = useCallback(
     async (id: string) => {
@@ -132,7 +151,14 @@ export function ProvidersTab() {
             <ProviderRow
               key={p.id}
               provider={p}
-              isDefault={defaultState?.provider_id === p.id}
+              /* No provider default active *is* the official one being in
+                 effect, so the official row carries the badge rather than an
+                 action that would do nothing. */
+              isDefault={
+                defaultState
+                  ? defaultState.provider_id === p.id
+                  : p.kind === 'official'
+              }
               onLaunch={handleLaunch}
               onEdit={setEditing}
               onDelete={handleDelete}

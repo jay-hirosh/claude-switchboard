@@ -112,6 +112,55 @@ describe('ProvidersTab', () => {
     confirmSpy.mockRestore();
   });
 
+  // Choosing the official provider as the default means having no provider
+  // default at all — its credentials come from the active account, so there is
+  // no env block to write. The whole operation is undoing the other one.
+  it('clears the default instead of writing env when official is chosen', async () => {
+    ipcMock.listProviders.mockResolvedValue([official, glm]);
+    ipcMock.getDefaultProvider = vi.fn().mockResolvedValue({
+      id: 1,
+      provider_id: 'p1',
+      managed_env: {},
+      applied_at: 0,
+    });
+    ipcMock.setDefaultProvider = vi.fn().mockResolvedValue({ status: 'applied' });
+    ipcMock.clearDefaultProvider = vi.fn().mockResolvedValue([]);
+
+    render(<ProvidersTab />);
+    await waitFor(() => expect(screen.getByText('Anthropic (official)')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /set anthropic \(official\) as default/i }));
+
+    await waitFor(() => expect(ipcMock.clearDefaultProvider).toHaveBeenCalled());
+    expect(ipcMock.setDefaultProvider).not.toHaveBeenCalled();
+  });
+
+  it('warns which hand-edited keys it left alone when reverting to official', async () => {
+    ipcMock.listProviders.mockResolvedValue([official, glm]);
+    ipcMock.getDefaultProvider = vi
+      .fn()
+      .mockResolvedValue({ id: 1, provider_id: 'p1', managed_env: {}, applied_at: 0 });
+    ipcMock.clearDefaultProvider = vi.fn().mockResolvedValue(['ANTHROPIC_MODEL']);
+
+    render(<ProvidersTab />);
+    await waitFor(() => expect(screen.getByText('Anthropic (official)')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /set anthropic \(official\) as default/i }));
+
+    await waitFor(() => expect(screen.getByText(/ANTHROPIC_MODEL/)).toBeTruthy());
+  });
+
+  // With no provider default applied, the official row *is* in effect — so it
+  // carries the badge, not an action that would do nothing.
+  it('marks official as the default when no provider default is applied', async () => {
+    ipcMock.listProviders.mockResolvedValue([official, glm]);
+    ipcMock.getDefaultProvider = vi.fn().mockResolvedValue(null);
+    render(<ProvidersTab />);
+    await waitFor(() => expect(screen.getByText('Anthropic (official)')).toBeTruthy());
+    expect(screen.getByText('Default')).toBeTruthy();
+    expect(
+      screen.queryByRole('button', { name: /set anthropic \(official\) as default/i }),
+    ).toBeNull();
+  });
+
   it('does not force the write when the user declines confirmation', async () => {
     ipcMock.listProviders.mockResolvedValue([official, glm]);
     ipcMock.setDefaultProvider = vi.fn().mockResolvedValue({
