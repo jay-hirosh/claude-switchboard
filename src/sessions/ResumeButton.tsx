@@ -80,8 +80,9 @@ export function ResumeButton({ label, disabledReason, vsCodeAvailable, onResume 
           group-hover:opacity-100 group-focus-within:opacity-100
         "
       >
-        {OPTIONS.map(({ surface, Icon, what, hint }, i) => {
-          const unavailable = surface === 'vs_code_tab' && !vsCodeAvailable;
+        {OPTIONS.map(({ surface, Icon, what, hint }) => {
+          const isEditor = surface === 'vs_code_tab';
+          const unavailable = isEditor && !vsCodeAvailable;
           return (
             <button
               key={surface}
@@ -91,20 +92,33 @@ export function ResumeButton({ label, disabledReason, vsCodeAvailable, onResume 
               aria-label={`Resume ${label} in ${what}`}
               title={
                 unavailable
-                  ? 'VS Code is unavailable — needs the `code` command on PATH and the Claude Code extension installed'
+                  ? 'VS Code is unavailable — needs the `code` command on PATH and the extension installed'
                   : hint
               }
               className={[
-                'inline-flex items-center justify-center',
-                'px-[var(--space-sm)] py-[var(--space-2xs)]',
+                'inline-flex items-center justify-center py-[var(--space-2xs)]',
                 'text-[color:var(--color-bg-base)]',
-                'transition-[filter,opacity] duration-[var(--duration-fast)] ease-[var(--ease-out)]',
+                'transition-[max-width,padding,opacity,filter] duration-[var(--duration-fast)] ease-[var(--ease-out)]',
                 'hover:brightness-110 active:brightness-95',
                 'focus-visible:outline-2 focus-visible:outline-[var(--color-border-focus)] focus-visible:outline-offset-1',
                 'disabled:opacity-40',
-                // A hairline between the two halves, so the split reads as two
-                // targets rather than one wide button.
-                i > 0 ? 'border-l border-[color:var(--color-bg-base)]/25' : '',
+                isEditor
+                  ? // Collapsed, the editor half has no width and takes no
+                    // clicks: a click on the unexpanded control would otherwise
+                    // land on whichever half sat under the pointer, so aiming at
+                    // where the old single Resume button used to be opened an
+                    // editor instead of a terminal. It has to be asked for.
+                    [
+                      'max-w-0 overflow-hidden px-0 opacity-0 pointer-events-none',
+                      'border-l border-[color:var(--color-bg-base)]/25',
+                      'group-hover:max-w-[2.5rem] group-hover:px-[var(--space-sm)]',
+                      'group-hover:opacity-100 group-hover:pointer-events-auto',
+                      'group-focus-within:max-w-[2.5rem] group-focus-within:px-[var(--space-sm)]',
+                      'group-focus-within:opacity-100 group-focus-within:pointer-events-auto',
+                    ].join(' ')
+                  : // The terminal half fills the control while collapsed, so a
+                    // plain click keeps doing what Resume always did.
+                    'flex-1 px-[var(--space-sm)]',
               ].join(' ')}
             >
               <Icon size={13} aria-hidden />

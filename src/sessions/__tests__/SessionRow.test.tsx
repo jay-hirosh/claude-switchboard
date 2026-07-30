@@ -89,6 +89,26 @@ describe('SessionRow', () => {
     expect(onResume).not.toHaveBeenCalled();
   });
 
+  // Collapsed, the terminal half fills the control and the editor half is
+  // pointer-inert, so a plain click keeps doing what Resume always did instead
+  // of opening an editor because the pointer sat on the right-hand side.
+  it('keeps a collapsed click on the terminal, not the editor', () => {
+    render(
+      <SessionRow
+        session={session()}
+        expanded
+        vsCodeAvailable
+        onToggle={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    const editor = screen.getByRole('button', { name: /in a VS Code tab/ });
+    expect(editor.className).toContain('pointer-events-none');
+    expect(editor.className).toContain('group-hover:pointer-events-auto');
+    const term = screen.getByRole('button', { name: /in a terminal/ });
+    expect(term.className).not.toContain('pointer-events-none');
+  });
+
   // Resume splits into the two surfaces it can launch into. Both are real
   // buttons in the DOM at all times — the collapsed "Resume" face is decoration
   // — so a keyboard user reaches the same two choices a hover reveals.
