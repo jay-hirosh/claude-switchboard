@@ -40,7 +40,7 @@ export function SessionsBrowserTab() {
   const { sessions, loading, error } = useResumableSessions();
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
-  const { resume, dialog, notice } = useResume();
+  const { resume, dialog, notice, vsCodeAvailable } = useResume();
 
   const q = query.trim().toLowerCase();
   const filtered = useMemo(
@@ -72,8 +72,9 @@ export function SessionsBrowserTab() {
         session={s}
         expanded={expanded === s.session_id}
         showProject={Boolean(q)}
+        vsCodeAvailable={vsCodeAvailable}
         onToggle={toggle}
-        onResume={() => resume(s)}
+        onResume={(_id, surface) => resume(s, surface)}
       />
     ));
 

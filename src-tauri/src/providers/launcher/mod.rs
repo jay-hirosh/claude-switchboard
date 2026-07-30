@@ -8,6 +8,7 @@
 //! and Task Manager / WMI on Windows.
 
 pub mod script;
+pub mod vscode;
 
 use crate::providers::model::Provider;
 use anyhow::{anyhow, Context, Result};
@@ -48,6 +49,23 @@ impl Terminal {
     }
 }
 
+/// Where a launched session appears.
+///
+/// Not a `Terminal` variant: a VS Code tab has no script, no shell flavor and
+/// no console to host, so folding it into the terminal list would give every
+/// terminal-shaped function a case that means "not a terminal".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchSurface {
+    /// A standalone terminal window running a generated launch script.
+    #[default]
+    Terminal,
+    /// A Claude Code tab inside a fresh VS Code window. Carries the provider's
+    /// env, but not its CLI flags or the session's permission mode: the
+    /// extension builds its own argv. The UI states that at launch time.
+    VsCodeTab,
+}
+
 pub struct LaunchSpec {
     pub provider: Provider,
     pub cwd: PathBuf,
@@ -56,6 +74,7 @@ pub struct LaunchSpec {
     /// Validated by `sessions::recap` against the set the CLI accepts, so it
     /// reaches the script verbatim.
     pub permission_mode: Option<String>,
+    pub surface: LaunchSurface,
 }
 
 #[cfg(target_os = "macos")]
@@ -342,7 +361,21 @@ pub fn console_host(terminal: Terminal, program: String, args: Vec<String>) -> (
     ("cmd.exe".to_string(), wrapped)
 }
 
-pub fn launch(spec: &LaunchSpec) -> Result<PathBuf> {
+/// Returns a human-meaningful handle on what was launched: the generated script
+/// path for a terminal, the deep link for a VS Code tab. Both are only ever
+/// shown or logged, never re-parsed.
+pub fn launch(spec: &LaunchSpec) -> Result<String> {
+    if spec.surface == LaunchSurface::VsCodeTab {
+        // No script: the extension spawns the CLI itself, so the env travels on
+        // the `code` process rather than through a file we generate.
+        let env = spec.provider.resolved_env();
+        return vscode::launch(
+            &spec.cwd,
+            &env,
+            spec.resume_session_id.as_deref(),
+            &stale_provider_keys(&env),
+        );
+    }
     let dir = script_dir();
     let script_path = write_script(spec, &dir)?;
     let (program, args) = build_command(spec.terminal, &script_path, &spec.cwd);
@@ -351,7 +384,7 @@ pub fn launch(spec: &LaunchSpec) -> Result<PathBuf> {
         .args(&args)
         .spawn()
         .with_context(|| format!("spawn {program} for {}", spec.terminal.label()))?;
-    Ok(script_path)
+    Ok(script_path.to_string_lossy().to_string())
 }
 
 /// Deletes scripts older than one hour. Called at app start **and on a
@@ -645,6 +678,7 @@ mod tests {
             terminal: Terminal::Ghostty,
             resume_session_id: None,
             permission_mode: None,
+            surface: LaunchSurface::Terminal,
         };
         // The binary path is supplied rather than resolved, so this runs even
         // where Claude Code is not installed — see write_script_with_binary.
@@ -676,6 +710,7 @@ mod tests {
             terminal: Terminal::Ghostty,
             resume_session_id: None,
             permission_mode: None,
+            surface: LaunchSurface::Terminal,
         };
         let path = write_script_with_binary(&spec, dir.path(), Path::new("/usr/bin/true")).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();

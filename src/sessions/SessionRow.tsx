@@ -1,4 +1,4 @@
-import type { SessionSummary } from '../lib/generated/bindings';
+import type { LaunchSurface, SessionSummary } from '../lib/generated/bindings';
 import { ModelBadge } from '../components/ui/ModelBadge';
 import { ChevronDown, ChevronRight } from '../lib/icons';
 import { formatCost, formatTokens } from '../lib/format';
@@ -11,8 +11,11 @@ interface Props {
    *  header already says it. Search flattens the grouping, so there it is
    *  the one piece of context a result is missing. */
   showProject?: boolean;
+  /** Probed once by the tab; forwarded so the card can disable the VS Code
+   *  half of Resume with a reason instead of failing after the click. */
+  vsCodeAvailable?: boolean;
   onToggle: (id: string) => void;
-  onResume: (id: string) => void;
+  onResume: (id: string, surface: LaunchSurface) => void;
 }
 
 function ago(iso: string): string {
@@ -29,6 +32,7 @@ export function SessionRow({
   session,
   expanded,
   showProject = false,
+  vsCodeAvailable = false,
   onToggle,
   onResume,
 }: Props) {
@@ -107,7 +111,13 @@ export function SessionRow({
         </span>
       </button>
 
-      {expanded && <SessionRecapCard session={session} onResume={onResume} />}
+      {expanded && (
+        <SessionRecapCard
+          session={session}
+          vsCodeAvailable={vsCodeAvailable}
+          onResume={onResume}
+        />
+      )}
     </div>
   );
 }

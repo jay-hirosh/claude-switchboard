@@ -8,6 +8,7 @@ const ipcMock = vi.hoisted(() => ({
   listAvailableTerminals: vi.fn().mockResolvedValue(['ghostty']),
   launchProviderSession: vi.fn().mockResolvedValue('/tmp/a.sh'),
   getSettings: vi.fn().mockResolvedValue({ terminal: null }),
+  vscodeTabAvailable: vi.fn().mockResolvedValue(true),
 }));
 vi.mock('../../lib/ipc', () => ({ ipc: ipcMock }));
 

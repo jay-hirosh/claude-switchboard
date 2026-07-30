@@ -38,6 +38,8 @@ export {
   Search,
   Star,
   Terminal as TerminalIcon,
+  SquareTerminal,
+  SquareCode,
   RefreshCw,
   Settings,
   Sun,

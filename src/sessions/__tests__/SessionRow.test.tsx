@@ -89,15 +89,53 @@ describe('SessionRow', () => {
     expect(onResume).not.toHaveBeenCalled();
   });
 
-  it('keeps Resume enabled when the project folder exists', () => {
+  // Resume splits into the two surfaces it can launch into. Both are real
+  // buttons in the DOM at all times — the collapsed "Resume" face is decoration
+  // — so a keyboard user reaches the same two choices a hover reveals.
+  it('offers a terminal and a VS Code option when the folder exists', () => {
     const onResume = vi.fn();
     render(
-      <SessionRow session={session()} expanded onToggle={vi.fn()} onResume={onResume} />,
+      <SessionRow
+        session={session()}
+        expanded
+        vsCodeAvailable
+        onToggle={vi.fn()}
+        onResume={onResume}
+      />,
     );
-    const btn = screen.getByRole('button', { name: /^Resume / }) as HTMLButtonElement;
-    expect(btn.disabled).toBe(false);
-    fireEvent.click(btn);
-    expect(onResume).toHaveBeenCalledWith('029a3e04-fa36');
+    const term = screen.getByRole('button', { name: /Resume .* in a terminal/ }) as HTMLButtonElement;
+    const code = screen.getByRole('button', {
+      name: /Resume .* in a VS Code tab/,
+    }) as HTMLButtonElement;
+    expect(term.disabled).toBe(false);
+    expect(code.disabled).toBe(false);
+
+    fireEvent.click(term);
+    expect(onResume).toHaveBeenCalledWith('029a3e04-fa36', 'terminal');
+    fireEvent.click(code);
+    expect(onResume).toHaveBeenCalledWith('029a3e04-fa36', 'vs_code_tab');
+  });
+
+  // Clicking through to a failure inside VS Code is worse than saying up front
+  // that the editor half is missing.
+  it('disables the VS Code option with a reason when VS Code is unavailable', () => {
+    render(
+      <SessionRow
+        session={session()}
+        expanded
+        vsCodeAvailable={false}
+        onToggle={vi.fn()}
+        onResume={vi.fn()}
+      />,
+    );
+    const code = screen.getByRole('button', {
+      name: /Resume .* in a VS Code tab/,
+    }) as HTMLButtonElement;
+    expect(code.disabled).toBe(true);
+    expect(code.title).toMatch(/code.*PATH|extension/i);
+    expect(
+      (screen.getByRole('button', { name: /in a terminal/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 
   // Re-applying bypassPermissions is what the user wants, but it removes a
@@ -255,10 +293,18 @@ describe('SessionRow', () => {
     expect(screen.queryByText(/^0$/)).toBeNull();
   });
 
-  it('calls onResume with the session id', () => {
+  it('calls onResume with the session id and the chosen surface', () => {
     const onResume = vi.fn();
-    render(<SessionRow session={session()} expanded onToggle={vi.fn()} onResume={onResume} />);
-    fireEvent.click(screen.getByRole('button', { name: /resume/i }));
-    expect(onResume).toHaveBeenCalledWith(session().session_id);
+    render(
+      <SessionRow
+        session={session()}
+        expanded
+        vsCodeAvailable
+        onToggle={vi.fn()}
+        onResume={onResume}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /in a terminal/ }));
+    expect(onResume).toHaveBeenCalledWith(session().session_id, 'terminal');
   });
 });
