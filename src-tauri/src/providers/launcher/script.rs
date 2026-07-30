@@ -79,6 +79,10 @@ pub fn render(
     resume: Option<&str>,
     permission_mode: Option<&str>,
     clear_inherited_color: bool,
+    // Provider variables present in Switchboard's own environment that the
+    // chosen provider does not set, and so would otherwise leak into the
+    // session. See `launcher::stale_provider_keys`.
+    stale_provider_keys: &[String],
 ) -> String {
     let q: fn(&str) -> String = match flavor {
         ScriptFlavor::Sh => quote_sh,
@@ -101,6 +105,12 @@ pub fn render(
                     s.push_str(&format!("unset {k}\n"));
                 }
             }
+            if !stale_provider_keys.is_empty() {
+                s.push_str("# Another provider's variables, inherited rather than chosen.\n");
+                for k in stale_provider_keys {
+                    s.push_str(&format!("unset {k}\n"));
+                }
+            }
             for (k, v) in env {
                 s.push_str(&format!("export {}={}\n", k, q(v)));
             }
@@ -119,6 +129,14 @@ pub fn render(
             }
             if clear_inherited_color {
                 for k in COLOR_SUPPRESSORS {
+                    s.push_str(&format!(
+                        "Remove-Item Env:\\{k} -ErrorAction SilentlyContinue\n"
+                    ));
+                }
+            }
+            if !stale_provider_keys.is_empty() {
+                s.push_str("# Another provider's variables, inherited rather than chosen.\n");
+                for k in stale_provider_keys {
                     s.push_str(&format!(
                         "Remove-Item Env:\\{k} -ErrorAction SilentlyContinue\n"
                     ));
@@ -201,6 +219,72 @@ mod tests {
         assert_eq!(quote_ps("ab'cd"), "'ab''cd'");
     }
 
+    /// The official provider sets no env, so an add-only script left an
+    /// inherited third-party endpoint in place and the session ran on it.
+    #[test]
+    fn sh_script_unsets_inherited_provider_keys_before_exporting() {
+        let stale = vec![
+            "ANTHROPIC_BASE_URL".to_string(),
+            "ANTHROPIC_MODEL".to_string(),
+        ];
+        let s = render(
+            ScriptFlavor::Sh,
+            "/tmp",
+            &BTreeMap::new(),
+            "/usr/bin/claude",
+            &[],
+            None,
+            None,
+            false,
+            &stale,
+        );
+        assert!(s.contains("unset ANTHROPIC_BASE_URL\n"), "{s}");
+        assert!(s.contains("unset ANTHROPIC_MODEL\n"), "{s}");
+    }
+
+    /// Order is load-bearing: an unset after the export would wipe the very
+    /// endpoint the launch is supposed to use.
+    #[test]
+    fn ps_script_removes_inherited_keys_before_setting_the_providers_own() {
+        let stale = vec!["ANTHROPIC_MODEL".to_string()];
+        let env = BTreeMap::from([(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://api.kimi.com/coding".to_string(),
+        )]);
+        let s = render(
+            ScriptFlavor::PowerShell,
+            r"C:\w",
+            &env,
+            r"C:\claude.exe",
+            &[],
+            None,
+            None,
+            false,
+            &stale,
+        );
+        let removed = s.find("Remove-Item Env:\\ANTHROPIC_MODEL").expect("removal");
+        let set = s.find("$env:ANTHROPIC_BASE_URL").expect("export");
+        assert!(removed < set, "removals must precede exports:\n{s}");
+    }
+
+    /// Nothing inherited means no cleanup block at all, rather than a comment
+    /// header with nothing under it.
+    #[test]
+    fn no_cleanup_block_when_nothing_was_inherited() {
+        let s = render(
+            ScriptFlavor::Sh,
+            "/tmp",
+            &env(),
+            "/usr/bin/claude",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+        );
+        assert!(!s.contains("inherited rather than chosen"), "{s}");
+    }
+
     #[test]
     fn sh_script_has_shebang_cd_exports_and_exec() {
         let s = render(
@@ -212,6 +296,7 @@ mod tests {
             None,
             None,
             false,
+            &[],
         );
         assert!(s.starts_with("#!/bin/sh\n"));
         assert!(s.contains("cd '/tmp/my project' || exit 1"));
@@ -230,6 +315,7 @@ mod tests {
             Some("57ca2089-1111"),
             None,
             false,
+            &[],
         );
         assert!(s
             .trim_end()
@@ -247,6 +333,7 @@ mod tests {
             None,
             None,
             false,
+            &[],
         );
         assert!(s.contains(r"Set-Location 'C:\Users\me\my project'"));
         assert!(s.contains("$env:ANTHROPIC_MODEL = 'glm-5.2'"));
@@ -270,6 +357,7 @@ mod tests {
             None,
             None,
             false,
+            &[],
         );
         for k in SESSION_MARKERS {
             assert!(
@@ -295,6 +383,7 @@ mod tests {
             None,
             None,
             false,
+            &[],
         );
         for k in SESSION_MARKERS {
             assert!(
@@ -350,7 +439,7 @@ mod tests {
             "ANTHROPIC_AUTH_TOKEN".to_string(),
             "x'; rm -rf ~; echo '".to_string(),
         );
-        let s = render(ScriptFlavor::Sh, "/tmp", &e, "/usr/bin/claude", &[], None, None, false);
+        let s = render(ScriptFlavor::Sh, "/tmp", &e, "/usr/bin/claude", &[], None, None, false, &[]);
         // The dangerous text must appear only inside a quoted export line.
         let line = s
             .lines()
@@ -385,7 +474,7 @@ mod tests {
         let mut e = env();
         e.insert("ANTHROPIC_MODEL".to_string(), payload.clone());
         // `true` stands in for the claude binary so the script terminates.
-        let s = render(ScriptFlavor::Sh, "/tmp", &e, "/usr/bin/true", &[], None, None, false);
+        let s = render(ScriptFlavor::Sh, "/tmp", &e, "/usr/bin/true", &[], None, None, false, &[]);
 
         let script = d.path().join("t.sh");
         std::fs::write(&script, &s).unwrap();
@@ -409,6 +498,7 @@ mod tests {
             &["-c".to_string(), "printf %s \"$ANTHROPIC_MODEL\"".to_string()],
             None,
             false,
+            &[],
         );
         let script2 = d.path().join("t2.sh");
         std::fs::write(&script2, &echo).unwrap();
@@ -431,6 +521,7 @@ mod tests {
             None,
             None,
             false,
+            &[],
         );
         let script3 = d.path().join("t3.sh");
         std::fs::write(&script3, &s2).unwrap();
@@ -442,7 +533,7 @@ mod tests {
 
     #[test]
     fn generated_script_never_interpolates_a_provider_name() {
-        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false);
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false, &[]);
         assert!(
             s.contains("# Generated by Claude Switchboard. Safe to delete."),
             "header must be a fixed string, not built from provider data"
@@ -458,7 +549,7 @@ mod tests {
             "--append-system-prompt".to_string(),
             "be terse; don't stop".to_string(),
         ];
-        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &args, None, None, false);
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &args, None, None, false, &[]);
         assert!(
             s.trim_end().ends_with(
                 "exec '/usr/bin/claude' '--dangerously-skip-permissions' '--append-system-prompt' 'be terse; don'\\''t stop'"
@@ -479,6 +570,7 @@ mod tests {
             Some("abc-123"),
             None,
             false,
+            &[],
         );
         assert!(
             s.contains("--fork-session"),
@@ -493,13 +585,14 @@ mod tests {
             Some("abc-123"),
             None,
             false,
+            &[],
         );
         assert!(ps.contains("--fork-session"), "PowerShell path must fork too");
     }
 
     #[test]
     fn no_fork_flag_when_not_resuming() {
-        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false);
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false, &[]);
         assert!(!s.contains("--fork-session"));
         assert!(!s.contains("--resume"));
     }
@@ -517,6 +610,7 @@ mod tests {
             Some("abc-123"),
             Some("bypassPermissions"),
             false,
+            &[],
         );
         assert!(
             s.trim_end().ends_with(
@@ -535,13 +629,14 @@ mod tests {
             Some("abc-123"),
             Some("bypassPermissions"),
             false,
+            &[],
         );
         assert!(ps.contains("--permission-mode 'bypassPermissions'"));
     }
 
     #[test]
     fn no_permission_flag_when_the_session_recorded_none() {
-        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false);
+        let s = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false, &[]);
         assert!(!s.contains("--permission-mode"));
     }
 
@@ -566,6 +661,7 @@ mod tests {
                 Some("abc-123"),
                 Some("bypassPermissions"),
                 false,
+                &[],
             );
             assert!(
                 !s.contains("--permission-mode 'bypassPermissions'"),
@@ -588,6 +684,7 @@ mod tests {
             None,
             Some("x'; rm -rf ~; echo '"),
             false,
+            &[],
         );
         assert!(s.contains(r"--permission-mode 'x'\''; rm -rf ~; echo '\'''"));
         assert!(!s.contains("\nrm -rf"));
@@ -606,6 +703,7 @@ mod tests {
             None,
             None,
             true,
+            &[],
         );
         assert!(s.contains("unset NO_COLOR\n"));
         assert!(s.contains("unset FORCE_COLOR\n"));
@@ -624,6 +722,7 @@ mod tests {
             None,
             None,
             true,
+            &[],
         );
         for k in ["NO_COLOR", "FORCE_COLOR"] {
             assert!(ps.contains(&format!(
@@ -645,6 +744,7 @@ mod tests {
             None,
             None,
             false,
+            &[],
         );
         assert!(!s.contains("NO_COLOR"), "must not override the user's own setting");
         assert!(!s.contains("FORCE_COLOR"));
@@ -654,8 +754,8 @@ mod tests {
 
     #[test]
     fn env_order_is_deterministic() {
-        let a = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false);
-        let b = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false);
+        let a = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false, &[]);
+        let b = render(ScriptFlavor::Sh, "/tmp", &env(), "/usr/bin/claude", &[], None, None, false, &[]);
         assert_eq!(a, b);
     }
 }
