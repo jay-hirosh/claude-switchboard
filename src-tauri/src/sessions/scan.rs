@@ -42,7 +42,8 @@ pub fn discover_session_files(root: &Path) -> Vec<PathBuf> {
             out.push((mtime, fpath));
         }
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    // Newest first, so a truncated scan keeps the sessions most likely wanted.
+    out.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
     out.into_iter().map(|(_, p)| p).collect()
 }
 

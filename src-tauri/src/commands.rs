@@ -505,7 +505,9 @@ pub async fn resize_window(mode: String, app: tauri::AppHandle) -> Result<(), St
     let cur_size = w.outer_size().map_err(|e| e.to_string())?;
     let cur_pos = w.outer_position().map_err(|e| e.to_string())?;
     let from_w = cur_size.width as f64 / scale;
-    let from_h = cur_size.height as f64 / scale;
+    // Height is not part of the starting frame: the animation below drives
+    // height from the target mode, not from where the window happened to be.
+    let _from_h = cur_size.height as f64 / scale;
     let from_x = cur_pos.x as f64 / scale;
     let from_y = cur_pos.y as f64 / scale;
 

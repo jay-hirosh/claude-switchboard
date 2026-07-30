@@ -70,6 +70,10 @@ const SESSION_MARKERS: [&str; 9] = [
 /// Inheriting it from a parent agent is not the same as choosing it.
 const COLOR_SUPPRESSORS: [&str; 2] = ["NO_COLOR", "FORCE_COLOR"];
 
+// Every parameter is an independent input to the generated text, and grouping
+// them into a struct would only move the same list one level out while making
+// the ~25 call sites in this module's tests harder to read.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     flavor: ScriptFlavor,
     cwd: &str,
@@ -412,6 +416,9 @@ mod tests {
                 "printf '[%s][%s]' \"$CLAUDE_CODE_CHILD_SESSION\" \"$CLAUDECODE\"".to_string(),
             ],
             None,
+            None,
+            false,
+            &[],
         );
         let script = d.path().join("t.sh");
         std::fs::write(&script, &s).unwrap();
@@ -496,6 +503,7 @@ mod tests {
             &e,
             "/bin/sh",
             &["-c".to_string(), "printf %s \"$ANTHROPIC_MODEL\"".to_string()],
+            None,
             None,
             false,
             &[],

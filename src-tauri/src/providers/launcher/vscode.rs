@@ -198,8 +198,8 @@ pub fn launch(
         1
     };
     std::thread::spawn(move || {
-        for i in 0..attempts {
-            std::thread::sleep(std::time::Duration::from_millis(URI_RETRY_DELAYS_MS[i]));
+        for delay in URI_RETRY_DELAYS_MS.iter().take(attempts) {
+            std::thread::sleep(std::time::Duration::from_millis(*delay));
             let mut c = std::process::Command::new(&fire_program);
             c.args(&fire_leading).args(open_uri_args(&fire_uri));
             hide_window(&mut c);

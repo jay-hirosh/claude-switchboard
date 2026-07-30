@@ -431,10 +431,16 @@ fn uuid_v4() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the unix-gated script-writing tests build a Provider.
+    #[cfg(unix)]
     use crate::providers::model::ProviderKind;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
+    // Only the script-writing tests use this, and those need real file modes,
+    // so they are unix-only. Without the same gate it reads as dead code on
+    // Windows and fails the `-D warnings` clippy run.
+    #[cfg(unix)]
     fn provider() -> Provider {
         Provider {
             id: "p1".into(),
