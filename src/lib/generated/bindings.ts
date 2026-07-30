@@ -496,7 +496,8 @@ export type LaunchSurface =
 "terminal" | 
 /**
  * A Claude Code tab inside a fresh VS Code window. Carries the provider's
- * env but not its CLI flags — see `vscode::unsupported`.
+ * env, but not its CLI flags or the session's permission mode: the
+ * extension builds its own argv. The UI states that at launch time.
  */
 "vs_code_tab"
 export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number }
