@@ -64,6 +64,7 @@ Called from the existing poll cycle after each **successful** poll. Writes a sma
   "tier": "MAX",
   "fiveHourPct": 42,
   "fiveHourResetAt": "2026-07-31T18:00:00Z",
+  "colorBand": "safe",
   "pollIntervalSeconds": 300,
   "writtenAt": "2026-07-31T15:32:00Z"
 }
@@ -85,8 +86,8 @@ Called from the existing poll cycle after each **successful** poll. Writes a sma
 
 ### 3.3 Main app: custom URL scheme handling
 
-- Register `claude-switchboard://` via `CFBundleURLTypes` in `src-tauri/Info.plist`.
-- Handle the incoming URL through Tauri's deep-link mechanism to bring the popover forward — equivalent to clicking the tray icon.
+- Register `claude-switchboard://` via the `tauri-plugin-deep-link` plugin's config: the `schemes` array under `plugins.deep-link.desktop` in `src-tauri/tauri.conf.json`. The Tauri CLI uses this config to generate the app bundle's `CFBundleURLTypes` Info.plist entry automatically at build time — no manual Info.plist editing.
+- Handle the incoming URL through the plugin's `on_open_url` listener (registered in `lib.rs`'s `setup()`) to bring the popover forward — equivalent to clicking the tray icon. Also check `get_current()` at startup for a launch-time URL that arrived before the listener was registered (the common cold-start case for a widget tap).
 
 ### 3.4 Data contract ownership
 

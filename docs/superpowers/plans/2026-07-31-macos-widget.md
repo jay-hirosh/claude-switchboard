@@ -17,7 +17,7 @@
 - Tap-to-open only. No in-widget interactive buttons / App Intents.
 - No push-based refresh (no Darwin notifications). The widget relies on WidgetKit's own timeline reload schedule and always shows an "as of Xm ago" freshness label rather than presenting a stale number as live.
 - Rust is the single source of truth for usage thresholds and color bands (mirrors `tray_icon::shared::arc_color`'s 75/90 thresholds). Swift never re-derives thresholds — it only renders whatever `colorBand` string Rust already computed.
-- The App Group identifier is `<TEAM_ID>.com.claude-switchboard.app`. `<TEAM_ID>` is a placeholder for your Apple Developer Team ID (found on the Membership Details page at developer.apple.com) — it must be substituted identically in three places, listed in Task 5, Step 1.
+- The App Group identifier is `<TEAM_ID>.com.claude-switchboard.app`. `<TEAM_ID>` is a placeholder for your Apple Developer Team ID (found on the Membership Details page at developer.apple.com) — it must be substituted identically in four places, listed in Task 5, Step 1.
 
 ---
 
@@ -412,13 +412,20 @@ No changes to `src-tauri/capabilities/default.json` are needed — the frontend 
 
 - [ ] **Step 5: Build and manually verify**
 
-Run: `pnpm tauri dev` (from repo root, wait for the app to launch), then in a separate terminal:
+`pnpm tauri dev` produces a bare binary, not an `.app` bundle — it has no `CFBundleURLTypes` Info.plist entry, so macOS Launch Services never learns to route `claude-switchboard://` URLs to it. Build and register a real app bundle instead:
+
+```bash
+pnpm tauri build --bundles app
+open "src-tauri/target/release/bundle/macos/Claude Switchboard.app"
+```
+
+Then, once the app has launched and is running (registering it with Launch Services), verify the deep link in a separate terminal:
 
 ```bash
 open "claude-switchboard://open"
 ```
 
-Expected: the popover window comes forward and gains focus, identical to clicking the tray icon. (This is an OS-level URL-dispatch integration — there is no meaningful Rust unit test for "the OS routed this URL to us"; the `open` command above is the real verification.)
+Expected: the popover window comes forward and gains focus, identical to clicking the tray icon. (This is an OS-level URL-dispatch integration — there is no meaningful Rust unit test for "the OS routed this URL to us"; the `open` commands above are the real verification.)
 
 - [ ] **Step 6: Commit**
 
@@ -701,12 +708,13 @@ git commit -m "feat(widget): add SwitchboardWidget WidgetKit extension"
 
 - [ ] **Step 1: Substitute your Team ID everywhere**
 
-Replace the `<TEAM_ID>` placeholder with your real Apple Developer Team ID in all three places it appears:
+Replace the `<TEAM_ID>` placeholder with your real Apple Developer Team ID in all four places it appears:
 1. `src-tauri/src/widget_snapshot.rs` — the `APP_GROUP_ID` constant.
 2. `native/macos/SwitchboardWidget/SwitchboardWidgetExtension/SwitchboardWidgetSnapshot.swift` — the `appGroupID` static constant.
 3. `native/macos/SwitchboardWidget/SwitchboardWidgetExtension/SwitchboardWidgetExtension.entitlements` — the `application-groups` array entry (already substituted if you entered the real ID directly in Task 4 Step 1's Xcode capability UI — double check it, since Xcode's UI accepts the ID as typed).
+4. `src-tauri/entitlements.plist` — the `com.apple.security.application-groups` array entry, created in Step 2 below.
 
-All three must match byte-for-byte or the widget will silently fail to read the shared container (`FileManager.containerURL` returns `nil` on a mismatch).
+All four must match byte-for-byte or the widget will silently fail to read the shared container (`FileManager.containerURL` returns `nil` on a mismatch).
 
 - [ ] **Step 2: Create the main app's entitlements file**
 
@@ -719,13 +727,13 @@ Create `src-tauri/entitlements.plist`:
 <dict>
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>YOUR_TEAM_ID.com.claude-switchboard.app</string>
+        <string><TEAM_ID>.com.claude-switchboard.app</string>
     </array>
 </dict>
 </plist>
 ```
 
-Replace `YOUR_TEAM_ID` with your real Team ID (same value as Step 1).
+Replace `<TEAM_ID>` with your real Team ID (same value as Step 1).
 
 - [ ] **Step 3: Write the build/sign/embed script**
 
