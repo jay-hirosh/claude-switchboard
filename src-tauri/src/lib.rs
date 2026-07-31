@@ -384,6 +384,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -560,6 +561,22 @@ pub fn run() {
                 tracing::error!(
                     "tray_by_id('main') returned None — tauri.conf.json `trayIcon` block missing?"
                 );
+            }
+
+            // Widget tap-to-open: `claude-switchboard://open` (any path)
+            // brings the popover forward, same as a tray-icon click.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let app_handle = app.handle().clone();
+                app.deep_link().on_open_url(move |_event| {
+                    if let Some(w) = app_handle.get_webview_window("popover") {
+                        crate::move_to_tray_center(&w);
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                        use tauri::Emitter;
+                        let _ = app_handle.emit("popover_shown", ());
+                    }
+                });
             }
 
             // First-run UX: a tray-only launch on a fresh install looks like
