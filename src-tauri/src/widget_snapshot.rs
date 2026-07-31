@@ -17,6 +17,18 @@ use std::path::{Path, PathBuf};
 /// entitlements exactly.
 const APP_GROUP_ID: &str = "<TEAM_ID>.com.claude-switchboard.app";
 
+/// Whether `APP_GROUP_ID` has been substituted with a real Apple Developer
+/// Team ID (see Task 5, Step 1 of the widget plan). `<` and `>` are legal
+/// APFS filename characters, so an un-substituted placeholder still resolves
+/// to a real, creatable container path — callers MUST gate the write on
+/// this returning `true`, or every build (including public releases) will
+/// silently create `~/Library/Group Containers/<TEAM_ID>.com.claude-switchboard.app/`
+/// containing the user's account email, for a widget only a locally-signed
+/// build can ever read.
+pub fn is_configured() -> bool {
+    !APP_GROUP_ID.contains('<')
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WidgetSnapshot {
@@ -118,6 +130,16 @@ mod tests {
             fetched_at: Utc::now(),
             unknown: Default::default(),
         }
+    }
+
+    #[test]
+    fn is_configured_is_false_for_the_current_placeholder() {
+        // This assertion doubles as a check that catches the day someone
+        // substitutes their real Team ID into APP_GROUP_ID and forgets to
+        // update this test — at that point it should start failing here,
+        // which is the intended signal that the constant now needs a
+        // corresponding is_configured() review, not a silent green build.
+        assert!(!is_configured());
     }
 
     #[test]

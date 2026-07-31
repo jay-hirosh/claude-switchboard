@@ -332,12 +332,26 @@ async fn apply_fetch_outcome(
                 };
                 #[cfg(target_os = "macos")]
                 {
-                    let poll_interval_secs = state.settings.read().polling_interval_secs;
-                    let ws = crate::widget_snapshot::build(acc, &snapshot, poll_interval_secs, Utc::now());
-                    if let Err(e) =
-                        crate::widget_snapshot::write(&crate::widget_snapshot::container_dir(), &ws)
-                    {
-                        tracing::warn!("widget snapshot write failed: {e}");
+                    // Skip entirely when APP_GROUP_ID is still the
+                    // `<TEAM_ID>` placeholder: `container_dir()` would
+                    // otherwise resolve to a real, creatable path (`<` and
+                    // `>` are legal APFS filename characters) and silently
+                    // write the user's account email to a junk directory
+                    // that no widget can ever read.
+                    //
+                    // Also skip when `five_hour` is missing: fabricating a
+                    // `0%` / "safe" band for absent data would present a
+                    // number that was never real. Simply not writing lets
+                    // the previous snapshot age in place, exactly like a
+                    // failed poll already does.
+                    if crate::widget_snapshot::is_configured() && snapshot.five_hour.is_some() {
+                        let poll_interval_secs = state.settings.read().polling_interval_secs;
+                        let ws = crate::widget_snapshot::build(acc, &snapshot, poll_interval_secs, Utc::now());
+                        if let Err(e) =
+                            crate::widget_snapshot::write(&crate::widget_snapshot::container_dir(), &ws)
+                        {
+                            tracing::warn!("widget snapshot write failed: {e}");
+                        }
                     }
                 }
                 if let Ok(fired) = notifier::evaluate(

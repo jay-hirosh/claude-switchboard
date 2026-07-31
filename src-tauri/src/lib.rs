@@ -577,6 +577,25 @@ pub fn run() {
                         let _ = app_handle.emit("popover_shown", ());
                     }
                 });
+
+                // `on_open_url` only catches URLs that arrive AFTER the
+                // listener above is registered. A widget tap on a
+                // not-yet-running, LSUIElement menu-bar app routinely lands
+                // before that point (cold start), so also check for a
+                // launch-time URL the plugin already captured — per
+                // tauri-plugin-deep-link's own docs — and run the same
+                // show/focus/emit block if one is present.
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    if !urls.is_empty() {
+                        if let Some(w) = app.get_webview_window("popover") {
+                            crate::move_to_tray_center(&w);
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            use tauri::Emitter;
+                            let _ = w.app_handle().emit("popover_shown", ());
+                        }
+                    }
+                }
             }
 
             // First-run UX: a tray-only launch on a fresh install looks like
