@@ -18,4 +18,5 @@ vite.config.d.ts
 target-check/
 src-tauri/patches/
 debug_*.md
+.worktrees/
 .superpowers/
