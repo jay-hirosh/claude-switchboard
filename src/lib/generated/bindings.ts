@@ -352,9 +352,26 @@ async listAvailableTerminals() : Promise<Result<Terminal[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async launchProviderSession(providerId: string, cwd: string, terminal: Terminal, resumeSessionId: string | null, permissionMode: string | null) : Promise<Result<string, string>> {
+/**
+ * Whether a VS Code tab can be offered at all: both the `code` CLI and the
+ * Claude Code extension have to be present. Probed at settings time so an
+ * unavailable choice surfaces before the user commits to a session.
+ */
+async vscodeTabAvailable() : Promise<Result<boolean, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("launch_provider_session", { providerId, cwd, terminal, resumeSessionId, permissionMode }) };
+    return { status: "ok", data: await TAURI_INVOKE("vscode_tab_available") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * `surface` is optional so callers written before VS Code tabs existed keep
+ * launching into a terminal.
+ */
+async launchProviderSession(providerId: string, cwd: string, terminal: Terminal, resumeSessionId: string | null, permissionMode: string | null, surface: LaunchSurface | null) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("launch_provider_session", { providerId, cwd, terminal, resumeSessionId, permissionMode, surface }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -465,6 +482,24 @@ export type ExtraUsage = { is_enabled?: boolean; monthly_limit_cents?: number; u
  * Wall-clock time-of-day in user's local timezone.
  */
 export type HhMm = { hour: number; minute: number }
+/**
+ * Where a launched session appears.
+ * 
+ * Not a `Terminal` variant: a VS Code tab has no script, no shell flavor and
+ * no console to host, so folding it into the terminal list would give every
+ * terminal-shaped function a case that means "not a terminal".
+ */
+export type LaunchSurface = 
+/**
+ * A standalone terminal window running a generated launch script.
+ */
+"terminal" | 
+/**
+ * A Claude Code tab inside a fresh VS Code window. Carries the provider's
+ * env, but not its CLI flags or the session's permission mode: the
+ * extension builds its own argv. The UI states that at launch time.
+ */
+"vs_code_tab"
 export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number }
 /**
  * Serializable mirror of `Preset` for the frontend.

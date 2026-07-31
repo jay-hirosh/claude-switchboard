@@ -64,8 +64,7 @@ export function ProviderRow({
           without reserved slots its Launch button sat further right than every
           other row's — the ragged edge that made the list read as broken. */}
       <div className="flex w-[84px] shrink-0 justify-end">
-        {!isOfficial &&
-          onSetDefault &&
+        {onSetDefault &&
           (isDefault ? (
             <Badge variant="accent" icon={<Star size={10} aria-hidden />}>
               Default
@@ -76,6 +75,15 @@ export function ProviderRow({
               size="sm"
               onClick={() => onSetDefault(provider.id)}
               aria-label={`Set ${provider.name} as default`}
+              /* The official row's default is the absence of one: it undoes
+                 whatever a third-party default wrote to settings.json, rather
+                 than writing an env block of its own. Two very different
+                 consequences behind one label, so each says which it is. */
+              title={
+                isOfficial
+                  ? 'Removes the provider env Switchboard added to ~/.claude/settings.json and restores what was there before, so a bare `claude` uses your account again. A backup is written first.'
+                  : `Writes this provider's env into ~/.claude/settings.json, so a bare \`claude\` uses ${provider.name} everywhere. A backup is written first, and turning it off restores your own values.`
+              }
             >
               Set default
             </Button>

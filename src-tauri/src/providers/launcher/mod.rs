@@ -8,6 +8,7 @@
 //! and Task Manager / WMI on Windows.
 
 pub mod script;
+pub mod vscode;
 
 use crate::providers::model::Provider;
 use anyhow::{anyhow, Context, Result};
@@ -48,6 +49,23 @@ impl Terminal {
     }
 }
 
+/// Where a launched session appears.
+///
+/// Not a `Terminal` variant: a VS Code tab has no script, no shell flavor and
+/// no console to host, so folding it into the terminal list would give every
+/// terminal-shaped function a case that means "not a terminal".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchSurface {
+    /// A standalone terminal window running a generated launch script.
+    #[default]
+    Terminal,
+    /// A Claude Code tab inside a fresh VS Code window. Carries the provider's
+    /// env, but not its CLI flags or the session's permission mode: the
+    /// extension builds its own argv. The UI states that at launch time.
+    VsCodeTab,
+}
+
 pub struct LaunchSpec {
     pub provider: Provider,
     pub cwd: PathBuf,
@@ -56,6 +74,7 @@ pub struct LaunchSpec {
     /// Validated by `sessions::recap` against the set the CLI accepts, so it
     /// reaches the script verbatim.
     pub permission_mode: Option<String>,
+    pub surface: LaunchSurface,
 }
 
 #[cfg(target_os = "macos")]
@@ -159,6 +178,51 @@ pub fn write_script(spec: &LaunchSpec, dir: &Path) -> Result<PathBuf> {
     write_script_with_binary(spec, dir, &claude)
 }
 
+/// Provider variables in Switchboard's own environment that `chosen` does not
+/// set, and which would therefore survive into the launched session.
+///
+/// This is the "official provider still launches on GLM" bug. Switchboard
+/// started from inside a provider-launched session inherits that provider's
+/// whole env — `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `API_TIMEOUT_MS`. The
+/// official provider sets no env at all, so a script that only *adds* variables
+/// left every one of them in place: the row promised "uses your active account"
+/// and the session talked to the third-party endpoint. Third-party providers
+/// were affected too, in the keys the new provider happens not to define — a
+/// stale `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from one preset silently applying to
+/// the next.
+///
+/// Cleared unconditionally, unlike `COLOR_SUPPRESSORS`, which are only cleared
+/// when we know the value came from a parent agent. `NO_COLOR` is a documented
+/// cross-tool standard a user may mean; an inherited endpoint and token
+/// contradict the provider the user just picked, and no reading of that is
+/// deliberate. The opt-in global default is unaffected: Claude Code applies
+/// `settings.json` env after the process starts, so it still wins.
+///
+/// The key set is shared with the global-default feature rather than
+/// re-listed — the two need exactly the same notion of "a provider variable".
+pub fn stale_provider_keys(chosen: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    stale_from(
+        std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()),
+        chosen,
+    )
+}
+
+/// The filter, separated from the process environment it is normally fed.
+/// Mutating real env vars in a test races every other test in the binary.
+fn stale_from(
+    present: impl Iterator<Item = String>,
+    chosen: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut keys: Vec<String> = present
+        .filter(|k| crate::providers::default_env::is_provider_key(k) && !chosen.contains_key(k))
+        .collect();
+    // Deterministic order so a generated script diffs cleanly and tests can
+    // assert against it.
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 /// Whether Switchboard is itself running inside a Claude Code session, which
 /// is the case whenever it was started with `pnpm tauri dev` from the CLI.
 ///
@@ -181,16 +245,18 @@ pub fn write_script_with_binary(
     claude: &Path,
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).context("create launch script dir")?;
-    let body = script::render(
-        spec.terminal.flavor(),
-        &spec.cwd.to_string_lossy(),
-        &spec.provider.resolved_env(),
-        &claude.to_string_lossy(),
-        &spec.provider.extra_args,
-        spec.resume_session_id.as_deref(),
-        spec.permission_mode.as_deref(),
-        inside_claude_code_session(),
-    );
+    let env = spec.provider.resolved_env();
+    let body = script::render(&script::ScriptSpec {
+        flavor: spec.terminal.flavor(),
+        cwd: &spec.cwd.to_string_lossy(),
+        env: &env,
+        claude_path: &claude.to_string_lossy(),
+        extra_args: &spec.provider.extra_args,
+        resume: spec.resume_session_id.as_deref(),
+        permission_mode: spec.permission_mode.as_deref(),
+        clear_inherited_color: inside_claude_code_session(),
+        stale_provider_keys: &stale_provider_keys(&env),
+    });
     let ext = match spec.terminal.flavor() {
         ScriptFlavor::Sh => "sh",
         ScriptFlavor::PowerShell => "ps1",
@@ -295,7 +361,21 @@ pub fn console_host(terminal: Terminal, program: String, args: Vec<String>) -> (
     ("cmd.exe".to_string(), wrapped)
 }
 
-pub fn launch(spec: &LaunchSpec) -> Result<PathBuf> {
+/// Returns a human-meaningful handle on what was launched: the generated script
+/// path for a terminal, the deep link for a VS Code tab. Both are only ever
+/// shown or logged, never re-parsed.
+pub fn launch(spec: &LaunchSpec) -> Result<String> {
+    if spec.surface == LaunchSurface::VsCodeTab {
+        // No script: the extension spawns the CLI itself, so the env travels on
+        // the `code` process rather than through a file we generate.
+        let env = spec.provider.resolved_env();
+        return vscode::launch(
+            &spec.cwd,
+            &env,
+            spec.resume_session_id.as_deref(),
+            &stale_provider_keys(&env),
+        );
+    }
     let dir = script_dir();
     let script_path = write_script(spec, &dir)?;
     let (program, args) = build_command(spec.terminal, &script_path, &spec.cwd);
@@ -304,7 +384,7 @@ pub fn launch(spec: &LaunchSpec) -> Result<PathBuf> {
         .args(&args)
         .spawn()
         .with_context(|| format!("spawn {program} for {}", spec.terminal.label()))?;
-    Ok(script_path)
+    Ok(script_path.to_string_lossy().to_string())
 }
 
 /// Deletes scripts older than one hour. Called at app start **and on a
@@ -351,10 +431,16 @@ fn uuid_v4() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the unix-gated script-writing tests build a Provider.
+    #[cfg(unix)]
     use crate::providers::model::ProviderKind;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
+    // Only the script-writing tests use this, and those need real file modes,
+    // so they are unix-only. Without the same gate it reads as dead code on
+    // Windows and fails the `-D warnings` clippy run.
+    #[cfg(unix)]
     fn provider() -> Provider {
         Provider {
             id: "p1".into(),
@@ -459,6 +545,70 @@ mod tests {
         assert!(!joined.contains("ANTHROPIC"));
     }
 
+    /// The reported bug: Switchboard started from inside a GLM-launched session
+    /// inherited `ANTHROPIC_BASE_URL=https://api.z.ai/...`, and the official
+    /// provider — which sets no env at all — produced a script that only added
+    /// variables. Every GLM variable survived, so "Anthropic (official)" ran on
+    /// z.ai while the row said "uses your active account".
+    #[test]
+    fn official_provider_strips_every_inherited_provider_key() {
+        let inherited = [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_MODEL",
+            "API_TIMEOUT_MS",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            "PATH",
+            "HOME",
+        ]
+        .iter()
+        .map(|s| s.to_string());
+        // The official provider's env is empty, which is exactly what made the
+        // add-only script a no-op.
+        let stale = stale_from(inherited, &BTreeMap::new());
+        assert_eq!(
+            stale,
+            vec![
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_MODEL",
+                "API_TIMEOUT_MS",
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            ],
+            "unrelated variables must survive; provider variables must not"
+        );
+    }
+
+    /// A key the chosen provider sets is about to be exported, so unsetting it
+    /// first would be pointless churn — and, if the order ever slipped, a
+    /// provider that launches with no endpoint at all.
+    #[test]
+    fn keys_the_chosen_provider_sets_are_not_listed_as_stale() {
+        let inherited = ["ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "API_TIMEOUT_MS"]
+            .iter()
+            .map(|s| s.to_string());
+        let chosen = BTreeMap::from([(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://api.kimi.com/coding".to_string(),
+        )]);
+        let stale = stale_from(inherited, &chosen);
+        assert_eq!(stale, vec!["ANTHROPIC_MODEL", "API_TIMEOUT_MS"]);
+    }
+
+    /// Cross-contamination between third-party providers: a model or window size
+    /// left over from the last provider silently applying to the next one.
+    #[test]
+    fn switching_between_third_party_providers_drops_the_previous_extras() {
+        let inherited = ["ANTHROPIC_MODEL", "CLAUDE_CODE_AUTO_COMPACT_WINDOW"]
+            .iter()
+            .map(|s| s.to_string());
+        let chosen = BTreeMap::from([("ANTHROPIC_MODEL".to_string(), "k3".to_string())]);
+        assert_eq!(
+            stale_from(inherited, &chosen),
+            vec!["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]
+        );
+    }
+
     #[test]
     fn terminal_flavor_matches_platform_family() {
         assert_eq!(Terminal::Ghostty.flavor(), ScriptFlavor::Sh);
@@ -534,6 +684,7 @@ mod tests {
             terminal: Terminal::Ghostty,
             resume_session_id: None,
             permission_mode: None,
+            surface: LaunchSurface::Terminal,
         };
         // The binary path is supplied rather than resolved, so this runs even
         // where Claude Code is not installed — see write_script_with_binary.
@@ -565,6 +716,7 @@ mod tests {
             terminal: Terminal::Ghostty,
             resume_session_id: None,
             permission_mode: None,
+            surface: LaunchSurface::Terminal,
         };
         let path = write_script_with_binary(&spec, dir.path(), Path::new("/usr/bin/true")).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();

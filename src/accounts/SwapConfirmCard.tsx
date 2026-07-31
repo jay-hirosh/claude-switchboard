@@ -33,6 +33,16 @@ function PlanTag({ plan }: { plan: string | null }) {
   );
 }
 
+/** "2 CLI sessions", "1 VS Code workspace", or both — pluralised, and skipping
+ *  whichever count is zero. */
+function runningLabel(cli: number, code: number): string {
+  const parts = [
+    cli > 0 ? `${cli} CLI session${cli > 1 ? 's' : ''}` : null,
+    code > 0 ? `${code} VS Code workspace${code > 1 ? 's' : ''}` : null,
+  ].filter(Boolean);
+  return parts.join(' and ');
+}
+
 function AccountLine({ entry }: { entry: AccountListEntry }) {
   return (
     <div className="flex items-center gap-[var(--space-xs)] min-w-0">
@@ -121,20 +131,24 @@ export function SwapConfirmCard({
             <span className="text-[length:var(--text-micro)] uppercase tracking-[var(--tracking-label)] text-[color:var(--color-text-muted)]">
               What happens
             </span>
+            {/* Effect first, mechanism last: the decision turns on what will
+                use the new account, not on which files move. The credential
+                store is named generically because this ships on Windows too,
+                where "Keychain" was simply wrong. */}
             <ul className="flex flex-col gap-[var(--space-2xs)] text-[length:var(--text-micro)] text-[color:var(--color-text-secondary)]">
-              <li>• Replaces the upstream-CLI credentials in your macOS Keychain</li>
-              <li>• Rewrites the <code className="mono">oauthAccount</code> slice of <code className="mono">~/.claude.json</code></li>
-              <li>• New <code className="mono">claude</code> invocations use {target.email} immediately</li>
-              {hasRunning ? (
-                <li>
-                  • {cli > 0 && `${cli} running CLI session${cli > 1 ? 's' : ''}`}
-                  {cli > 0 && code > 0 && ' and '}
-                  {code > 0 && `${code} VS Code workspace${code > 1 ? 's' : ''}`}
-                  {' '}adopt the new account within ~30 seconds (when their cached credentials refresh)
-                </li>
-              ) : (
-                <li>• No Claude Code sessions are running — nothing else to do</li>
-              )}
+              <li>
+                • New <code className="mono">claude</code> runs use {target.email} at once
+              </li>
+              <li>
+                •{' '}
+                {hasRunning
+                  ? `${runningLabel(cli, code)} follow within ~30s`
+                  : 'Nothing else is running'}
+              </li>
+              <li>
+                • Rewrites your stored credentials and{' '}
+                <code className="mono">~/.claude.json</code>
+              </li>
             </ul>
           </div>
 

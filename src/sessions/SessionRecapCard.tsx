@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
-import type { SessionSummary } from '../lib/generated/bindings';
-import { Button } from '../components/ui/Button';
-import { Play, ShieldOff } from '../lib/icons';
+import type { LaunchSurface, SessionSummary } from '../lib/generated/bindings';
+import { ShieldOff } from '../lib/icons';
+import { ResumeButton } from './ResumeButton';
 import { contextReadout } from './contextWindow';
 
 /** The CLI's mode names, in the words the app uses everywhere else. */
@@ -57,10 +57,13 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 export function SessionRecapCard({
   session,
+  vsCodeAvailable = false,
   onResume,
 }: {
   session: SessionSummary;
-  onResume: (id: string) => void;
+  /** Probed once by the tab, not per card — it cannot change mid-render. */
+  vsCodeAvailable?: boolean;
+  onResume: (id: string, surface: LaunchSurface) => void;
 }) {
   const duration = span(session.started_at, session.ended_at);
   const ended = endedAt(session.ended_at);
@@ -215,26 +218,21 @@ export function SessionRecapCard({
             {MODE_LABELS[session.permission_mode] ?? session.permission_mode}
           </span>
         )}
-        {/* Resuming is a `cd` into session.cwd, and Claude Code finds a
-            transcript only via the directory it is launched in — so a deleted
-            project folder makes resume impossible by any route, not merely
+        {/* Resuming starts in session.cwd, and Claude Code finds a transcript
+            only via the directory it is launched in — so a deleted project
+            folder makes resume impossible by any route, not merely
             inconvenient. Disabled with the reason attached beats a button that
             opens a terminal only to fail inside it. */}
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={!session.cwd_exists}
-          onClick={() => onResume(session.session_id)}
-          aria-label={`Resume ${session.title}`}
-          title={
+        <ResumeButton
+          label={session.title}
+          vsCodeAvailable={vsCodeAvailable}
+          disabledReason={
             session.cwd_exists
               ? undefined
               : `Cannot resume — the project folder no longer exists: ${session.cwd}`
           }
-        >
-          <Play size={12} aria-hidden />
-          Resume
-        </Button>
+          onResume={(surface) => onResume(session.session_id, surface)}
+        />
         </span>
       </div>
     </div>

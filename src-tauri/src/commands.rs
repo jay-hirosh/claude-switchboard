@@ -505,6 +505,11 @@ pub async fn resize_window(mode: String, app: tauri::AppHandle) -> Result<(), St
     let cur_size = w.outer_size().map_err(|e| e.to_string())?;
     let cur_pos = w.outer_position().map_err(|e| e.to_string())?;
     let from_w = cur_size.width as f64 / scale;
+    // Read on every platform, but only *used* by the animation loop below,
+    // which is `cfg(not(windows))`. Windows resizes in one step, so there it is
+    // genuinely unused — and renaming it to `_from_h` breaks every other
+    // platform's build instead of silencing one warning.
+    #[cfg_attr(target_os = "windows", allow(unused_variables))]
     let from_h = cur_size.height as f64 / scale;
     let from_x = cur_pos.x as f64 / scale;
     let from_y = cur_pos.y as f64 / scale;
@@ -1147,7 +1152,7 @@ mod tests {
 // Custom model providers
 // ---------------------------------------------------------------------------
 
-use crate::providers::launcher::{self, LaunchSpec, Terminal};
+use crate::providers::launcher::{self, LaunchSpec, LaunchSurface, Terminal};
 use crate::providers::model::Provider;
 use crate::providers::presets::{self, PresetInfo};
 use crate::providers::{default_env, DefaultProviderState};
@@ -1223,12 +1228,15 @@ pub async fn list_available_terminals() -> Result<Vec<Terminal>, String> {
 
 #[command]
 #[specta::specta]
+/// `surface` is optional so callers written before VS Code tabs existed keep
+/// launching into a terminal.
 pub async fn launch_provider_session(
     provider_id: String,
     cwd: String,
     terminal: Terminal,
     resume_session_id: Option<String>,
     permission_mode: Option<String>,
+    surface: Option<LaunchSurface>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
     let provider = state
@@ -1242,10 +1250,18 @@ pub async fn launch_provider_session(
         terminal,
         resume_session_id,
         permission_mode,
+        surface: surface.unwrap_or_default(),
     };
-    launcher::launch(&spec)
-        .map(|p| p.to_string_lossy().to_string())
-        .map_err(|e| format!("{e:#}"))
+    launcher::launch(&spec).map_err(|e| format!("{e:#}"))
+}
+
+/// Whether a VS Code tab can be offered at all: both the `code` CLI and the
+/// Claude Code extension have to be present. Probed at settings time so an
+/// unavailable choice surfaces before the user commits to a session.
+#[command]
+#[specta::specta]
+pub async fn vscode_tab_available() -> Result<bool, String> {
+    Ok(launcher::vscode::is_available())
 }
 
 /// The shell one-liner equivalent of a launch, for users whose terminal we
@@ -1270,6 +1286,9 @@ pub async fn get_provider_launch_command(
         terminal,
         resume_session_id: None,
         permission_mode: None,
+        // A copyable one-liner is inherently a shell command, so this path is
+        // terminal-only regardless of the configured surface.
+        surface: LaunchSurface::Terminal,
     };
     let script =
         launcher::write_script(&spec, &launcher::script_dir()).map_err(|e| format!("{e:#}"))?;

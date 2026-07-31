@@ -61,10 +61,21 @@ export const ipc = {
     terminal: import('./generated/bindings').Terminal,
     resumeSessionId: string | null = null,
     permissionMode: string | null = null,
+    /** Omitted means a terminal, matching every call written before tabs existed. */
+    surface: import('./generated/bindings').LaunchSurface | null = null,
   ) =>
     commands
-      .launchProviderSession(providerId, cwd, terminal, resumeSessionId, permissionMode)
+      .launchProviderSession(
+        providerId,
+        cwd,
+        terminal,
+        resumeSessionId,
+        permissionMode,
+        surface,
+      )
       .then(unwrap),
+  /** Both halves present: the `code` CLI, and the Claude Code extension. */
+  vscodeTabAvailable: () => commands.vscodeTabAvailable().then(unwrap),
   getProviderLaunchCommand: (
     providerId: string,
     cwd: string,
