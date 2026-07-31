@@ -246,17 +246,17 @@ pub fn write_script_with_binary(
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).context("create launch script dir")?;
     let env = spec.provider.resolved_env();
-    let body = script::render(
-        spec.terminal.flavor(),
-        &spec.cwd.to_string_lossy(),
-        &env,
-        &claude.to_string_lossy(),
-        &spec.provider.extra_args,
-        spec.resume_session_id.as_deref(),
-        spec.permission_mode.as_deref(),
-        inside_claude_code_session(),
-        &stale_provider_keys(&env),
-    );
+    let body = script::render(&script::ScriptSpec {
+        flavor: spec.terminal.flavor(),
+        cwd: &spec.cwd.to_string_lossy(),
+        env: &env,
+        claude_path: &claude.to_string_lossy(),
+        extra_args: &spec.provider.extra_args,
+        resume: spec.resume_session_id.as_deref(),
+        permission_mode: spec.permission_mode.as_deref(),
+        clear_inherited_color: inside_claude_code_session(),
+        stale_provider_keys: &stale_provider_keys(&env),
+    });
     let ext = match spec.terminal.flavor() {
         ScriptFlavor::Sh => "sh",
         ScriptFlavor::PowerShell => "ps1",
