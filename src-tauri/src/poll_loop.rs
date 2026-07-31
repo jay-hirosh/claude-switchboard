@@ -330,6 +330,16 @@ async fn apply_fetch_outcome(
                     let s = state.settings.read();
                     (s.thresholds.clone(), s.payg_threshold)
                 };
+                #[cfg(target_os = "macos")]
+                {
+                    let poll_interval_secs = state.settings.read().polling_interval_secs;
+                    let ws = crate::widget_snapshot::build(acc, &snapshot, poll_interval_secs, Utc::now());
+                    if let Err(e) =
+                        crate::widget_snapshot::write(&crate::widget_snapshot::container_dir(), &ws)
+                    {
+                        tracing::warn!("widget snapshot write failed: {e}");
+                    }
+                }
                 if let Ok(fired) = notifier::evaluate(
                     &state.db,
                     &cached.account_id,
