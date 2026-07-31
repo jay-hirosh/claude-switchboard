@@ -23,6 +23,8 @@ mod tray_icon;
 mod updater;
 pub mod usage_api;
 pub mod warmup;
+#[cfg(target_os = "macos")]
+mod widget_snapshot;
 
 use app_state::AppState;
 use std::sync::Arc;
