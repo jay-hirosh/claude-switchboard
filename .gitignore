@@ -20,3 +20,4 @@ src-tauri/patches/
 debug_*.md
 .worktrees/
 .superpowers/
+graphify-out/

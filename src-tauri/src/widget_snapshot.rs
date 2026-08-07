@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// App Group under Certificates, Identifiers & Profiles — see Task 5,
 /// Step 1 of the widget plan. Must match the widget extension's
 /// entitlements exactly.
-const APP_GROUP_ID: &str = "<TEAM_ID>.com.claude-switchboard.app";
+const APP_GROUP_ID: &str = "7VVV8Y9MKT.com.claude-switchboard.app";
 
 /// Whether `APP_GROUP_ID` has been substituted with a real Apple Developer
 /// Team ID (see Task 5, Step 1 of the widget plan). `<` and `>` are legal
@@ -133,13 +133,11 @@ mod tests {
     }
 
     #[test]
-    fn is_configured_is_false_for_the_current_placeholder() {
-        // This assertion doubles as a check that catches the day someone
-        // substitutes their real Team ID into APP_GROUP_ID and forgets to
-        // update this test — at that point it should start failing here,
-        // which is the intended signal that the constant now needs a
-        // corresponding is_configured() review, not a silent green build.
-        assert!(!is_configured());
+    fn is_configured_is_true_once_a_real_team_id_is_substituted() {
+        // APP_GROUP_ID has had its `<TEAM_ID>` placeholder replaced with a
+        // real Apple Developer Team ID (see Task 5, Step 1 of the widget
+        // plan), so writes are no longer gated off.
+        assert!(is_configured());
     }
 
     #[test]
