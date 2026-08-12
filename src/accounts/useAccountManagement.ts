@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useAppStore } from '../lib/store';
 import { ipc } from '../lib/ipc';
+import { computeBestAccountUuid } from './bestAccount';
 import type {
   AccountListEntry,
   RunningClaudeCode,
@@ -66,6 +67,8 @@ export function useAccountManagement() {
     () => accounts.find((a) => a.is_active) ?? null,
     [accounts],
   );
+
+  const bestAccountUuid = useMemo(() => computeBestAccountUuid(accounts), [accounts]);
 
   const openChooser = useCallback(() => setChooserOpen(true), []);
   const closeChooser = useCallback(() => setChooserOpen(false), []);
@@ -152,6 +155,7 @@ export function useAccountManagement() {
   return {
     accounts,
     currentActive,
+    bestAccountUuid,
     orgGroups,
     pending,
     swappingSlot,
