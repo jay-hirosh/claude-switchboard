@@ -228,7 +228,7 @@ function ExtraRow({
     burn.projected_cents_at_reset != null &&
     Math.abs(burn.cents_per_min) * 1440 >= 1;
   return (
-    <div className="flex flex-col gap-[2px]">
+    <div className="flex flex-col gap-[var(--space-2xs)]">
       <InstrumentRow
         label="Pay-as-you-go"
         caption={resetsAt ? undefined : 'no reset window'}
