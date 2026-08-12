@@ -163,6 +163,7 @@ pub fn run() {
             commands::clear_default_provider,
             commands::list_resumable_sessions,
             commands::get_live_sessions,
+            commands::get_limit_hit_history,
         ]);
 
     #[cfg(debug_assertions)]
@@ -216,6 +217,7 @@ pub fn run() {
             commands::clear_default_provider,
             commands::list_resumable_sessions,
             commands::get_live_sessions,
+            commands::get_limit_hit_history,
         ]);
 
     #[cfg(debug_assertions)]

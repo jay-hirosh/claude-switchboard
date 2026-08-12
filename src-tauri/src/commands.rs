@@ -138,6 +138,39 @@ pub async fn get_compactions(
     state.db.compactions_between(from, to).map_err(err_to_string)
 }
 
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
+pub struct LimitHitReport {
+    pub accounts: Vec<crate::store::AccountLimitHits>,
+}
+
+/// Per-account limit-hit stats over the trailing `days` window, using the
+/// second configured threshold (index 1, the "danger" tier) as the bar for
+/// what counts as a limit hit. One `limit_hit_stats` query per managed
+/// account, not just the active one.
+#[command]
+#[specta::specta]
+pub async fn get_limit_hit_history(
+    days: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<LimitHitReport, String> {
+    let to = Utc::now();
+    let from = to - Duration::days(days as i64);
+    let danger_threshold = {
+        let s = state.settings.read();
+        s.thresholds.get(1).copied().unwrap_or(90) as f64
+    };
+    let accounts = state.accounts.list().map_err(err_to_string)?;
+    let mut out = Vec::new();
+    for acc in accounts {
+        let hits = state
+            .db
+            .limit_hit_stats(&acc.account_uuid, &acc.email, from, to, danger_threshold)
+            .map_err(err_to_string)?;
+        out.push(hits);
+    }
+    Ok(LimitHitReport { accounts: out })
+}
+
 #[command]
 #[specta::specta]
 pub async fn get_daily_trends(

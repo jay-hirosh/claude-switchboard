@@ -435,9 +435,28 @@ async listResumableSessions() : Promise<Result<SessionSummary[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Sessions whose JSONL transcript received a write within the last
+ * LIVE_QUIET_SECS (120s). Purely a read of the in-memory registry — no DB
+ * query of its own (the registry's entries are already the result of one).
+ */
 async getLiveSessions() : Promise<Result<LiveSessionInfo[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_live_sessions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Per-account limit-hit stats over the trailing `days` window, using the
+ * second configured threshold (index 1, the "danger" tier) as the bar for
+ * what counts as a limit hit. One `limit_hit_stats` query per managed
+ * account, not just the active one.
+ */
+async getLimitHitHistory(days: number) : Promise<Result<LimitHitReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_limit_hit_history", { days }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -455,6 +474,22 @@ async getLiveSessions() : Promise<Result<LiveSessionInfo[], string>> {
 
 /** user-defined types **/
 
+/**
+ * One managed account's limit-hit history over a report window. `hits`
+ * are windows whose peak_pct cleared the caller-supplied danger threshold
+ * — a non-hit window still exists in `window_peaks` but never appears
+ * here (changing the threshold in Settings retroactively reclassifies
+ * history at read time; nothing is filtered at write time).
+ */
+export type AccountLimitHits = { account_id: string; email: string; five_hour_hits: number; seven_day_hits: number; 
+/**
+ * Always length 24; index = local hour (0-23) a hit's peak was observed.
+ */
+hourly_distribution: number[]; 
+/**
+ * Top 5 by summed cost, across every hit window's [window_start, peak_at] span.
+ */
+top_projects: ProjectAttribution[] }
 export type AccountListEntry = { slot: number; email: string; 
 /**
  * The stable UUID that identifies this account in the SQLite `accounts`
@@ -498,11 +533,11 @@ export type DefaultProviderState = { provider_id: string; managed_env: Partial<{
  * in-memory samples only (empty right after launch), >=2 samples spanning
  * >=2 minutes. Dollars are tracked as cents to match the API payload.
  */
-export type ExtraBurnRate = {
+export type ExtraBurnRate = { 
 /**
  * Spend velocity in cents per minute.
  */
-cents_per_min: number;
+cents_per_min: number; 
 /**
  * Projected used_credits_cents at extra_usage.resets_at. None when the
  * account reports no reset date (common for PAYG).
@@ -531,7 +566,24 @@ export type LaunchSurface =
  * extension builds its own argv. The UI states that at launch time.
  */
 "vs_code_tab"
-export type LiveSessionInfo = { session_id: string; source_file: string; project: string; model: string; total_tokens: number; total_cost_usd: number; context_tokens: number; first_seen: number; last_activity: number }
+export type LimitHitReport = { accounts: AccountLimitHits[] }
+/**
+ * One row of `get_live_sessions`. Deliberately structured so future
+ * features (session-finished notifications, context-window warnings) can
+ * add fields without reshaping this one — see the plan's Global
+ * Constraints.
+ */
+export type LiveSessionInfo = { session_id: string; source_file: string; project: string; model: string; total_tokens: number; total_cost_usd: number; context_tokens: number; 
+/**
+ * Unix seconds — when the registry first saw this session THIS APP
+ * RUN (not the transcript's real age; the registry is in-memory only
+ * and starts empty on every launch, by design).
+ */
+first_seen: number; 
+/**
+ * Unix seconds of the most recent ingest touch.
+ */
+last_activity: number }
 export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number }
 /**
  * Serializable mirror of `Preset` for the frontend.
@@ -545,6 +597,7 @@ export type PricingEntry = { prefix: string; input_per_mtok: number; output_per_
  */
 tier?: PricingTier | null }
 export type PricingTier = { above_tokens: number; input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_5m_per_mtok: number; cache_1h_per_mtok: number }
+export type ProjectAttribution = { project: string; cost_usd: number }
 export type ProjectStats = { project: string; session_count: number; total_tokens: number; total_cost_usd: number }
 export type Provider = { id: string; name: string; kind: ProviderKind; base_url: string | null; auth_token: string | null; env: Partial<{ [key in string]: string }>; 
 /**
@@ -660,12 +713,39 @@ export type Settings = { polling_interval_secs: number;
  * in `polling_interval_secs`. Bounded by the `update_settings` command
  * to a safe range (see commands.rs).
  */
-stagger_gap_secs: number; thresholds: number[]; payg_threshold: number; theme: string; launch_at_login: boolean; crash_reports: boolean; preferred_auth_source: AuthSource | null;
+stagger_gap_secs: number; thresholds: number[]; 
+/**
+ * Utilization % at which the pay-as-you-go bucket notifies. PAYG has a
+ * single threshold, separate from the shared `thresholds` used by the
+ * rate-limit buckets. The struct-level `#[serde(default)]` above (plus
+ * the custom `Default` impl below, which sets this to 85) already fills
+ * this in per-field for settings blobs written before this field
+ * existed, so no field-level default is needed here — see the
+ * `terminal` field for a case where that field-level attribute is
+ * (redundantly) still present.
+ */
+payg_threshold: number; theme: string; launch_at_login: boolean; crash_reports: boolean; preferred_auth_source: AuthSource | null; 
 /**
  * `None` means "use the platform default" (`launcher::default_terminal()`).
  * `#[serde(default)]` keeps settings written before this field readable.
  */
-terminal?: Terminal | null; notify_session_finished: boolean; notify_context_warning: boolean; }
+terminal?: Terminal | null; 
+/**
+ * Notify when a session that ran >= 10 minutes goes quiet for good.
+ * No field-level `#[serde(default = "...")]` needed — the struct's
+ * container-level `#[serde(default)]` (above) already fills any
+ * missing field from this type's own `Default` impl below, same
+ * mechanism that already makes `payg_threshold` default to 85 (not 0)
+ * with no field-level attribute of its own.
+ */
+notify_session_finished: boolean; 
+/**
+ * Notify when a session's context crosses 80% of its window. No
+ * field-level `#[serde(default = "...")]` needed — same mechanism as
+ * `notify_session_finished` (container-level `#[serde(default)]` +
+ * this being `true` in the custom `Default` impl below).
+ */
+notify_context_warning: boolean }
 /**
  * A `/compact` boundary inside one session transcript.
  */
