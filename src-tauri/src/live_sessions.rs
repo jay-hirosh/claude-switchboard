@@ -28,6 +28,23 @@ struct LiveEntry {
     state: SessionState,
 }
 
+/// A session that just departed (Cooling -> removed) with enough live span
+/// to be worth a "session finished" notification, and not already
+/// reported. See `LiveSessionRegistry::prune`.
+#[derive(Debug, Clone)]
+pub struct FinishedSession {
+    pub project: String,
+    pub total_cost_usd: f64,
+    /// Wall-clock span this app run watched the session (last_activity -
+    /// first_seen), in seconds — NOT the transcript's real age.
+    pub live_span_secs: i64,
+}
+
+/// Sessions live at least this long (in the registry, this app run) before
+/// their departure is worth a notification — short-lived sessions (a couple
+/// of quick questions) would otherwise fire noise on every departure.
+const MIN_NOTIFY_SPAN_SECS: i64 = 600;
+
 /// One row of `get_live_sessions`. Deliberately structured so future
 /// features (session-finished notifications, context-window warnings) can
 /// add fields without reshaping this one — see the plan's Global
@@ -56,6 +73,8 @@ pub struct LiveSessionInfo {
 #[derive(Default)]
 pub struct LiveSessionRegistry {
     sessions: RwLock<HashMap<String, LiveEntry>>,
+    /// session_ids already reported as finished this app run — see `prune`.
+    notified: RwLock<std::collections::HashSet<String>>,
 }
 
 /// Folds a subagent transcript path onto its parent's key, and derives the
@@ -153,19 +172,33 @@ impl LiveSessionRegistry {
     /// Cooling -> removed at `COOLING_QUIET_SECS` quiet. Call on a timer
     /// (the 30s tick in lib.rs); pure state transition, no I/O.
     ///
-    /// Returns true if the Live set changed (any entry left Live via
-    /// Cooling or removal) — lets the caller decide whether to emit an
-    /// update without a separate before/after snapshot comparison that
-    /// could race a concurrent `note_ingest`.
-    pub fn prune(&self, now: DateTime<Utc>) -> bool {
+    /// Returns `(changed, finished)`: `changed` is true if the Live set
+    /// changed (any entry left Live via Cooling or removal) — lets the
+    /// caller decide whether to emit `live_sessions_changed` without a
+    /// separate before/after snapshot comparison that could race a
+    /// concurrent `note_ingest`. `finished` is newly-departed sessions
+    /// whose live span cleared `MIN_NOTIFY_SPAN_SECS` and haven't already
+    /// been reported — the caller (lib.rs) decides whether to actually
+    /// fire a notification for them, gated on `Settings.notify_session_finished`.
+    pub fn prune(&self, now: DateTime<Utc>) -> (bool, Vec<FinishedSession>) {
         let mut sessions = self.sessions.write();
         let before_live = sessions
             .values()
             .filter(|e| e.state == SessionState::Live)
             .count();
+
+        let mut departing = Vec::new();
         sessions.retain(|_, e| {
             let quiet = (now - e.last_activity).num_seconds();
             if quiet >= COOLING_QUIET_SECS {
+                departing.push((
+                    e.session_id.clone(),
+                    FinishedSession {
+                        project: e.project.clone(),
+                        total_cost_usd: e.total_cost_usd,
+                        live_span_secs: (e.last_activity - e.first_seen).num_seconds(),
+                    },
+                ));
                 false
             } else {
                 if quiet >= LIVE_QUIET_SECS {
@@ -174,11 +207,23 @@ impl LiveSessionRegistry {
                 true
             }
         });
+
         let after_live = sessions
             .values()
             .filter(|e| e.state == SessionState::Live)
             .count();
-        before_live != after_live
+        drop(sessions);
+
+        let mut notified = self.notified.write();
+        let finished: Vec<FinishedSession> = departing
+            .into_iter()
+            .filter(|(id, f)| {
+                f.live_span_secs >= MIN_NOTIFY_SPAN_SECS && notified.insert(id.clone())
+            })
+            .map(|(_, f)| f)
+            .collect();
+
+        (before_live != after_live, finished)
     }
 
     /// Live entries only, sorted by most-recently-active first.
@@ -298,7 +343,7 @@ mod tests {
         let t0 = Utc::now();
         reg.note_ingest(&db, &file, &root, t0);
         assert_eq!(reg.live_snapshot().len(), 1);
-        let changed = reg.prune(t0 + Duration::seconds(121));
+        let (changed, _) = reg.prune(t0 + Duration::seconds(121));
         assert!(changed, "Live -> Cooling must report a change");
         assert_eq!(reg.live_snapshot().len(), 0, "Cooling entries are not Live");
     }
@@ -409,5 +454,91 @@ mod tests {
         ).expect("path under root must resolve");
         assert_eq!(key, "proj/sess1.jsonl");
         assert_eq!(session_id, "sess1");
+    }
+
+    #[test]
+    fn ten_minute_session_departs_with_a_finished_entry() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        seed(&db, key, 100, "claude-opus-5");
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+        reg.note_ingest(&db, &file, &root, t0);
+        // 10 minutes of activity — exactly at the MIN_NOTIFY_SPAN_SECS
+        // floor, which is inclusive ("span floor is exactly 600 seconds
+        // (>=)"), so this must still produce a finished entry.
+        reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(600));
+        let (_, finished) = reg.prune(t0 + Duration::seconds(600) + Duration::seconds(301));
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].live_span_secs, 600);
+    }
+
+    #[test]
+    fn eight_minute_session_departs_without_a_finished_entry() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        seed(&db, key, 100, "claude-opus-5");
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+        reg.note_ingest(&db, &file, &root, t0);
+        reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(480)); // 8 min
+        let (_, finished) = reg.prune(t0 + Duration::seconds(480) + Duration::seconds(301));
+        assert!(
+            finished.is_empty(),
+            "under the 10-minute floor must not notify"
+        );
+    }
+
+    #[test]
+    fn a_finished_session_is_reported_exactly_once() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        seed(&db, key, 100, "claude-opus-5");
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+        reg.note_ingest(&db, &file, &root, t0);
+        reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(600));
+        let departed_at = t0 + Duration::seconds(600) + Duration::seconds(301);
+        let (_, first) = reg.prune(departed_at);
+        assert_eq!(first.len(), 1);
+        // A second prune pass over the now-empty registry must not re-report it.
+        let (_, second) = reg.prune(departed_at + Duration::seconds(30));
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn write_during_cooling_delays_departure_and_still_counts_full_span() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        seed(&db, key, 100, "claude-opus-5");
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+        reg.note_ingest(&db, &file, &root, t0);
+        reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(600)); // 10 min mark
+        // Goes quiet, transitions to Cooling...
+        let (_, mid) = reg.prune(t0 + Duration::seconds(600) + Duration::seconds(121));
+        assert!(mid.is_empty(), "Cooling is not departure");
+        // ...but resumes activity before fully departing.
+        let t_resume = t0 + Duration::seconds(600) + Duration::seconds(200);
+        reg.note_ingest(&db, &file, &root, t_resume);
+        // Now quiet again long enough to actually depart — span must be
+        // measured from the ORIGINAL first_seen, not reset by the Cooling dip.
+        let (_, finished) = reg.prune(t_resume + Duration::seconds(301));
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].live_span_secs, (t_resume - t0).num_seconds());
+    }
+
+    #[test]
+    fn finished_session_carries_project_and_cost() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        seed(&db, key, 100, "claude-opus-5"); // seed()'s mk_event sets cost_usd: 0.01
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+        reg.note_ingest(&db, &file, &root, t0);
+        reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(600));
+        let (_, finished) = reg.prune(t0 + Duration::seconds(600) + Duration::seconds(301));
+        assert_eq!(finished[0].project, "proj");
+        assert!(finished[0].total_cost_usd > 0.0);
     }
 }
