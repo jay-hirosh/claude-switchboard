@@ -10,7 +10,8 @@
 import { motion } from 'framer-motion';
 import { InstrumentColumn, InstrumentRow } from '../popover/InstrumentRow';
 import { ChevronRight } from '../lib/icons';
-import type { BurnRateProjection, CachedUsage, Utilization } from '../lib/types';
+import { formatCents } from '../lib/format';
+import type { BurnRateProjection, CachedUsage, ExtraBurnRate, Utilization } from '../lib/types';
 
 interface UsageSummaryProps {
   usage: CachedUsage;
@@ -142,6 +143,9 @@ export function UsageSummary({
             <ExtraRow
               pct={extra.utilization ?? 0}
               resetsAt={extra.resets_at ?? null}
+              usedCents={extra.used_credits_cents ?? 0}
+              limitCents={extra.monthly_limit_cents ?? 0}
+              burn={usage.extra_burn_rate ?? null}
               warnAt={warn}
               dangerAt={danger}
             />
@@ -201,25 +205,57 @@ function Hairline() {
 function ExtraRow({
   pct,
   resetsAt,
+  usedCents,
+  limitCents,
+  burn,
   warnAt,
   dangerAt,
 }: {
   pct: number;
   resetsAt: string | null;
+  usedCents: number;
+  limitCents: number;
+  burn: ExtraBurnRate | null;
   warnAt: number;
   dangerAt: number;
 }) {
   const data: Utilization | null = resetsAt
     ? { utilization: pct, resets_at: resetsAt }
     : null;
+  // Hide a flat forecast: under one cent a day extrapolates to nothing.
+  const showForecast =
+    burn != null &&
+    burn.projected_cents_at_reset != null &&
+    Math.abs(burn.cents_per_min) * 1440 >= 1;
   return (
-    <InstrumentRow
-      label="Pay-as-you-go"
-      caption={resetsAt ? undefined : 'no reset window'}
-      value={pct}
-      data={data}
-      warnAt={warnAt}
-      dangerAt={dangerAt}
-    />
+    <div className="flex flex-col gap-[2px]">
+      <InstrumentRow
+        label="Pay-as-you-go"
+        caption={resetsAt ? undefined : 'no reset window'}
+        value={pct}
+        data={data}
+        warnAt={warnAt}
+        dangerAt={dangerAt}
+      />
+      {(limitCents > 0 || showForecast) && (
+        <div className="flex items-baseline justify-between gap-[var(--space-xs)]">
+          {limitCents > 0 ? (
+            <span className="mono text-[length:var(--text-micro)] tabular-nums text-[color:var(--color-text-secondary)]">
+              {formatCents(usedCents)} of {formatCents(limitCents)}
+            </span>
+          ) : (
+            <span />
+          )}
+          {showForecast && (
+            <span
+              className="text-[length:var(--text-micro)] tabular-nums text-[color:var(--color-text-muted)]"
+              title={`${burn.cents_per_min >= 0 ? '+' : ''}${(burn.cents_per_min * 14.4).toFixed(2)} $/day`}
+            >
+              → ~${Math.round((burn.projected_cents_at_reset as number) / 100)} by reset
+            </span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

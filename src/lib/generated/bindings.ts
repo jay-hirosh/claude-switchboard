@@ -476,7 +476,7 @@ utilization_per_min: number;
  */
 projected_at_reset: number }
 export type CacheStats = { total_cache_read_tokens: number; total_cache_creation_tokens: number; estimated_savings_usd: number; hit_ratio: number }
-export type CachedUsage = { snapshot: UsageSnapshot; account_id: string; account_email: string; last_error: string | null; burn_rate?: BurnRateProjection | null; auth_source: AuthSource }
+export type CachedUsage = { snapshot: UsageSnapshot; account_id: string; account_email: string; last_error: string | null; burn_rate?: BurnRateProjection | null; extra_burn_rate?: ExtraBurnRate | null; auth_source: AuthSource }
 export type DailyBucket = { date: string; input_tokens: number; output_tokens: number; cost_usd: number }
 export type DailyModelBucket = { date: string; models: ModelStats[] }
 /**
@@ -485,6 +485,21 @@ export type DailyModelBucket = { date: string; models: ModelStats[] }
  * of what we own and the undo record.
  */
 export type DefaultProviderState = { provider_id: string; managed_env: Partial<{ [key in string]: string | null }>; applied_at: number }
+/**
+ * Linear projection of pay-as-you-go spend, sibling to BurnRateProjection:
+ * in-memory samples only (empty right after launch), >=2 samples spanning
+ * >=2 minutes. Dollars are tracked as cents to match the API payload.
+ */
+export type ExtraBurnRate = {
+/**
+ * Spend velocity in cents per minute.
+ */
+cents_per_min: number;
+/**
+ * Projected used_credits_cents at extra_usage.resets_at. None when the
+ * account reports no reset date (common for PAYG).
+ */
+projected_cents_at_reset: number | null }
 export type ExtraUsage = { is_enabled?: boolean; monthly_limit_cents?: number; used_credits_cents?: number; utilization?: number | null; resets_at?: string | null }
 /**
  * Wall-clock time-of-day in user's local timezone.

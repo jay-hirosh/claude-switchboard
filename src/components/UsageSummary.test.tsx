@@ -126,3 +126,38 @@ describe('UsageSummary collapsible details', () => {
     expect(screen.getByText(/~113% by reset/)).toBeTruthy();
   });
 });
+
+function paygUsage(): CachedUsage {
+  const u = usage();
+  u.snapshot.extra_usage = {
+    is_enabled: true,
+    monthly_limit_cents: 10000,
+    used_credits_cents: 3120,
+    utilization: 31.2,
+    resets_at: new Date(Date.now() + 10 * 86400_000).toISOString(),
+  };
+  (u as CachedUsage).extra_burn_rate = {
+    cents_per_min: 1.5,
+    projected_cents_at_reset: 5200,
+  };
+  return u;
+}
+
+describe('pay-as-you-go dollars and forecast', () => {
+  it('shows spent-of-limit dollars and the projected spend', () => {
+    render(
+      <UsageSummary usage={paygUsage()} thresholds={[75, 90]} />,
+    );
+    expect(screen.getByText(/\$31\.20 of \$100\.00/)).toBeTruthy();
+    expect(screen.getByText(/→ ~\$52 by reset/)).toBeTruthy();
+  });
+
+  it('hides dollars when no limit and forecast when no projection', () => {
+    const u = paygUsage();
+    u.snapshot.extra_usage!.monthly_limit_cents = 0;
+    u.extra_burn_rate = null;
+    render(<UsageSummary usage={u} thresholds={[75, 90]} />);
+    expect(screen.queryByText(/ of \$/)).toBeNull();
+    expect(screen.queryByText(/by reset/)).toBeNull();
+  });
+});

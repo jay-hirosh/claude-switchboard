@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatTokens, formatCost } from './format';
+import { formatTokens, formatCost, formatCents } from './format';
 
 describe('formatTokens', () => {
   it('returns "0" for zero', () => {
@@ -46,5 +46,14 @@ describe('formatCost', () => {
 
   it('returns "$100.00" for 100', () => {
     expect(formatCost(100)).toBe('$100.00');
+  });
+});
+
+describe('formatCents', () => {
+  it('formats cents as dollars with two decimals', () => {
+    expect(formatCents(3120)).toBe('$31.20');
+    expect(formatCents(10000)).toBe('$100.00');
+    expect(formatCents(0)).toBe('$0.00');
+    expect(formatCents(5)).toBe('$0.05');
   });
 });

@@ -7,6 +7,7 @@ export type {
   CachedUsage,
   DailyBucket,
   DailyModelBucket,
+  ExtraBurnRate,
   ExtraUsage,
   ModelStats,
   PricingEntry,

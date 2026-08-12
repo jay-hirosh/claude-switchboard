@@ -8,6 +8,11 @@ export function formatCost(usd: number): string {
   return usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`;
 }
 
+/** "$31.20" from an integer cents amount (PAYG credit fields). */
+export function formatCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 /** "just now" / "3m ago" / "2h ago" for an ISO timestamp; '' when unparsable. */
 export function formatRelativeTime(iso: string): string {
   const t = new Date(iso).getTime();
