@@ -573,7 +573,7 @@ fn compact_target_xy(from_x: f64, from_y: f64, from_w: f64, target_w: f64) -> (f
 
 #[command]
 #[specta::specta]
-pub async fn resize_window(mode: String, app: tauri::AppHandle) -> Result<(), String> {    use tauri::{LogicalPosition, LogicalSize, Manager, Position, Size};
+pub async fn resize_window(mode: String, extra_height: f64, app: tauri::AppHandle) -> Result<(), String> {    use tauri::{LogicalPosition, LogicalSize, Manager, Position, Size};
 
     // `Position::TrayCenter` panics (aborting the process under this crate's
     // `panic = "abort"` release profile) if `tauri_plugin_positioner` hasn't
@@ -600,6 +600,12 @@ pub async fn resize_window(mode: String, app: tauri::AppHandle) -> Result<(), St
         "expanded" => (960.0_f64, 640.0_f64),
         _ => return Ok(()),
     };
+    // Extra room for the "Now running" live-session rows, driven by the
+    // caller's current live-session row count (see CompactPopover.tsx's
+    // resize effect). Clamped defensively — this is a caller-supplied f64
+    // crossing the IPC boundary, so a runaway value must not be able to
+    // blow the popover off-screen.
+    let target_size = (target_size.0, target_size.1 + extra_height.clamp(0.0, 200.0));
 
     // Apply flag changes upfront so the rest of the animation runs in the
     // target mode's resize profile (resizable + always-on-top affect how

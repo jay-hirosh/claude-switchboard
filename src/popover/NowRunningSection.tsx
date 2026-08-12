@@ -1,13 +1,13 @@
 import type { LiveSessionInfo } from '../lib/types';
 import { formatCost } from '../lib/format';
 import { formatDurationMinutes } from '../lib/format';
-import { shortName } from '../report/modelDisplay';
+import { modelLabel } from '../report/modelDisplay';
 
 const MAX_ROWS = 3;
 
 function elapsedLabel(firstSeen: number): string {
   const mins = Math.max(0, Math.floor((Date.now() / 1000 - firstSeen) / 60));
-  return formatDurationMinutes(mins);
+  return formatDurationMinutes(mins) || '<1m';
 }
 
 function Row({ session }: { session: LiveSessionInfo }) {
@@ -17,7 +17,7 @@ function Row({ session }: { session: LiveSessionInfo }) {
         {session.project}
       </span>
       <span className="shrink-0 text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] uppercase">
-        {shortName(session.model)}
+        {modelLabel(session.model)}
       </span>
       <span className="mono shrink-0 text-[length:var(--text-micro)] tabular-nums text-[color:var(--color-text-secondary)]">
         {formatCost(session.total_cost_usd)}

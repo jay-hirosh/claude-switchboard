@@ -59,28 +59,43 @@ pub struct LiveSessionRegistry {
 }
 
 /// Folds a subagent transcript path onto its parent's key, and derives the
-/// bare session id (file stem) — same `/subagents/` convention as
-/// `Db::session_totals`. `touched_file` and `projects_root` are both
-/// absolute paths; the returned key mirrors `walker.rs::ingest_file`'s exact
-/// derivation of `source_file` — `strip_prefix(projects_root)` followed by
-/// `to_string_lossy()`, with NO separator normalization. `source_file` as
-/// stored in `session_events` uses the OS's native separator (backslashes on
-/// Windows), so this must not rewrite them to forward slashes or the key
-/// would never match what's actually in the DB on Windows.
+/// bare session id — same `/subagents/` convention as `Db::session_totals`,
+/// but derived via `Path::components()` rather than a forward-slash string
+/// search, so it works on Windows where paths use backslashes (mirrors the
+/// idiom already used by `sessions::scan::is_subagent_path`). `touched_file`
+/// and `projects_root` are both absolute paths. The returned `parent_key`
+/// still renders with `to_string_lossy()` — same as `walker.rs::ingest_file`'s
+/// derivation of `source_file` (`strip_prefix(projects_root)` then
+/// `to_string_lossy()`, no separator normalization) — so it reproduces
+/// whatever separator convention is actually stored in the DB on the current
+/// OS, without ever hardcoding `/`.
 fn registry_key(touched_file: &Path, projects_root: &Path) -> Option<(String, String)> {
     let rel = touched_file.strip_prefix(projects_root).ok()?;
-    let rel_str = rel.to_string_lossy().into_owned();
-    let parent_key = match rel_str.find("/subagents/") {
-        Some(i) => format!("{}.jsonl", &rel_str[..i]),
-        None => rel_str,
+    let components: Vec<_> = rel.components().collect();
+    let subagents_idx = components
+        .iter()
+        .position(|c| c.as_os_str() == "subagents");
+    let (parent_key, session_id) = match subagents_idx {
+        Some(i) => {
+            // components[i-1] is the session-id directory the subagent
+            // lives under; components[..i] is the path down to (not
+            // including) "subagents" — rebuild the parent's own ".jsonl"
+            // key from it.
+            let session_component = components.get(i.checked_sub(1)?)?;
+            let session_id = session_component.as_os_str().to_string_lossy().into_owned();
+            let parent_rel: std::path::PathBuf = components[..i].iter().collect();
+            let parent_key = format!("{}.jsonl", parent_rel.to_string_lossy());
+            (parent_key, session_id)
+        }
+        None => {
+            let parent_key = rel.to_string_lossy().into_owned();
+            let session_id = rel
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| parent_key.clone());
+            (parent_key, session_id)
+        }
     };
-    let session_id = parent_key
-        .rsplit('/')
-        .next()
-        .unwrap_or(&parent_key)
-        .strip_suffix(".jsonl")
-        .unwrap_or(&parent_key)
-        .to_string();
     Some((parent_key, session_id))
 }
 
@@ -137,8 +152,17 @@ impl LiveSessionRegistry {
     /// Walks every entry: Live -> Cooling at `LIVE_QUIET_SECS` quiet,
     /// Cooling -> removed at `COOLING_QUIET_SECS` quiet. Call on a timer
     /// (the 30s tick in lib.rs); pure state transition, no I/O.
-    pub fn prune(&self, now: DateTime<Utc>) {
+    ///
+    /// Returns true if the Live set changed (any entry left Live via
+    /// Cooling or removal) — lets the caller decide whether to emit an
+    /// update without a separate before/after snapshot comparison that
+    /// could race a concurrent `note_ingest`.
+    pub fn prune(&self, now: DateTime<Utc>) -> bool {
         let mut sessions = self.sessions.write();
+        let before_live = sessions
+            .values()
+            .filter(|e| e.state == SessionState::Live)
+            .count();
         sessions.retain(|_, e| {
             let quiet = (now - e.last_activity).num_seconds();
             if quiet >= COOLING_QUIET_SECS {
@@ -150,6 +174,11 @@ impl LiveSessionRegistry {
                 true
             }
         });
+        let after_live = sessions
+            .values()
+            .filter(|e| e.state == SessionState::Live)
+            .count();
+        before_live != after_live
     }
 
     /// Live entries only, sorted by most-recently-active first.
@@ -170,7 +199,14 @@ impl LiveSessionRegistry {
                 last_activity: e.last_activity.timestamp(),
             })
             .collect();
-        out.sort_by_key(|e| std::cmp::Reverse(e.last_activity));
+        // Tiebreak on session_id: HashMap iteration order isn't stable, so
+        // without this, entries sharing the same last_activity second could
+        // visually swap rows between renders.
+        out.sort_by(|a, b| {
+            b.last_activity
+                .cmp(&a.last_activity)
+                .then(a.session_id.cmp(&b.session_id))
+        });
         out
     }
 }
@@ -262,7 +298,8 @@ mod tests {
         let t0 = Utc::now();
         reg.note_ingest(&db, &file, &root, t0);
         assert_eq!(reg.live_snapshot().len(), 1);
-        reg.prune(t0 + Duration::seconds(121));
+        let changed = reg.prune(t0 + Duration::seconds(121));
+        assert!(changed, "Live -> Cooling must report a change");
         assert_eq!(reg.live_snapshot().len(), 0, "Cooling entries are not Live");
     }
 
@@ -361,5 +398,16 @@ mod tests {
             "registry_key must not rewrite backslashes to forward slashes"
         );
         assert_eq!(session_id, "weird\\name");
+    }
+
+    #[test]
+    fn registry_key_folds_subagent_onto_parent_via_components_not_string_search() {
+        let root = PathBuf::from("/home/me/.claude/projects");
+        let (key, session_id) = registry_key(
+            &root.join("proj").join("sess1").join("subagents").join("agent-a.jsonl"),
+            &root,
+        ).expect("path under root must resolve");
+        assert_eq!(key, "proj/sess1.jsonl");
+        assert_eq!(session_id, "sess1");
     }
 }

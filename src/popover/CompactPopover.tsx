@@ -83,9 +83,17 @@ export function CompactPopover() {
   // glance view with details collapsed; full compact height everywhere else
   // (settings/accounts need the room). Re-asserted on every popover show.
   const minimal = view === 'home' && !detailsOpen;
+  // Extra room for the "Now running" section's rows. Derived from the row
+  // COUNT (capped the same way NowRunningSection caps its own rendering),
+  // not from `liveSessions` itself — the store replaces that array wholesale
+  // on every `live_sessions_changed` event, so its identity changes far more
+  // often than the row count does, and depending on the array reference
+  // would re-fire the resize animation continuously during active sessions.
+  const liveRowCount = Math.min(liveSessions.length, 3) + (liveSessions.length > 3 ? 1 : 0);
+  const liveExtraHeight = liveRowCount > 0 ? 20 + liveRowCount * 20 : 0;
   useEffect(() => {
-    ipc.resizeWindow(minimal ? 'compact-minimal' : 'compact').catch(() => {});
-  }, [minimal, shownTick]);
+    ipc.resizeWindow(minimal ? 'compact-minimal' : 'compact', liveExtraHeight).catch(() => {});
+  }, [minimal, shownTick, liveExtraHeight]);
 
   const accountEmail = usage?.account_email ?? null;
   const fetchedAt = usage?.snapshot.fetched_at;
@@ -131,7 +139,7 @@ export function CompactPopover() {
   const danger = thresholds[1] ?? 90;
 
   return (
-    <Shell minimal={minimal}>
+    <Shell minimal={minimal} extraHeight={liveExtraHeight}>
       <UpdateBanner />
       <ChromeBar
         live
@@ -232,13 +240,23 @@ function LoadingShell({
   );
 }
 
-function Shell({ children, minimal }: { children: React.ReactNode; minimal?: boolean }) {
+function Shell({
+  children,
+  minimal,
+  extraHeight = 0,
+}: {
+  children: React.ReactNode;
+  minimal?: boolean;
+  extraHeight?: number;
+}) {
   return (
     <div
       className={`relative flex h-full w-full flex-col ${minimal ? 'popover-minimal' : ''}`}
       style={{
         width: 'var(--popover-width)',
-        height: minimal ? 'var(--popover-height-minimal)' : 'var(--popover-height)',
+        height: minimal
+          ? `calc(var(--popover-height-minimal) + ${extraHeight}px)`
+          : `calc(var(--popover-height) + ${extraHeight}px)`,
       }}
     >
       {children}

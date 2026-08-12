@@ -355,15 +355,23 @@ impl Db {
     /// Aggregate tokens/cost for one live session: the parent transcript
     /// plus any subagent transcripts folded under it via the same
     /// `/subagents/` convention `session_totals()` uses for the full-table
-    /// historical report. Scoped to a single session (two bound params),
-    /// unlike `session_totals()`'s full-table GROUP BY — this runs on every
-    /// ingest touch, so it stays cheap regardless of total history size.
+    /// historical report. Scoped to a single session (two bound params) vs.
+    /// `session_totals()`'s full-table GROUP BY, so it does less per-row
+    /// work — but there is no index on `source_file`, so this is still a
+    /// full table scan, same O(n) cost class as `session_totals()`. Adding
+    /// an index to fix that was deliberately left out of scope for this
+    /// feature (no DB schema change).
     pub fn live_session_totals(&self, parent_source_file: &str) -> Result<(u64, f64)> {
         let conn = self.conn();
         let prefix = parent_source_file
             .strip_suffix(".jsonl")
             .unwrap_or(parent_source_file);
-        let subagent_pattern = format!("{prefix}/subagents/%");
+        // `source_file` is written using the current platform's native path
+        // separator, unnormalized (see jsonl_parser::walker::ingest_file),
+        // so the LIKE pattern must match with that same separator rather
+        // than a hardcoded '/' — which would silently match nothing on
+        // Windows.
+        let subagent_pattern = format!("{prefix}{sep}subagents{sep}%", sep = std::path::MAIN_SEPARATOR);
         conn.query_row(
             "SELECT COALESCE(SUM(input_tokens + output_tokens), 0), COALESCE(SUM(cost_usd), 0.0)
              FROM session_events WHERE source_file = ?1 OR source_file LIKE ?2",

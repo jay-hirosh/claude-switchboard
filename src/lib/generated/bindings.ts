@@ -121,9 +121,9 @@ async getSettings() : Promise<Result<Settings, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async resizeWindow(mode: string) : Promise<Result<null, string>> {
+async resizeWindow(mode: string, extraHeight: number) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("resize_window", { mode }) };
+    return { status: "ok", data: await TAURI_INVOKE("resize_window", { mode, extraHeight }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

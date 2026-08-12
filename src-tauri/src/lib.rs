@@ -664,12 +664,13 @@ pub fn run() {
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
                         interval.tick().await;
-                        let before = prune_state.live_sessions.live_snapshot();
-                        prune_state.live_sessions.prune(chrono::Utc::now());
-                        let after = prune_state.live_sessions.live_snapshot();
-                        if before.len() != after.len() {
+                        let changed = prune_state.live_sessions.prune(chrono::Utc::now());
+                        if changed {
                             use tauri::Emitter;
-                            let _ = prune_handle.emit("live_sessions_changed", after);
+                            let _ = prune_handle.emit(
+                                "live_sessions_changed",
+                                prune_state.live_sessions.live_snapshot(),
+                            );
                         }
                     }
                 });
@@ -698,6 +699,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     use tauri::Emitter;
                     while let Some((path, n)) = rx.recv().await {
+                        let _ = handle_for_events.emit("session_ingested", n);
                         state_for_ingest.live_sessions.note_ingest(
                             &state_for_ingest.db,
                             &path,
@@ -708,7 +710,6 @@ pub fn run() {
                             "live_sessions_changed",
                             state_for_ingest.live_sessions.live_snapshot(),
                         );
-                        let _ = handle_for_events.emit("session_ingested", n);
                     }
                 });
                 // The WatcherHandle owns the notify-debouncer that drives the
