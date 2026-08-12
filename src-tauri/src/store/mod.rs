@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=9 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=10 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [9_i64],
+            [10_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -173,9 +173,15 @@ impl Db {
                 .context("apply migration 0009")?;
         }
 
+        if current < 10 {
+            tracing::info!("migrating v9 -> v10 (window_peaks for limit-hit analytics)");
+            conn.execute_batch(include_str!("migrations/0010_window_peaks.sql"))
+                .context("apply migration 0010")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [9_i64],
+            [10_i64],
         )?;
         Ok(())
     }
@@ -634,14 +640,14 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_stamped_at_version_9() {
+    fn fresh_database_is_stamped_at_version_10() {
         let dir = tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let version: i64 = db
             .conn()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 9, "create_fresh_db and migrate() must both stamp 9");
+        assert_eq!(version, 10, "create_fresh_db and migrate() must both stamp 10");
     }
 
     /// 0009 adds the compactions table and, like 0008, clears cursors so the
@@ -721,5 +727,46 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].trigger, "manual");
         assert_eq!(got[0].pre_tokens, 495_927);
+    }
+
+    #[test]
+    fn migration_0010_adds_window_peaks_table() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("v9.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        conn.execute_batch("DROP TABLE window_peaks;").unwrap();
+
+        conn.execute_batch(include_str!("migrations/0010_window_peaks.sql"))
+            .unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='window_peaks'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 1, "migration 0010 must create window_peaks");
+
+        // The unique index is the window-rollover detector — prove it exists and
+        // actually enforces the identity key, not just that the table exists.
+        conn.execute(
+            "INSERT INTO accounts (id, email, last_seen_at) VALUES ('a1', 'a@x.com', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO window_peaks (account_id, bucket, resets_at, window_start, peak_pct, peak_at)
+             VALUES ('a1', 'five_hour', 100, 90, 50.0, 95)",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO window_peaks (account_id, bucket, resets_at, window_start, peak_pct, peak_at)
+             VALUES ('a1', 'five_hour', 100, 90, 60.0, 96)",
+            [],
+        );
+        assert!(dup.is_err(), "duplicate (account_id, bucket, resets_at) must be rejected");
     }
 }
