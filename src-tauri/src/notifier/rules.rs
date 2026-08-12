@@ -85,6 +85,7 @@ pub fn evaluate(
     account_id: &str,
     snapshot: &UsageSnapshot,
     thresholds: &[u8],
+    payg_threshold: u8,
     now: DateTime<Utc>,
 ) -> Result<Vec<Fired>> {
     const BUCKETS: [Bucket; 5] = [
@@ -99,7 +100,11 @@ pub fn evaluate(
         let (Some(util), resets_at) = utilization_of(bucket, snapshot) else {
             continue;
         };
-        for &threshold in thresholds {
+        let bucket_thresholds: &[u8] = match bucket {
+            Bucket::ExtraUsage => std::slice::from_ref(&payg_threshold),
+            _ => thresholds,
+        };
+        for &threshold in bucket_thresholds {
             if util < threshold as f64 {
                 continue;
             }
@@ -119,7 +124,14 @@ pub fn evaluate(
 
             let title = format!("Claude {} usage at {}%", bucket.human(), threshold);
             let body = match (bucket, resets_at) {
-                (Bucket::ExtraUsage, None) => "Pay-as-you-go credits running low".to_string(),
+                (Bucket::ExtraUsage, _) => match snapshot.extra_usage.as_ref() {
+                    Some(e) if e.monthly_limit_cents > 0 => format!(
+                        "Used ${:.2} of ${:.2}",
+                        e.used_credits_cents as f64 / 100.0,
+                        e.monthly_limit_cents as f64 / 100.0
+                    ),
+                    _ => "Pay-as-you-go credits running low".to_string(),
+                },
                 (_, Some(reset)) => format!("Resets in {}", humanize_duration(reset - now)),
                 (_, None) => "Window reset time unknown".to_string(),
             };
@@ -168,18 +180,37 @@ mod tests {
         }
     }
 
+    fn snap_extra(util: f64, used_cents: u64, limit_cents: u64) -> UsageSnapshot {
+        UsageSnapshot {
+            five_hour: None,
+            seven_day: None,
+            seven_day_sonnet: None,
+            seven_day_opus: None,
+            extra_usage: Some(ExtraUsage {
+                is_enabled: true,
+                monthly_limit_cents: limit_cents,
+                used_credits_cents: used_cents,
+                utilization: Some(util),
+                resets_at: None,
+            }),
+            fetched_at: Utc::now(),
+            unknown: Default::default(),
+        }
+    }
+
     #[test]
     fn fires_once_per_threshold_per_window() {
         let (_d, db) = fresh();
         let s = snap_five_hour(80.0, 3);
         let now = Utc::now();
-        let f1 = evaluate(&db, "a", &s, &[75, 90], now).unwrap();
+        let f1 = evaluate(&db, "a", &s, &[75, 90], 75, now).unwrap();
         assert_eq!(f1.len(), 1, "only 75% crosses at 80");
         let f2 = evaluate(
             &db,
             "a",
             &s,
             &[75, 90],
+            75,
             now + Duration::minutes(5),
         )
         .unwrap();
@@ -191,7 +222,7 @@ mod tests {
         let (_d, db) = fresh();
         let now = Utc::now();
         let early = snap_five_hour(80.0, 3);
-        evaluate(&db, "a", &early, &[75], now).unwrap();
+        evaluate(&db, "a", &early, &[75], 75, now).unwrap();
         let later_reset = Utc::now() + Duration::hours(8);
         let fresh_snap = UsageSnapshot {
             five_hour: Some(Utilization {
@@ -210,6 +241,7 @@ mod tests {
             "a",
             &fresh_snap,
             &[75],
+            75,
             later_reset + Duration::minutes(1),
         )
         .unwrap();
@@ -219,6 +251,8 @@ mod tests {
     #[test]
     fn extra_usage_without_reset_uses_24h_cooldown() {
         let (_d, db) = fresh();
+        // monthly_limit_cents is nonzero here, so the fired body is now the
+        // dollar-amount form rather than the "credits" fallback string.
         let snap = UsageSnapshot {
             five_hour: None,
             seven_day: None,
@@ -235,12 +269,13 @@ mod tests {
             unknown: Default::default(),
         };
         let now = Utc::now();
-        let a = evaluate(&db, "a", &snap, &[75], now).unwrap();
+        // payg_threshold=75 preserves this test's original firing behavior.
+        let a = evaluate(&db, "a", &snap, &[75], 75, now).unwrap();
         assert_eq!(a.len(), 1);
-        assert!(a[0].body.contains("credits"));
-        let b = evaluate(&db, "a", &snap, &[75], now + Duration::hours(12)).unwrap();
+        assert_eq!(a[0].body, "Used $37.50 of $50.00");
+        let b = evaluate(&db, "a", &snap, &[75], 75, now + Duration::hours(12)).unwrap();
         assert!(b.is_empty(), "inside 24h cooldown");
-        let c = evaluate(&db, "a", &snap, &[75], now + Duration::hours(25)).unwrap();
+        let c = evaluate(&db, "a", &snap, &[75], 75, now + Duration::hours(25)).unwrap();
         assert_eq!(c.len(), 1, "past 24h cooldown");
     }
 
@@ -248,8 +283,52 @@ mod tests {
     fn below_threshold_does_not_fire() {
         let (_d, db) = fresh();
         let s = snap_five_hour(50.0, 3);
-        assert!(evaluate(&db, "a", &s, &[75, 90], Utc::now())
+        assert!(evaluate(&db, "a", &s, &[75, 90], 75, Utc::now())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn payg_uses_its_own_threshold_not_the_shared_ones() {
+        let (_d, db) = fresh();
+        // Shared thresholds would fire at 75; payg_threshold of 85 must not.
+        let s = snap_extra(80.0, 4000, 5000);
+        let fired = evaluate(&db, "a", &s, &[75, 90], 85, Utc::now()).unwrap();
+        assert!(fired.is_empty(), "80% is below the 85% PAYG threshold");
+        // At 86% it fires exactly once, on the PAYG threshold.
+        let s2 = snap_extra(86.0, 4300, 5000);
+        let fired2 = evaluate(&db, "a", &s2, &[75, 90], 85, Utc::now()).unwrap();
+        assert_eq!(fired2.len(), 1);
+        assert_eq!(fired2[0].threshold, 85);
+        assert!(matches!(fired2[0].bucket, Bucket::ExtraUsage));
+    }
+
+    #[test]
+    fn shared_buckets_ignore_the_payg_threshold() {
+        let (_d, db) = fresh();
+        // 5h at 87%: fires for shared 75 (and not 90). payg_threshold=50
+        // must not add an extra firing on the five-hour bucket.
+        let s = snap_five_hour(87.0, 3);
+        let fired = evaluate(&db, "a", &s, &[75, 90], 50, Utc::now()).unwrap();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].threshold, 75);
+    }
+
+    #[test]
+    fn payg_body_shows_dollars_when_limit_known() {
+        let (_d, db) = fresh();
+        let s = snap_extra(90.0, 4250, 5000);
+        let fired = evaluate(&db, "a", &s, &[], 85, Utc::now()).unwrap();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].body, "Used $42.50 of $50.00");
+    }
+
+    #[test]
+    fn payg_body_falls_back_without_limit() {
+        let (_d, db) = fresh();
+        let s = snap_extra(90.0, 0, 0);
+        let fired = evaluate(&db, "a", &s, &[], 85, Utc::now()).unwrap();
+        assert_eq!(fired.len(), 1);
+        assert!(fired[0].body.contains("credits"));
     }
 }

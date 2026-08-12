@@ -273,12 +273,16 @@ async fn apply_fetch_outcome(
                     snapshot.seven_day.as_ref().and_then(|u| u.resets_at),
                     false,
                 );
-                let thresholds = state.settings.read().thresholds.clone();
+                let (thresholds, payg_threshold) = {
+                    let s = state.settings.read();
+                    (s.thresholds.clone(), s.payg_threshold)
+                };
                 if let Ok(fired) = notifier::evaluate(
                     &state.db,
                     &cached.account_id,
                     &snapshot,
                     &thresholds,
+                    payg_threshold,
                     Utc::now(),
                 ) {
                     for f in fired {

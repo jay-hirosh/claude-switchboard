@@ -773,6 +773,7 @@ mod tests {
             polling_interval_secs: 60,
             stagger_gap_secs: 45,
             thresholds: vec![50, 80, 95],
+            payg_threshold: 65,
             theme: "dark".into(),
             launch_at_login: true,
             crash_reports: true,
@@ -786,6 +787,7 @@ mod tests {
         assert_eq!(loaded.polling_interval_secs, s.polling_interval_secs);
         assert_eq!(loaded.stagger_gap_secs, s.stagger_gap_secs);
         assert_eq!(loaded.thresholds, s.thresholds);
+        assert_eq!(loaded.payg_threshold, s.payg_threshold);
         assert_eq!(loaded.theme, s.theme);
         assert_eq!(loaded.launch_at_login, s.launch_at_login);
         assert_eq!(loaded.crash_reports, s.crash_reports);

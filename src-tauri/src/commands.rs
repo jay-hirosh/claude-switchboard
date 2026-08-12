@@ -525,6 +525,9 @@ pub async fn update_settings(s: Settings, state: State<'_, Arc<AppState>>) -> Re
     if s.thresholds.iter().any(|&t| t > 100) {
         return Err("threshold values must be between 0 and 100".to_string());
     }
+    if s.payg_threshold > 100 {
+        return Err("payg_threshold must be between 0 and 100".to_string());
+    }
     state.db.save_settings(&s).map_err(|e| e.to_string())?;
     *state.settings.write() = s;
     Ok(())

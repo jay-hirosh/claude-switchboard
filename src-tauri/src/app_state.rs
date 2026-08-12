@@ -33,6 +33,15 @@ pub struct Settings {
     /// to a safe range (see commands.rs).
     pub stagger_gap_secs: u64,
     pub thresholds: Vec<u8>,
+    /// Utilization % at which the pay-as-you-go bucket notifies. PAYG has a
+    /// single threshold, separate from the shared `thresholds` used by the
+    /// rate-limit buckets. The struct-level `#[serde(default)]` above (plus
+    /// the custom `Default` impl below, which sets this to 85) already fills
+    /// this in per-field for settings blobs written before this field
+    /// existed, so no field-level default is needed here — see the
+    /// `terminal` field for a case where that field-level attribute is
+    /// (redundantly) still present.
+    pub payg_threshold: u8,
     pub theme: String,
     pub launch_at_login: bool,
     pub crash_reports: bool,
@@ -49,6 +58,7 @@ impl Default for Settings {
             polling_interval_secs: 300,
             stagger_gap_secs: crate::poll_loop::DEFAULT_STAGGER_GAP_SECS,
             thresholds: vec![75, 90],
+            payg_threshold: 85,
             theme: "system".into(),
             launch_at_login: false,
             crash_reports: false,
@@ -75,6 +85,25 @@ mod settings_tests {
         }"#;
         let s: Settings = serde_json::from_str(json).expect("legacy settings must still parse");
         assert!(s.terminal.is_none());
+    }
+
+    #[test]
+    fn settings_without_payg_threshold_field_defaults_to_85() {
+        // Same legacy fixture as above (no `terminal`, no `payg_threshold`):
+        // proves the struct-level `#[serde(default)]` + custom `Default`
+        // impl fill in `payg_threshold` per-field, without needing a
+        // field-level `#[serde(default = "...")]` fn.
+        let json = r#"{
+            "polling_interval_secs": 300,
+            "stagger_gap_secs": 30,
+            "thresholds": [75, 90],
+            "theme": "system",
+            "launch_at_login": false,
+            "crash_reports": false,
+            "preferred_auth_source": null
+        }"#;
+        let s: Settings = serde_json::from_str(json).expect("legacy settings must still parse");
+        assert_eq!(s.payg_threshold, 85);
     }
 
     #[test]
