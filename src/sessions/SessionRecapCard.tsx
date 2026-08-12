@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { LaunchSurface, SessionSummary } from '../lib/generated/bindings';
 import { ShieldOff } from '../lib/icons';
+import { formatDuration } from '../lib/format';
 import { ResumeButton } from './ResumeButton';
 import { contextReadout } from './contextWindow';
 
@@ -13,15 +14,6 @@ const MODE_LABELS: Record<string, string> = {
   auto: 'auto',
   manual: 'manual',
 };
-
-function span(startIso: string, endIso: string): string {
-  const a = new Date(startIso).getTime();
-  const b = new Date(endIso).getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return '';
-  const mins = Math.round((b - a) / 60000);
-  if (mins < 60) return `${mins}m`;
-  return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}m`;
-}
 
 function endedAt(iso: string): string {
   const d = new Date(iso);
@@ -65,7 +57,7 @@ export function SessionRecapCard({
   vsCodeAvailable?: boolean;
   onResume: (id: string, surface: LaunchSurface) => void;
 }) {
-  const duration = span(session.started_at, session.ended_at);
+  const duration = formatDuration(session.started_at, session.ended_at);
   const ended = endedAt(session.ended_at);
   const context = session.peak_context_tokens
     ? contextReadout(session.peak_context_tokens, session.model)

@@ -73,14 +73,6 @@ async getProjectBreakdown(days: number) : Promise<Result<ProjectStats[], string>
     else return { status: "error", error: e  as any };
 }
 },
-async getRepoBreakdown() : Promise<Result<RepoStats[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_repo_breakdown") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async getCacheStats(days: number) : Promise<Result<CacheStats, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_cache_stats", { days }) };
@@ -521,7 +513,7 @@ export type PricingEntry = { prefix: string; input_per_mtok: number; output_per_
  */
 tier?: PricingTier | null }
 export type PricingTier = { above_tokens: number; input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_5m_per_mtok: number; cache_1h_per_mtok: number }
-export type ProjectStats = { project: string; session_count: number; total_tokens: number; total_cost_usd: number }
+export type ProjectStats = { project: string; session_count: number; total_cost_usd: number }
 export type Provider = { id: string; name: string; kind: ProviderKind; base_url: string | null; auth_token: string | null; env: Partial<{ [key in string]: string }>; 
 /**
  * Appended to the `claude` invocation. Needed because the generated
@@ -546,19 +538,6 @@ export type RefreshScope =
  * Triggered by the AccountsPanel header refresh button.
  */
 "all"
-/**
- * One `cwd` within a repository — a monorepo package, or a plain project
- * with no sibling packages, or a git worktree.
- */
-export type RepoProjectStats = { project: string; cwd: string; session_count: number; total_tokens: number; total_cost_usd: number }
-/**
- * A git repository, which can hold more than one `project`/`cwd` — a
- * monorepo run from several package directories, or the same clone
- * resumed from more than one subdirectory. Distinct from `ProjectStats`,
- * which groups by `cwd` alone and so double-counts a repo worked from two
- * directories.
- */
-export type RepoStats = { repo: string; session_count: number; total_tokens: number; total_cost_usd: number; projects: RepoProjectStats[] }
 export type RunningClaudeCode = { cli_processes: number; vscode_with_extension: string[] }
 /**
  * Per-account schedule preset.

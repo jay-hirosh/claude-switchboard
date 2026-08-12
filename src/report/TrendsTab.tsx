@@ -10,6 +10,23 @@ import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
 import { MODEL_VARIANT, modelKey, shortName } from './modelDisplay';
 
+/** Fixed stacking order for the bar chart and its legend, and the color each
+ *  tier renders as — shared with the day-breakdown panel's model-fill bars
+ *  so a color always means the same tier everywhere in this tab. */
+const MODEL_ORDER = ['opus', 'sonnet', 'haiku', 'default'] as const;
+const MODEL_COLORS: Record<(typeof MODEL_ORDER)[number], string> = {
+  opus: 'var(--color-model-opus)',
+  sonnet: 'var(--color-model-sonnet)',
+  haiku: 'var(--color-model-haiku)',
+  default: 'var(--color-text-muted)',
+};
+const MODEL_LABELS: Record<(typeof MODEL_ORDER)[number], string> = {
+  opus: 'Opus',
+  sonnet: 'Sonnet',
+  haiku: 'Haiku',
+  default: 'Other',
+};
+
 export function TrendsTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
   const { data, error, loading, reload } = useTabData(
@@ -20,6 +37,7 @@ export function TrendsTab() {
     [version],
   );
   const [range, setRange] = useState<'7d' | '30d'>('30d');
+  const [metric, setMetric] = useState<'tokens' | 'cost'>('tokens');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   useEffect(() => {
@@ -44,6 +62,23 @@ export function TrendsTab() {
     if (!breakdown || !selectedDate) return null;
     return breakdown.find((b) => b.date === selectedDate) ?? null;
   }, [breakdown, selectedDate]);
+
+  const breakdownByDate = useMemo(
+    () => new Map((breakdown ?? []).map((b) => [b.date, b])),
+    [breakdown],
+  );
+
+  // Which tiers actually show up in the visible range — an all-Sonnet month
+  // shouldn't carry a legend entry for Opus.
+  const legendKeys = useMemo(() => {
+    const present = new Set<string>();
+    for (const day of visibleData) {
+      for (const m of breakdownByDate.get(day.date)?.models ?? []) {
+        present.add(modelKey(m.model));
+      }
+    }
+    return MODEL_ORDER.filter((k) => present.has(k));
+  }, [visibleData, breakdownByDate]);
 
   if (error) {
     return (
@@ -70,45 +105,100 @@ export function TrendsTab() {
   }
 
   const maxValue = Math.max(
-    ...visibleData.map((d) => d.input_tokens + d.output_tokens),
+    ...visibleData.map((d) => (metric === 'tokens' ? d.input_tokens + d.output_tokens : d.cost_usd)),
     1,
   );
   const chartHeight = 160;
 
   return (
     <div className="flex flex-col gap-[var(--space-md)]">
-      {/* Range selector */}
-      <div className="flex gap-[var(--space-2xs)] bg-[var(--color-track)] rounded-[var(--radius-sm)] p-[2px] w-fit">
-        {(['7d', '30d'] as const).map((r) => (
-          <button
-            key={r}
-            type="button"
-            onClick={() => setRange(r)}
-            className={[
-              'px-[var(--space-sm)] py-[var(--space-2xs)]',
-              'text-[length:var(--text-label)] font-[var(--weight-medium)]',
-              'rounded-[var(--radius-sm)]',
-              'transition-[background,color] duration-[var(--duration-fast)]',
-              range === r
-                ? 'bg-[var(--color-bg-card)] text-[color:var(--color-text)]'
-                : 'text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-secondary)]',
-            ].join(' ')}
-          >
-            {r}
-          </button>
-        ))}
+      {/* Range + metric selectors */}
+      <div className="flex items-center justify-between">
+        <div className="flex gap-[var(--space-2xs)] bg-[var(--color-track)] rounded-[var(--radius-sm)] p-[2px] w-fit">
+          {(['7d', '30d'] as const).map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setRange(r)}
+              className={[
+                'px-[var(--space-sm)] py-[var(--space-2xs)]',
+                'text-[length:var(--text-label)] font-[var(--weight-medium)]',
+                'rounded-[var(--radius-sm)]',
+                'transition-[background,color] duration-[var(--duration-fast)]',
+                range === r
+                  ? 'bg-[var(--color-bg-card)] text-[color:var(--color-text)]'
+                  : 'text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-secondary)]',
+              ].join(' ')}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-[var(--space-2xs)] bg-[var(--color-track)] rounded-[var(--radius-sm)] p-[2px] w-fit">
+          {([
+            { key: 'tokens', label: 'Tokens' },
+            { key: 'cost', label: 'Cost' },
+          ] as const).map((m) => (
+            <button
+              key={m.key}
+              type="button"
+              onClick={() => setMetric(m.key)}
+              className={[
+                'px-[var(--space-sm)] py-[var(--space-2xs)]',
+                'text-[length:var(--text-label)] font-[var(--weight-medium)]',
+                'rounded-[var(--radius-sm)]',
+                'transition-[background,color] duration-[var(--duration-fast)]',
+                metric === m.key
+                  ? 'bg-[var(--color-bg-card)] text-[color:var(--color-text)]'
+                  : 'text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-secondary)]',
+              ].join(' ')}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Model legend — states what each stacked color means before the eye
+          hits the chart. Only tiers present in the visible range are shown. */}
+      {legendKeys.length > 0 && (
+        <div className="flex items-center gap-[var(--space-md)] px-[2px]">
+          {legendKeys.map((key) => (
+            <span key={key} className="flex items-center gap-[var(--space-2xs)]">
+              <span
+                aria-hidden
+                className="w-[8px] h-[8px] rounded-[2px] shrink-0"
+                style={{ background: MODEL_COLORS[key] }}
+              />
+              <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
+                {MODEL_LABELS[key]}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Chart */}
       <Card className="p-[var(--space-md)]">
         <div className="flex items-end gap-[2px]" style={{ height: chartHeight }}>
           {visibleData.map((day) => {
             const total = day.input_tokens + day.output_tokens;
-            const heightPct = (total / maxValue) * 100;
-            const isDanger = day.cost_usd >= 3;
-            const isWarn = day.cost_usd >= 1.5 && !isDanger;
+            const value = metric === 'tokens' ? total : day.cost_usd;
+            const heightPct = (value / maxValue) * 100;
             const isSelected = day.date === selectedDate;
             const label = `${new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}: ${formatTokens(total)} tokens, ${formatCost(day.cost_usd)}`;
+
+            // Split this day's bar into one segment per model tier, sized by
+            // that tier's share of the selected metric — position in the
+            // stack (fixed by MODEL_ORDER) is what "which model" answers.
+            const dayModels = breakdownByDate.get(day.date)?.models ?? [];
+            const segmentValues: Record<string, number> = {};
+            for (const m of dayModels) {
+              const key = modelKey(m.model);
+              const v = metric === 'tokens' ? m.input_tokens + m.output_tokens : m.cost_usd;
+              segmentValues[key] = (segmentValues[key] ?? 0) + v;
+            }
+            const segments = MODEL_ORDER.filter((k) => (segmentValues[k] ?? 0) > 0);
 
             return (
               <div
@@ -126,18 +216,23 @@ export function TrendsTab() {
                   <div
                     data-testid={`day-bar-${day.date}`}
                     className={[
-                      'w-full rounded-t-[2px] transition-[height,background-color] duration-[var(--duration-normal)]',
-                      isDanger
-                        ? 'bg-[var(--color-danger)]'
-                        : isWarn
-                          ? 'bg-[var(--color-warn)]'
-                          : 'bg-[var(--color-accent)]',
+                      'w-full rounded-t-[2px] overflow-hidden flex flex-col-reverse',
+                      'transition-[height] duration-[var(--duration-normal)]',
                       isSelected
                         ? 'opacity-100 ring-2 ring-[var(--color-border-focus)]'
                         : 'opacity-80 group-hover:opacity-100',
                     ].join(' ')}
                     style={{ height: `${heightPct}%` }}
-                  />
+                  >
+                    {segments.map((key) => (
+                      <div
+                        key={key}
+                        data-testid={`day-bar-${day.date}-${key}`}
+                        className="w-full"
+                        style={{ flexGrow: segmentValues[key], background: MODEL_COLORS[key] }}
+                      />
+                    ))}
+                  </div>
                 </button>
                 {/* Tooltip */}
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-[var(--space-xs)] hidden group-hover:block z-10">
@@ -146,10 +241,10 @@ export function TrendsTab() {
                       {new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                     </div>
                     <div className="mono text-[length:var(--text-label)] text-[color:var(--color-text)]">
-                      {formatTokens(total)}
+                      {metric === 'tokens' ? formatTokens(total) : formatCost(day.cost_usd)}
                     </div>
                     <div className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
-                      ${day.cost_usd.toFixed(2)}
+                      {metric === 'tokens' ? formatCost(day.cost_usd) : `${formatTokens(total)} tokens`}
                     </div>
                   </div>
                 </div>
@@ -202,12 +297,7 @@ export function TrendsTab() {
                           className="h-full rounded-[var(--radius-pill)] transition-[width] duration-[var(--duration-bar)] ease-[var(--ease-spring)]"
                           style={{
                             width: `${pct}%`,
-                            background:
-                              key === 'opus'
-                                ? 'var(--color-model-opus)'
-                                : key === 'sonnet'
-                                  ? 'var(--color-model-sonnet)'
-                                  : 'var(--color-model-haiku)',
+                            background: MODEL_COLORS[key as (typeof MODEL_ORDER)[number]] ?? MODEL_COLORS.default,
                           }}
                         />
                       </div>

@@ -1,7 +1,7 @@
 import type { LaunchSurface, SessionSummary } from '../lib/generated/bindings';
 import { ModelBadge } from '../components/ui/ModelBadge';
 import { ChevronDown, ChevronRight } from '../lib/icons';
-import { formatCost, formatTokens } from '../lib/format';
+import { formatCost, formatDuration, formatTokens } from '../lib/format';
 import { SessionRecapCard } from './SessionRecapCard';
 
 interface Props {
@@ -41,6 +41,7 @@ export function SessionRow({
     showProject ? session.project_name : null,
     session.git_branch,
     `${session.turns} turn${session.turns === 1 ? '' : 's'}`,
+    formatDuration(session.started_at, session.ended_at),
   ]
     .filter(Boolean)
     .join(' · ');

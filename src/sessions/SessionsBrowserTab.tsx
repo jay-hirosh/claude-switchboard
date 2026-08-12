@@ -3,7 +3,8 @@ import type { SessionSummary } from '../lib/generated/bindings';
 import { Banner } from '../components/ui/Banner';
 import { Card } from '../components/ui/Card';
 import { EmptyState } from '../components/ui/EmptyState';
-import { IconSessions, Search } from '../lib/icons';
+import { ArrowUpDown, ChevronDown, ChevronRight, IconSessions, Search } from '../lib/icons';
+import { durationMinutes, formatCost, formatDurationMinutes, formatTokens } from '../lib/format';
 import { useResumableSessions } from './useResumableSessions';
 import { SessionRow } from './SessionRow';
 import { useResume } from './useResume';
@@ -36,16 +37,38 @@ function RowGroup({ children }: { children: React.ReactNode }) {
   );
 }
 
+type SortMode = 'recent' | 'cost';
+
 export function SessionsBrowserTab() {
   const { sessions, loading, error } = useResumableSessions();
   const [query, setQuery] = useState('');
+  const [sortMode, setSortMode] = useState<SortMode>('recent');
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Project groups collapse by default — a project header should read as a
+  // total, not a promise to scroll through every session inside it.
+  const [openProjects, setOpenProjects] = useState<Set<string>>(new Set());
   const { resume, dialog, notice, vsCodeAvailable } = useResume();
 
   const q = query.trim().toLowerCase();
-  const filtered = useMemo(
-    () => (q ? sessions.filter((s) => matches(s, q)) : sessions),
-    [sessions, q],
+  const filtered = useMemo(() => {
+    const base = q ? sessions.filter((s) => matches(s, q)) : sessions;
+    if (sortMode === 'recent') return base;
+    return [...base].sort((a, b) => b.total_cost_usd - a.total_cost_usd);
+  }, [sessions, q, sortMode]);
+
+  // Aggregate across whatever is currently listed, so a search narrows the
+  // totals along with the rows.
+  const totals = useMemo(
+    () =>
+      filtered.reduce(
+        (acc, s) => ({
+          tokens: acc.tokens + s.total_tokens,
+          cost: acc.cost + s.total_cost_usd,
+          minutes: acc.minutes + durationMinutes(s.started_at, s.ended_at),
+        }),
+        { tokens: 0, cost: 0, minutes: 0 },
+      ),
+    [filtered],
   );
 
   // Search flattens the grouping: a two-result query should not be split
@@ -58,11 +81,28 @@ export function SessionsBrowserTab() {
       list.push(s);
       by.set(s.project_name, list);
     }
-    return [...by.entries()];
-  }, [filtered, q]);
+    const result = [...by.entries()].map(([project, list]) => ({
+      project,
+      list,
+      tokens: list.reduce((sum, s) => sum + s.total_tokens, 0),
+      cost: list.reduce((sum, s) => sum + s.total_cost_usd, 0),
+      minutes: list.reduce((sum, s) => sum + durationMinutes(s.started_at, s.ended_at), 0),
+    }));
+    if (sortMode === 'cost') result.sort((a, b) => b.cost - a.cost);
+    return result;
+  }, [filtered, q, sortMode]);
 
   function toggle(id: string) {
     setExpanded((cur) => (cur === id ? null : id));
+  }
+
+  function toggleProject(project: string) {
+    setOpenProjects((cur) => {
+      const next = new Set(cur);
+      if (next.has(project)) next.delete(project);
+      else next.add(project);
+      return next;
+    });
   }
 
   const rows = (list: SessionSummary[]) =>
@@ -107,11 +147,46 @@ export function SessionsBrowserTab() {
           />
         </div>
         {sessions.length > 0 && (
-          <span className="mono shrink-0 text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
-            {filtered.length} of {sessions.length}
-          </span>
+          <>
+            <button
+              type="button"
+              onClick={() => setSortMode((m) => (m === 'recent' ? 'cost' : 'recent'))}
+              className="
+                flex shrink-0 items-center gap-[var(--space-xs)] rounded-[var(--radius-sm)]
+                border border-[var(--color-border)] bg-[var(--color-bg-card)]
+                px-[var(--space-sm)] py-[var(--space-xs)]
+                text-[length:var(--text-micro)] text-[color:var(--color-text-secondary)]
+                transition-[opacity] duration-[var(--duration-fast)]
+                hover:opacity-80
+              "
+              title="Toggle sort order"
+            >
+              <ArrowUpDown size={11} aria-hidden />
+              {sortMode === 'recent' ? 'Recent' : 'Cost'}
+            </button>
+            <span className="mono shrink-0 text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
+              {filtered.length} of {sessions.length}
+            </span>
+          </>
         )}
       </div>
+
+      {filtered.length > 0 && (
+        <div className="flex items-center gap-[var(--space-md)] px-[2px]">
+          <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
+            Total
+          </span>
+          <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
+            {formatDurationMinutes(totals.minutes)}
+          </span>
+          <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
+            {formatTokens(totals.tokens)} tokens
+          </span>
+          <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-secondary)] tabular-nums">
+            {formatCost(totals.cost)}
+          </span>
+        </div>
+      )}
 
       {error && <Banner variant="error">{error}</Banner>}
       {notice && (
@@ -140,25 +215,53 @@ export function SessionsBrowserTab() {
       )}
 
       {groups
-        ? groups.map(([project, list]) => (
-            <section key={project} className="flex flex-col gap-[var(--space-xs)]">
-              <header className="flex items-baseline gap-[var(--space-sm)] px-[2px]">
-                <h3
+        ? groups.map(({ project, list, tokens, cost, minutes }) => {
+            const isOpen = openProjects.has(project);
+            const Chevron = isOpen ? ChevronDown : ChevronRight;
+            return (
+              <section key={project} className="flex flex-col gap-[var(--space-xs)]">
+                <button
+                  type="button"
+                  onClick={() => toggleProject(project)}
+                  aria-expanded={isOpen}
                   className="
-                    truncate text-[length:var(--text-label)] font-[var(--weight-semibold)]
-                    uppercase tracking-[var(--tracking-label)]
-                    text-[color:var(--color-text-secondary)]
+                    flex items-center gap-[var(--space-sm)] px-[2px] py-[2px]
+                    text-left transition-[opacity] duration-[var(--duration-fast)]
+                    hover:opacity-80
                   "
                 >
-                  {project}
-                </h3>
-                <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
-                  {list.length}
-                </span>
-              </header>
-              <RowGroup>{rows(list)}</RowGroup>
-            </section>
-          ))
+                  <Chevron
+                    size={12}
+                    aria-hidden
+                    className="shrink-0 text-[color:var(--color-text-muted)]"
+                  />
+                  <h3
+                    className="
+                      truncate text-[length:var(--text-label)] font-[var(--weight-semibold)]
+                      uppercase tracking-[var(--tracking-label)]
+                      text-[color:var(--color-text-secondary)]
+                    "
+                  >
+                    {project}
+                  </h3>
+                  <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
+                    {list.length}
+                  </span>
+                  <span className="flex-1" />
+                  <span className="mono shrink-0 min-w-[40px] text-right text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
+                    {formatDurationMinutes(minutes)}
+                  </span>
+                  <span className="mono shrink-0 text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
+                    {formatTokens(tokens)}
+                  </span>
+                  <span className="mono shrink-0 min-w-[46px] text-right text-[length:var(--text-micro)] text-[color:var(--color-text-secondary)] tabular-nums">
+                    {formatCost(cost)}
+                  </span>
+                </button>
+                {isOpen && <RowGroup>{rows(list)}</RowGroup>}
+              </section>
+            );
+          })
         : filtered.length > 0 && <RowGroup>{rows(filtered)}</RowGroup>}
 
       {dialog}

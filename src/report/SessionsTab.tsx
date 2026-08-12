@@ -449,6 +449,7 @@ export function SessionsTab() {
   const events = data?.events ?? null;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [pricing, setPricing] = useState<PricingEntry[] | null>(null);
+  const [collapsedDays, setCollapsedDays] = useState<Set<string>>(new Set());
 
   // Pricing rates are static for the lifetime of the process; fetch once.
   useEffect(() => {
@@ -509,6 +510,22 @@ export function SessionsTab() {
     return out;
   }, [sessions]);
 
+  // Every day group starts collapsed except the most recent — keeps the tab
+  // scannable on a heavy week without hiding today's activity by default.
+  useEffect(() => {
+    if (days.length === 0) return;
+    setCollapsedDays(new Set(days.slice(1).map((g) => g.day)));
+  }, [events]);
+
+  const toggleDay = (day: string) => {
+    setCollapsedDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(day)) next.delete(day);
+      else next.add(day);
+      return next;
+    });
+  };
+
   if (error) {
     return (
       <EmptyState
@@ -545,32 +562,42 @@ export function SessionsTab() {
       </div>
 
       <div className="flex flex-col">
-        {days.map((group) => (
+        {days.map((group) => {
+          const dayOpen = !collapsedDays.has(group.day);
+          const DayChevron = dayOpen ? ChevronDown : ChevronRight;
+          return (
           <div key={group.day} className="flex flex-col">
             {/* The day total is the point of the header, not decoration: it is
                 what the Trends bar for this date shows, so the two tabs can be
                 reconciled by eye. */}
-            <div
+            <button
+              type="button"
+              onClick={() => toggleDay(group.day)}
+              aria-expanded={dayOpen}
               className="
-                sticky top-0 z-[1] flex items-baseline justify-between
+                sticky top-0 z-[1] flex items-center justify-between gap-[var(--space-sm)]
                 bg-[var(--color-bg-base)] px-[var(--space-sm)]
                 pt-[var(--space-md)] pb-[var(--space-2xs)]
+                text-left
               "
             >
-              <span
-                className="
-                  text-[length:var(--text-micro)] font-[var(--weight-medium)]
-                  uppercase tracking-[var(--tracking-label)]
-                  text-[color:var(--color-text-muted)]
-                "
-              >
-                {formatDayLabel(group.day)}
+              <span className="flex items-center gap-[var(--space-2xs)] min-w-0">
+                <DayChevron size={12} className="shrink-0 text-[color:var(--color-text-muted)]" />
+                <span
+                  className="
+                    text-[length:var(--text-micro)] font-[var(--weight-medium)]
+                    uppercase tracking-[var(--tracking-label)]
+                    text-[color:var(--color-text-muted)]
+                  "
+                >
+                  {formatDayLabel(group.day)}
+                </span>
               </span>
               <span className="mono text-[length:var(--text-micro)] tabular-nums text-[color:var(--color-text-muted)]">
                 {formatCost(group.cost)}
               </span>
-            </div>
-            {group.rows.map((session) => {
+            </button>
+            {dayOpen && group.rows.map((session) => {
           const isOpen = expandedId === session.id;
           const Chevron = isOpen ? ChevronDown : ChevronRight;
           const agentCount = session.subagents.length;
@@ -654,7 +681,8 @@ export function SessionsTab() {
           );
             })}
           </div>
-        ))}
+          );
+        })}
         {sessions.length > MAX_ROWS && (
           <div className="py-[var(--space-md)] text-center text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
             Showing the latest {MAX_ROWS} rows.

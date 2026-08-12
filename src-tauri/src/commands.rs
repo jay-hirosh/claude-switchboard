@@ -48,7 +48,33 @@ pub struct DailyModelBucket {
 pub struct ProjectStats {
     pub project: String,
     pub session_count: u64,
+    pub total_tokens: u64,
     pub total_cost_usd: f64,
+}
+
+/// One `cwd` within a repository — a monorepo package, or a plain project
+/// with no sibling packages, or a git worktree.
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
+pub struct RepoProjectStats {
+    pub project: String,
+    pub cwd: String,
+    pub session_count: u64,
+    pub total_tokens: u64,
+    pub total_cost_usd: f64,
+}
+
+/// A git repository, which can hold more than one `project`/`cwd` — a
+/// monorepo run from several package directories, or the same clone
+/// resumed from more than one subdirectory. Distinct from `ProjectStats`,
+/// which groups by `cwd` alone and so double-counts a repo worked from two
+/// directories.
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
+pub struct RepoStats {
+    pub repo: String,
+    pub session_count: u64,
+    pub total_tokens: u64,
+    pub total_cost_usd: f64,
+    pub projects: Vec<RepoProjectStats>,
 }
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
@@ -217,12 +243,90 @@ pub async fn get_project_breakdown(
             .or_insert_with(|| ProjectStats {
                 project: e.project.clone(),
                 session_count: 0,
+                total_tokens: 0,
                 total_cost_usd: 0.0,
             });
         entry.session_count += 1;
+        entry.total_tokens += e.input_tokens + e.output_tokens;
         entry.total_cost_usd += e.cost_usd;
     }
     Ok(by_project.into_values().collect())
+}
+
+/// Walks up from `cwd` looking for a `.git` entry (directory for a normal
+/// clone, file for a worktree) and returns the name of the directory it
+/// lives in. Falls back to `cwd`'s own last component — same rule
+/// `SessionSummary.project_name` uses — when no `.git` is found, which
+/// covers a deleted project folder or a directory that was never a repo.
+fn resolve_repo_name(cwd: &str) -> String {
+    let leaf = |p: &std::path::Path| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| cwd.to_string())
+    };
+    let mut dir = std::path::Path::new(cwd);
+    loop {
+        if dir.join(".git").exists() {
+            return leaf(dir);
+        }
+        match dir.parent() {
+            Some(parent) if parent != dir => dir = parent,
+            _ => break,
+        }
+    }
+    leaf(std::path::Path::new(cwd))
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_repo_breakdown(state: State<'_, Arc<AppState>>) -> Result<Vec<RepoStats>, String> {
+    let sessions = list_resumable_sessions(state).await?;
+    use std::collections::HashMap;
+
+    let mut by_repo: HashMap<String, RepoStats> = HashMap::new();
+    let mut by_project: HashMap<(String, String), RepoProjectStats> = HashMap::new();
+
+    for s in &sessions {
+        let repo = resolve_repo_name(&s.cwd);
+
+        let repo_entry = by_repo.entry(repo.clone()).or_insert_with(|| RepoStats {
+            repo: repo.clone(),
+            session_count: 0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+            projects: Vec::new(),
+        });
+        repo_entry.session_count += 1;
+        repo_entry.total_tokens += s.total_tokens;
+        repo_entry.total_cost_usd += s.total_cost_usd;
+
+        let proj_entry = by_project
+            .entry((repo, s.cwd.clone()))
+            .or_insert_with(|| RepoProjectStats {
+                project: s.project_name.clone(),
+                cwd: s.cwd.clone(),
+                session_count: 0,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
+            });
+        proj_entry.session_count += 1;
+        proj_entry.total_tokens += s.total_tokens;
+        proj_entry.total_cost_usd += s.total_cost_usd;
+    }
+
+    for ((repo, _cwd), proj) in by_project {
+        if let Some(entry) = by_repo.get_mut(&repo) {
+            entry.projects.push(proj);
+        }
+    }
+
+    let mut out: Vec<RepoStats> = by_repo.into_values().collect();
+    for repo in &mut out {
+        repo.projects
+            .sort_by(|a, b| b.total_cost_usd.total_cmp(&a.total_cost_usd));
+    }
+    out.sort_by(|a, b| b.total_cost_usd.total_cmp(&a.total_cost_usd));
+    Ok(out)
 }
 
 #[command]

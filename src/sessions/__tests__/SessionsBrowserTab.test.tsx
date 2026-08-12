@@ -48,9 +48,12 @@ describe('SessionsBrowserTab', () => {
       s({ session_id: 'b', project_name: 'beta', cwd: '/w/beta', title: 'Beta work' }),
     ]);
     render(<SessionsBrowserTab />);
-    await waitFor(() => expect(screen.getByText('Alpha work')).toBeTruthy());
-    expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy());
     expect(screen.getByRole('heading', { name: 'beta' })).toBeTruthy();
+
+    // Groups collapse by default — expand one to confirm its row renders.
+    fireEvent.click(screen.getByRole('heading', { name: 'alpha' }));
+    await waitFor(() => expect(screen.getByText('Alpha work')).toBeTruthy());
   });
 
   it('filters on search and flattens the grouping', async () => {
@@ -59,7 +62,7 @@ describe('SessionsBrowserTab', () => {
       s({ session_id: 'b', project_name: 'beta', cwd: '/w/beta', title: 'Beta work' }),
     ]);
     render(<SessionsBrowserTab />);
-    await waitFor(() => expect(screen.getByText('Alpha work')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/search/i), { target: { value: 'beta' } });
     await waitFor(() => expect(screen.queryByText('Alpha work')).toBeNull());
     expect(screen.getByText('Beta work')).toBeTruthy();
@@ -78,7 +81,7 @@ describe('SessionsBrowserTab', () => {
       }),
     ]);
     render(<SessionsBrowserTab />);
-    await waitFor(() => expect(screen.getByText('Opaque title')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText(/search/i), { target: { value: 'migration' } });
     await waitFor(() => expect(screen.getByText('Opaque title')).toBeTruthy());
@@ -93,6 +96,8 @@ describe('SessionsBrowserTab', () => {
       s({ session_id: 'b', title: 'Second', asked: 'second ask' }),
     ]);
     render(<SessionsBrowserTab />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('heading', { name: 'alpha' }));
     await waitFor(() => expect(screen.getByText('First')).toBeTruthy());
     fireEvent.click(screen.getByText('First'));
     await waitFor(() => expect(screen.getByText('first ask')).toBeTruthy());
@@ -108,7 +113,7 @@ describe('SessionsBrowserTab', () => {
 
     ipcMock.listResumableSessions.mockResolvedValue([s({})]);
     rerender(<SessionsBrowserTab key="2" />);
-    await waitFor(() => expect(screen.getByText('Alpha work')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/search/i), { target: { value: 'zzzz' } });
     await waitFor(() => expect(screen.getByText(/no sessions match/i)).toBeTruthy());
   });

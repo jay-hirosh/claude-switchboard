@@ -7,6 +7,7 @@ export {
   Activity,
   AlertTriangle,
   ArrowRight,
+  ArrowUpDown,
   BarChart3,
   Calendar,
   Check,

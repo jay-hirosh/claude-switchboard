@@ -4,7 +4,7 @@ import { IconButton } from '../components/ui/IconButton';
 import { SessionsTab, WINDOW_DAYS } from './SessionsTab';
 import { ModelsTab } from './ModelsTab';
 import { TrendsTab } from './TrendsTab';
-import { ProjectsTab } from './ProjectsTab';
+import { RepoTab } from './RepoTab';
 import { HeatmapTab } from './HeatmapTab';
 import { CacheTab } from './CacheTab';
 import { useAppStore } from '../lib/store';
@@ -18,11 +18,11 @@ import { ProvidersTab } from '../providers/ProvidersTab';
 import { SessionsBrowserTab } from '../sessions/SessionsBrowserTab';
 
 const TAB_CONFIG = [
+  { id: 'repo', label: 'Repository' },
   { id: 'browse', label: 'Sessions' },
   { id: 'cost', label: 'Cost' },
   { id: 'models', label: 'Models' },
   { id: 'trends', label: 'Trends' },
-  { id: 'projects', label: 'Projects' },
   { id: 'heatmap', label: 'Heatmap' },
   { id: 'cache', label: 'Cache' },
   { id: 'providers', label: 'Providers' },
@@ -34,22 +34,22 @@ const TAB_CONFIG = [
  *  it included them. Keep these in step with the `ipc.get*(n)` call in each
  *  tab; `undefined` means the tab has no time window of its own. */
 const TAB_WINDOW_DAYS: Record<string, number | undefined> = {
+  repo: undefined,
   browse: undefined,
   cost: WINDOW_DAYS,
   models: 30,
   trends: 30,
-  projects: 30,
   heatmap: 180,
   cache: 30,
   providers: undefined,
 };
 
 const TAB_COMPONENTS: Record<string, React.FC> = {
+  repo: RepoTab,
   browse: SessionsBrowserTab,
   cost: SessionsTab,
   models: ModelsTab,
   trends: TrendsTab,
-  projects: ProjectsTab,
   heatmap: HeatmapTab,
   cache: CacheTab,
   providers: ProvidersTab,
