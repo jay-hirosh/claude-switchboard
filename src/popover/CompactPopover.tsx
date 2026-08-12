@@ -5,6 +5,7 @@ import { Banner } from '../components/ui/Banner';
 import { IconButton } from '../components/ui/IconButton';
 import { UpdateBanner } from '../components/UpdateBanner';
 import { UsageSummary } from '../components/UsageSummary';
+import { NowRunningSection } from './NowRunningSection';
 import { SettingsPanel } from '../settings/SettingsPanel';
 import { AccountsPanel } from '../accounts/AccountsPanel';
 import { UnmanagedActiveBanner } from '../accounts/UnmanagedActiveBanner';
@@ -69,6 +70,7 @@ export function CompactPopover() {
   const accountPlan = useAppStore(
     (s) => s.accounts.find((a) => a.is_active)?.subscription_type ?? null,
   );
+  const liveSessions = useAppStore((s) => s.liveSessions);
   const activeModel = useActiveModel();
   const [view, setView] = useState<'home' | 'settings' | 'accounts'>('home');
   const [refreshing, setRefreshing] = useState(false);
@@ -161,6 +163,8 @@ export function CompactPopover() {
         detailsOpen={detailsOpen}
         onToggleDetails={() => setDetailsOpen((v) => !v)}
       />
+
+      <NowRunningSection sessions={liveSessions} />
 
       <div
         style={{ marginTop: 'auto' }}

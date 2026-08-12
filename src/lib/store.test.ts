@@ -26,6 +26,7 @@ vi.mock('./ipc', () => ({
     getSettings: vi.fn().mockResolvedValue(null),
     hasClaudeCodeCreds: vi.fn().mockResolvedValue(false),
     listAccounts: vi.fn().mockResolvedValue([]),
+    getLiveSessions: vi.fn().mockResolvedValue([]),
   },
 }));
 

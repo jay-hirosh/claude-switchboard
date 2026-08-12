@@ -9,6 +9,7 @@ export type {
   DailyModelBucket,
   ExtraBurnRate,
   ExtraUsage,
+  LiveSessionInfo,
   ModelStats,
   PricingEntry,
   PricingTier,

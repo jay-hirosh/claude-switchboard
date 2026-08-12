@@ -2,6 +2,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountListEntry,
   CachedUsage,
+  LiveSessionInfo,
   SwapReport,
 } from "./generated/bindings";
 
@@ -24,7 +25,8 @@ export type AppEvent =
   | { type: "db_reset" }
   | { type: "watcher_error"; payload: string }
   | { type: "popover_hidden" }
-  | { type: "popover_shown" };
+  | { type: "popover_shown" }
+  | { type: "live_sessions_changed"; payload: LiveSessionInfo[] };
 
 export function subscribe(
   handler: (e: AppEvent) => void,
@@ -62,5 +64,8 @@ export function subscribe(
     ),
     listen("popover_hidden", () => handler({ type: "popover_hidden" })),
     listen("popover_shown", () => handler({ type: "popover_shown" })),
+    listen<LiveSessionInfo[]>("live_sessions_changed", (e) =>
+      handler({ type: "live_sessions_changed", payload: e.payload }),
+    ),
   ]);
 }

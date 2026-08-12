@@ -434,6 +434,14 @@ async listResumableSessions() : Promise<Result<SessionSummary[], string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getLiveSessions() : Promise<Result<LiveSessionInfo[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_live_sessions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -523,6 +531,7 @@ export type LaunchSurface =
  * extension builds its own argv. The UI states that at launch time.
  */
 "vs_code_tab"
+export type LiveSessionInfo = { session_id: string; source_file: string; project: string; model: string; total_tokens: number; total_cost_usd: number; context_tokens: number; first_seen: number; last_activity: number }
 export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number }
 /**
  * Serializable mirror of `Preset` for the frontend.

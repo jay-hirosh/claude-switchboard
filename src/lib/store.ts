@@ -3,7 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { ipc } from './ipc';
 import { subscribe, type AppEvent } from './events';
-import type { AccountListEntry, CachedUsage, Settings, SwapReport } from './generated/bindings';
+import type { AccountListEntry, CachedUsage, LiveSessionInfo, Settings, SwapReport } from './generated/bindings';
 
 let _unlisteners: UnlistenFn[] = [];
 
@@ -23,6 +23,7 @@ interface AppStore {
   stale: boolean;
   dbReset: boolean;
   sessionDataVersion: number;
+  liveSessions: LiveSessionInfo[];
   viewMode: 'compact' | 'expanded';
   /** Bumped on every popover_shown so views can re-assert size/state. */
   shownTick: number;
@@ -58,6 +59,7 @@ export const useAppStore = create<AppStore>((set, _get) => ({
   stale: false,
   dbReset: false,
   sessionDataVersion: 0,
+  liveSessions: [],
   viewMode: 'compact',
   shownTick: 0,
   pendingSwapReport: null,
@@ -69,13 +71,14 @@ export const useAppStore = create<AppStore>((set, _get) => ({
       _unlisteners = [];
     }
 
-    const [usage, settings, accounts] = await Promise.all([
+    const [usage, settings, accounts, liveSessions] = await Promise.all([
       ipc.getCurrentUsage(),
       ipc.getSettings(),
       ipc.listAccounts().catch(() => []),
+      ipc.getLiveSessions().catch(() => []),
     ]);
     const active = accounts.find((a) => a.is_active)?.slot ?? null;
-    set({ usage, settings, accounts, activeSlot: active });
+    set({ usage, settings, accounts, activeSlot: active, liveSessions });
 
     _unlisteners = await subscribe((e: AppEvent) => {
       switch (e.type) {
@@ -140,6 +143,9 @@ export const useAppStore = create<AppStore>((set, _get) => ({
           break;
         case 'session_ingested':
           set((s) => ({ sessionDataVersion: s.sessionDataVersion + 1 }));
+          break;
+        case 'live_sessions_changed':
+          set({ liveSessions: e.payload });
           break;
         case 'stale_data':
           set({ stale: true });

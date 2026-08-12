@@ -10,6 +10,7 @@ export const ipc = {
   getCurrentUsage: () => commands.getCurrentUsage().then(unwrap),
   getPricing: () => commands.getPricing().then(unwrap),
   getSessionHistory: (days: number) => commands.getSessionHistory(days).then(unwrap),
+  getLiveSessions: () => commands.getLiveSessions().then(unwrap),
   getCompactions: (days: number) => commands.getCompactions(days).then(unwrap),
   getDailyTrends: (days: number) => commands.getDailyTrends(days).then(unwrap),
   getModelBreakdown: (days: number) => commands.getModelBreakdown(days).then(unwrap),
