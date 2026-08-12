@@ -2,6 +2,7 @@ use crate::app_state::{AppState, BackoffState, BurnRateProjection, CachedUsage, 
 use crate::auth::AuthSource;
 use crate::auth::accounts::ManagedAccount;
 use crate::notifier;
+use crate::notifier::rules::Bucket;
 use crate::tray;
 use crate::usage_api::{FetchOutcome, UsageSnapshot};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -269,6 +270,27 @@ async fn apply_fetch_outcome(
                     }
                 }
                 Err(e) => tracing::warn!("serialize snapshot for slot {slot} failed: {e}"),
+            }
+            // Track per-window peaks for the limit-hit analytics report
+            // (F5). Runs for every slot, not just the active one — the
+            // report covers every managed account. Best-effort, same
+            // rationale as insert_snapshot above: a storage hiccup must
+            // never interrupt polling.
+            for (bucket, data) in [
+                (Bucket::FiveHour, snapshot.five_hour.as_ref()),
+                (Bucket::SevenDay, snapshot.seven_day.as_ref()),
+            ] {
+                let Some(u) = data else { continue };
+                let Some(resets_at) = u.resets_at else { continue };
+                if let Err(e) = state.db.record_window_peak(
+                    &acc.account_uuid,
+                    bucket.label(),
+                    resets_at,
+                    Utc::now(),
+                    u.utilization,
+                ) {
+                    tracing::warn!("record_window_peak for slot {slot} ({}) failed: {e}", bucket.label());
+                }
             }
             let _ = handle.emit(
                 "usage_updated",
