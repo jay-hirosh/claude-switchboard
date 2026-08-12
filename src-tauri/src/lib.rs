@@ -664,13 +664,38 @@ pub fn run() {
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
                         interval.tick().await;
-                        let changed = prune_state.live_sessions.prune(chrono::Utc::now());
+                        let (changed, finished) =
+                            prune_state.live_sessions.prune(chrono::Utc::now());
                         if changed {
                             use tauri::Emitter;
                             let _ = prune_handle.emit(
                                 "live_sessions_changed",
                                 prune_state.live_sessions.live_snapshot(),
                             );
+                        }
+                        if !finished.is_empty()
+                            && prune_state.settings.read().notify_session_finished
+                        {
+                            use tauri_plugin_notification::NotificationExt;
+                            for f in finished {
+                                let duration = crate::notifier::rules::humanize_duration(
+                                    chrono::Duration::seconds(f.live_span_secs),
+                                );
+                                let body = if f.total_cost_usd > 0.0 {
+                                    format!(
+                                        "{} — ${:.2}, {}",
+                                        f.project, f.total_cost_usd, duration
+                                    )
+                                } else {
+                                    format!("{} — {}", f.project, duration)
+                                };
+                                let _ = prune_handle
+                                    .notification()
+                                    .builder()
+                                    .title("Claude Code session finished")
+                                    .body(body)
+                                    .show();
+                            }
                         }
                     }
                 });

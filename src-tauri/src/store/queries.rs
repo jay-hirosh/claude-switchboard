@@ -854,6 +854,7 @@ mod tests {
             crash_reports: true,
             preferred_auth_source: None,
             terminal: Some(crate::providers::launcher::Terminal::Iterm2),
+            notify_session_finished: false,
         };
         db.save_settings(&s).unwrap();
 
@@ -867,6 +868,7 @@ mod tests {
         assert_eq!(loaded.launch_at_login, s.launch_at_login);
         assert_eq!(loaded.crash_reports, s.crash_reports);
         assert_eq!(loaded.terminal, s.terminal);
+        assert_eq!(loaded.notify_session_finished, s.notify_session_finished);
 
         // Overwrite and confirm the latest value wins (UPSERT).
         let s2 = Settings { polling_interval_secs: 120, ..Settings::default() };

@@ -50,6 +50,13 @@ pub struct Settings {
     /// `#[serde(default)]` keeps settings written before this field readable.
     #[serde(default)]
     pub terminal: Option<crate::providers::launcher::Terminal>,
+    /// Notify when a session that ran >= 10 minutes goes quiet for good.
+    /// No field-level `#[serde(default = "...")]` needed — the struct's
+    /// container-level `#[serde(default)]` (above) already fills any
+    /// missing field from this type's own `Default` impl below, same
+    /// mechanism that already makes `payg_threshold` default to 85 (not 0)
+    /// with no field-level attribute of its own.
+    pub notify_session_finished: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +71,7 @@ impl Default for Settings {
             crash_reports: false,
             preferred_auth_source: None,
             terminal: None,
+            notify_session_finished: true,
         }
     }
 }
@@ -104,6 +112,22 @@ mod settings_tests {
         }"#;
         let s: Settings = serde_json::from_str(json).expect("legacy settings must still parse");
         assert_eq!(s.payg_threshold, 85);
+    }
+
+    #[test]
+    fn settings_without_notify_session_finished_field_defaults_to_true() {
+        let json = r#"{
+            "polling_interval_secs": 300,
+            "stagger_gap_secs": 30,
+            "thresholds": [75, 90],
+            "payg_threshold": 85,
+            "theme": "system",
+            "launch_at_login": false,
+            "crash_reports": false,
+            "preferred_auth_source": null
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!(s.notify_session_finished);
     }
 
     #[test]

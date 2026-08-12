@@ -69,7 +69,7 @@ fn utilization_of(bucket: Bucket, s: &UsageSnapshot) -> (Option<f64>, Option<Dat
     }
 }
 
-fn humanize_duration(d: Duration) -> String {
+pub(crate) fn humanize_duration(d: Duration) -> String {
     let secs = d.num_seconds().max(0);
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
