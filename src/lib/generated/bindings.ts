@@ -651,7 +651,7 @@ export type Settings = { polling_interval_secs: number;
  * in `polling_interval_secs`. Bounded by the `update_settings` command
  * to a safe range (see commands.rs).
  */
-stagger_gap_secs: number; thresholds: number[]; theme: string; launch_at_login: boolean; crash_reports: boolean; preferred_auth_source: AuthSource | null; 
+stagger_gap_secs: number; thresholds: number[]; payg_threshold: number; theme: string; launch_at_login: boolean; crash_reports: boolean; preferred_auth_source: AuthSource | null;
 /**
  * `None` means "use the platform default" (`launcher::default_terminal()`).
  * `#[serde(default)]` keeps settings written before this field readable.

@@ -242,6 +242,18 @@ export function SettingsPanel() {
               formatValue={(v) => `${v}%`}
             />
           ))}
+          <Slider
+            label="Pay-as-you-go threshold"
+            min={25}
+            max={95}
+            step={5}
+            value={local.payg_threshold}
+            onChange={(e) => update('payg_threshold', Number(e.target.value))}
+            formatValue={(v) => `${v}%`}
+          />
+          <p className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] px-[var(--space-2xs)]">
+            Credits alert fires at this level — separate from the rate-limit thresholds above.
+          </p>
           <div className="flex items-center gap-[var(--space-sm)] px-[var(--space-2xs)]">
             <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
               Notifications fire once per bucket reset cycle
