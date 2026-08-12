@@ -17,6 +17,7 @@ export function AccountsSidebar() {
     accounts,
     orgGroups,
     currentActive,
+    bestAccountUuid,
     pending,
     swappingSlot,
     confirmError,
@@ -76,6 +77,7 @@ export function AccountsSidebar() {
               entry={a}
               thresholds={thresholds}
               shareHint={shareHint}
+              isBest={a.account_uuid === bestAccountUuid}
               onSwap={() => requestSwap(a)}
               swapBusy={swappingSlot !== null}
               swapping={swappingSlot === a.slot}

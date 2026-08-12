@@ -22,6 +22,7 @@ export function AccountsPanel({ onBack }: Props) {
     accounts,
     orgGroups,
     currentActive,
+    bestAccountUuid,
     pending,
     swappingSlot,
     confirmError,
@@ -86,6 +87,7 @@ export function AccountsPanel({ onBack }: Props) {
               entry={a}
               thresholds={thresholds}
               shareHint={shareHint}
+              isBest={a.account_uuid === bestAccountUuid}
               onSwap={() => requestSwap(a)}
               swapBusy={swappingSlot !== null}
               swapping={swappingSlot === a.slot}
