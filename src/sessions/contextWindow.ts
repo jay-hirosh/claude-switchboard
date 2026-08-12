@@ -32,6 +32,8 @@ const LONG_WINDOW = 1_000_000;
  * 200K; Opus 4.7 is 1M while Opus 4.6 is 200K. Matching on "opus" or
  * "sonnet" would mislabel every older release.
  */
+// Mirrored in Rust at src-tauri/src/live_sessions.rs::NATIVE_1M_MODELS for
+// the context-window-warning notification — keep both lists in sync.
 const NATIVE_1M_MODELS = new Set([
   'claude-sonnet-5',
   'claude-opus-4-7',

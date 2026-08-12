@@ -14,6 +14,7 @@ const baseSettings: Settings = {
   terminal: null,
   payg_threshold: 85,
   notify_session_finished: true,
+  notify_context_warning: true,
 };
 
 vi.mock('../../lib/store', () => ({
@@ -47,6 +48,14 @@ describe('SettingsPanel', () => {
   it('renders and toggles the session-finished notification setting', () => {
     render(<SettingsPanel />);
     const toggle = screen.getByLabelText(/session finished/i) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+  });
+
+  it('renders and toggles the context-warning notification setting', () => {
+    render(<SettingsPanel />);
+    const toggle = screen.getByLabelText(/context warnings/i) as HTMLInputElement;
     expect(toggle.checked).toBe(true);
     fireEvent.click(toggle);
     expect(toggle.checked).toBe(false);

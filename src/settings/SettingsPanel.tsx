@@ -260,6 +260,12 @@ export function SettingsPanel() {
             checked={local.notify_session_finished}
             onChange={(e) => update('notify_session_finished', e.target.checked)}
           />
+          <Toggle
+            label="Context warnings"
+            description="Notify when a session's context passes 80% of its window."
+            checked={local.notify_context_warning}
+            onChange={(e) => update('notify_context_warning', e.target.checked)}
+          />
           <div className="flex items-center gap-[var(--space-sm)] px-[var(--space-2xs)]">
             <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
               Notifications fire once per bucket reset cycle

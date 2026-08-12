@@ -53,3 +53,42 @@ describe('NowRunningSection', () => {
     expect(screen.getByText(/\+2 more/)).toBeTruthy();
   });
 });
+
+describe('NowRunningSection context chip', () => {
+  it('hides the chip below 60%', () => {
+    render(
+      <NowRunningSection
+        sessions={[session({ model: 'claude-opus-5', context_tokens: 500_000 })]} // 50% of 1M
+      />,
+    );
+    expect(screen.queryByText('50%')).toBeNull();
+  });
+
+  it('shows a muted chip between 60% and 80%', () => {
+    render(
+      <NowRunningSection
+        sessions={[session({ model: 'claude-opus-5', context_tokens: 650_000 })]} // 65%
+      />,
+    );
+    expect(screen.getByText('65%')).toBeTruthy();
+  });
+
+  it('shows a warn-colored chip at 80% and above', () => {
+    render(
+      <NowRunningSection
+        sessions={[session({ model: 'claude-opus-5', context_tokens: 850_000 })]} // 85%
+      />,
+    );
+    const chip = screen.getByText('85%');
+    expect(chip.className).toContain('color-warn');
+  });
+
+  it('hides the chip for a model with no known window', () => {
+    render(
+      <NowRunningSection
+        sessions={[session({ model: 'glm-4.6', context_tokens: 900_000 })]} // huge, but unknown window
+      />,
+    );
+    expect(screen.queryByText(/\d+%/)).toBeNull();
+  });
+});
