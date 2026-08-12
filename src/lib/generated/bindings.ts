@@ -665,7 +665,7 @@ stagger_gap_secs: number; thresholds: number[]; payg_threshold: number; theme: s
  * `None` means "use the platform default" (`launcher::default_terminal()`).
  * `#[serde(default)]` keeps settings written before this field readable.
  */
-terminal?: Terminal | null }
+terminal?: Terminal | null; notify_session_finished: boolean; }
 /**
  * A `/compact` boundary inside one session transcript.
  */

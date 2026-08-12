@@ -13,6 +13,7 @@ const baseSettings: Settings = {
   preferred_auth_source: null,
   terminal: null,
   payg_threshold: 85,
+  notify_session_finished: true,
 };
 
 vi.mock('../../lib/store', () => ({
@@ -41,5 +42,13 @@ describe('SettingsPanel', () => {
     fireEvent.change(slider, { target: { value: '90' } });
 
     expect(screen.getByText('90%')).toBeInTheDocument();
+  });
+
+  it('renders and toggles the session-finished notification setting', () => {
+    render(<SettingsPanel />);
+    const toggle = screen.getByLabelText(/session finished/i) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
   });
 });

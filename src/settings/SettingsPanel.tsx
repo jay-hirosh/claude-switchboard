@@ -254,6 +254,12 @@ export function SettingsPanel() {
           <p className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] px-[var(--space-2xs)]">
             Credits alert fires at this level — separate from the rate-limit thresholds above.
           </p>
+          <Toggle
+            label="Session finished"
+            description="Notify when a session that ran 10+ minutes goes quiet."
+            checked={local.notify_session_finished}
+            onChange={(e) => update('notify_session_finished', e.target.checked)}
+          />
           <div className="flex items-center gap-[var(--space-sm)] px-[var(--space-2xs)]">
             <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
               Notifications fire once per bucket reset cycle
