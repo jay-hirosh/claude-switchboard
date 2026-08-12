@@ -61,11 +61,15 @@ pub struct LiveSessionRegistry {
 /// Folds a subagent transcript path onto its parent's key, and derives the
 /// bare session id (file stem) — same `/subagents/` convention as
 /// `Db::session_totals`. `touched_file` and `projects_root` are both
-/// absolute paths; the returned key is projects-root-relative, matching
-/// `source_file` as stored in `session_events`.
+/// absolute paths; the returned key mirrors `walker.rs::ingest_file`'s exact
+/// derivation of `source_file` — `strip_prefix(projects_root)` followed by
+/// `to_string_lossy()`, with NO separator normalization. `source_file` as
+/// stored in `session_events` uses the OS's native separator (backslashes on
+/// Windows), so this must not rewrite them to forward slashes or the key
+/// would never match what's actually in the DB on Windows.
 fn registry_key(touched_file: &Path, projects_root: &Path) -> Option<(String, String)> {
     let rel = touched_file.strip_prefix(projects_root).ok()?;
-    let rel_str = rel.to_str()?.replace('\\', "/"); // Windows path separators
+    let rel_str = rel.to_string_lossy().into_owned();
     let parent_key = match rel_str.find("/subagents/") {
         Some(i) => format!("{}.jsonl", &rel_str[..i]),
         None => rel_str,
@@ -324,5 +328,38 @@ mod tests {
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].session_id, "b", "most recently touched sorts first");
         assert_eq!(snap[1].session_id, "a");
+    }
+
+    #[test]
+    fn registry_key_matches_walkers_forward_slash_relative_path() {
+        let root = PathBuf::from("/home/me/.claude/projects");
+        let (key, session_id) = registry_key(&root.join("proj").join("sess1.jsonl"), &root)
+            .expect("path under root must resolve");
+        assert_eq!(key, "proj/sess1.jsonl");
+        assert_eq!(session_id, "sess1");
+    }
+
+    #[test]
+    fn registry_key_does_not_normalize_separators_like_walker_rs() {
+        // walker.rs derives `source_file` with `to_string_lossy()` and no
+        // separator normalization (see jsonl_parser/walker.rs), so on
+        // Windows a real relative path would contain literal backslashes.
+        // We can't fabricate a multi-component backslash path on Unix (the
+        // OS treats `\` as a plain filename character, not a separator),
+        // but we CAN push a single path component that itself contains a
+        // literal backslash byte and confirm registry_key preserves it
+        // verbatim instead of rewriting it to a forward slash. Before the
+        // fix, `.replace('\\', "/")` corrupted this into "weird/name.jsonl";
+        // after the fix it must survive untouched, proving the key derived
+        // here can still equal what walker.rs actually stores.
+        let root = PathBuf::from("/home/me/.claude/projects");
+        let touched = root.join("weird\\name.jsonl");
+        let (key, session_id) =
+            registry_key(&touched, &root).expect("path under root must resolve");
+        assert_eq!(
+            key, "weird\\name.jsonl",
+            "registry_key must not rewrite backslashes to forward slashes"
+        );
+        assert_eq!(session_id, "weird\\name");
     }
 }
