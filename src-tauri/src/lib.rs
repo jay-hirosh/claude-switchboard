@@ -162,6 +162,7 @@ pub fn run() {
             commands::set_default_provider,
             commands::clear_default_provider,
             commands::list_resumable_sessions,
+            commands::get_live_sessions,
         ]);
 
     #[cfg(debug_assertions)]
@@ -214,6 +215,7 @@ pub fn run() {
             commands::set_default_provider,
             commands::clear_default_provider,
             commands::list_resumable_sessions,
+            commands::get_live_sessions,
         ]);
 
     #[cfg(debug_assertions)]
@@ -291,6 +293,7 @@ pub fn run() {
         warmup: app_state::WarmupState::default(),
         tray_position_known: std::sync::atomic::AtomicBool::new(false),
         sessions_cache: parking_lot::RwLock::new(None),
+        live_sessions: crate::live_sessions::LiveSessionRegistry::default(),
     });
 
     // One-time per pricing revision: recompute historical event costs with
@@ -649,6 +652,29 @@ pub fn run() {
                 });
             }
 
+            // Prunes the live-session registry every 30s: Live -> Cooling ->
+            // removed, per LiveSessionRegistry::prune's doc comment. Runs
+            // regardless of whether a projects root was found below (it's a
+            // no-op against an empty registry in that case).
+            {
+                let prune_state = state.clone();
+                let prune_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        interval.tick().await;
+                        let before = prune_state.live_sessions.live_snapshot();
+                        prune_state.live_sessions.prune(chrono::Utc::now());
+                        let after = prune_state.live_sessions.live_snapshot();
+                        if before.len() != after.len() {
+                            use tauri::Emitter;
+                            let _ = prune_handle.emit("live_sessions_changed", after);
+                        }
+                    }
+                });
+            }
+
             if let Some(root) = jsonl_parser::walker::claude_projects_root() {
                 let bf_root = root.clone();
                 let bf_state = state.clone();
@@ -665,11 +691,23 @@ pub fn run() {
                     }
                 });
 
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<usize>();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(std::path::PathBuf, usize)>();
                 let handle_for_events = handle.clone();
+                let state_for_ingest = state.clone();
+                let root_for_ingest = root.clone();
                 tauri::async_runtime::spawn(async move {
                     use tauri::Emitter;
-                    while let Some(n) = rx.recv().await {
+                    while let Some((path, n)) = rx.recv().await {
+                        state_for_ingest.live_sessions.note_ingest(
+                            &state_for_ingest.db,
+                            &path,
+                            &root_for_ingest,
+                            chrono::Utc::now(),
+                        );
+                        let _ = handle_for_events.emit(
+                            "live_sessions_changed",
+                            state_for_ingest.live_sessions.live_snapshot(),
+                        );
                         let _ = handle_for_events.emit("session_ingested", n);
                     }
                 });

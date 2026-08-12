@@ -20,7 +20,7 @@ pub fn start(
     db: Arc<Db>,
     pricing: Arc<PricingTable>,
     root: PathBuf,
-    tx: mpsc::UnboundedSender<usize>,
+    tx: mpsc::UnboundedSender<(PathBuf, usize)>,
 ) -> Result<WatcherHandle> {
     let (notify_tx, mut notify_rx) = mpsc::unbounded_channel::<Vec<DebouncedEvent>>();
     let mut debouncer = new_debouncer(Duration::from_millis(500), None, move |res| {
@@ -46,7 +46,7 @@ pub fn start(
             for p in touched {
                 match walker::ingest_file(&db_clone, &pricing_clone, &p, &root_clone) {
                     Ok(n) if n > 0 => {
-                        let _ = tx.send(n);
+                        let _ = tx.send((p.clone(), n));
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!("ingest {} failed: {}", p.display(), e),

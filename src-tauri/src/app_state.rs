@@ -207,6 +207,10 @@ pub struct AppState {
     /// advances. `ExpandedReport` remounts tab components on every tab
     /// change, so an unmemoized scan would re-parse ~100 MB per switch.
     pub sessions_cache: RwLock<Option<(std::time::SystemTime, Vec<crate::sessions::SessionSummary>)>>,
+    /// Which Claude Code sessions are actively writing to their transcript
+    /// right now. In-memory only — starts empty on every launch (see
+    /// `live_sessions::LiveSessionRegistry`'s doc comment for why).
+    pub live_sessions: crate::live_sessions::LiveSessionRegistry,
 }
 
 #[derive(Debug, Clone, Copy)]

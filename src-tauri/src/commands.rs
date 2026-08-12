@@ -114,6 +114,17 @@ pub async fn get_session_history(
     state.db.events_between(from, to).map_err(err_to_string)
 }
 
+/// Sessions whose JSONL transcript received a write within the last
+/// LIVE_QUIET_SECS (120s). Purely a read of the in-memory registry — no DB
+/// query of its own (the registry's entries are already the result of one).
+#[command]
+#[specta::specta]
+pub async fn get_live_sessions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<crate::live_sessions::LiveSessionInfo>, String> {
+    Ok(state.live_sessions.live_snapshot())
+}
+
 /// Compaction boundaries in the same window as `get_session_history`, so the
 /// Cost tab can mark which sessions had their context reset partway through.
 #[command]
