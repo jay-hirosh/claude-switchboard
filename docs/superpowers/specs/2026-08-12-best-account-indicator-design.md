@@ -53,7 +53,7 @@ export function computeBestAccountUuid(
 
 - **Constraint = `max(5H%, 7D%)`**, not 5H alone — whichever bucket is closer to blocking you is the one that actually matters for "can I use this account right now."
 - **Eligibility excludes errored/unpolled accounts** — an account with `last_error` set is excluded even if it still shows usable last-known-good numbers (per `AccountRow`'s own stale-data fallback): a currently-failing poll (rate-limited, network error, expired auth) is exactly the kind of account this feature shouldn't steer someone toward. An account with no `cached_usage` yet (never successfully polled) is excluded for the same reason — no reliable current read.
-- **Suppressed when the active account is already best**, or within `marginPct` (3 points) of best — avoids nagging over noise-level differences.
+- **Suppressed when the active account is already best**, or less than `marginPct` (3 points) ahead of it — avoids nagging over noise-level differences. (An exactly-3-point lead is flagged.)
 - **Margin check is skipped if the active account itself is ineligible** (errored) — there's no reliable baseline to compare against, so the best available account is flagged regardless of how close the numbers are.
 
 ## 4. Architecture
@@ -80,6 +80,8 @@ No backend changes. No new IPC command. No DB migration.
 ## 7. Open questions
 
 None blocking.
+
+**Follow-up (from final branch review):** accounts in the same org share quota (the row already prints "shares quota with X"), so the pill can — transiently, when poll stagger skews sibling snapshots by more than the margin — recommend a switch that is a no-op. Consider excluding accounts that share the active account's `org_uuid` from eligibility. Both call sites already compute `orgGroups`.
 
 ## 8. File-level checklist
 
