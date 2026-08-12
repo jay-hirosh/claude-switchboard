@@ -67,29 +67,56 @@ const NATIVE_1M_MODELS: &[&str] = &[
     "claude-mythos-5",
 ];
 
+/// Anthropic models confirmed to be 200K — mirrors KNOWN_200K_PREFIXES in
+/// src/sessions/contextWindow.ts. Keep both lists in sync.
+const KNOWN_200K_PREFIXES: &[&str] = &[
+    "claude-3-5-",
+    "claude-3-7-",
+    "claude-sonnet-4-0",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-0",
+    "claude-opus-4-1",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-haiku-4-5",
+];
+
 /// Resolves a model id to its context window in tokens. Mirrors
 /// `contextWindow.ts::windowFor`'s ACTUAL behavior (only a trailing `[1m]`
 /// suffix is stripped — that TS function does no provider-prefix
 /// stripping, despite what an earlier draft of this feature's spec
-/// claimed). Deliberately always returns a concrete size, never "unknown":
-/// unlike the frontend's `windowFor` (which returns `null` for
-/// unrecognized/third-party models so the UI never shows a fabricated
-/// percentage), a notification's job is to warn early rather than never,
-/// so anything outside `NATIVE_1M_MODELS` defaults to 200K.
+/// claimed).
+///
+/// Returns `None` when the window can't be confidently resolved, exactly
+/// like the frontend's `windowFor()` — this used to default unknown models
+/// to 200K on the theory that a notification should "warn early rather
+/// than never", but that guess is factually wrong for real, first-class
+/// provider presets already in this codebase (see
+/// `providers/presets.rs`'s `CLAUDE_CODE_MAX_CONTEXT_TOKENS`): GLM's real
+/// window is 1,000,000 (guessing 200K fires a false alarm at just 16% of
+/// the real window), and DeepSeek's real window is 131,072 (guessing
+/// 200,000 means the 80%-of-guess trigger point is never reached, so the
+/// warning silently never fires at all). The real window depends on which
+/// provider preset is active — information this function, which only sees
+/// a model name string from the transcript, doesn't have access to. No
+/// notification is strictly better than a wrong one, so an unresolvable
+/// window now skips the warning entirely instead of guessing.
 ///
 /// The `[1m]` suffix is its OWN independent trigger for 1M — not merely
 /// stripped before a `NATIVE_1M_MODELS` lookup. This mirrors the TS
 /// reference's `NATIVE_1M_MODELS.has(bare) || /\[1m\]$/i.test(model)`: a
 /// model id carrying the suffix (e.g. from a provider config) resolves to
 /// 1M even if its bare name isn't itself in the known-1M list.
-fn context_window_for(model: &str) -> u64 {
+fn context_window_for(model: &str) -> Option<u64> {
     let lower = model.to_ascii_lowercase();
     match lower.strip_suffix("[1m]") {
         // A `[1m]` suffix means 1M unconditionally, regardless of whether
         // the stripped bare name is itself a recognized model.
-        Some(_) => 1_000_000,
-        None if NATIVE_1M_MODELS.contains(&lower.as_str()) => 1_000_000,
-        None => 200_000,
+        Some(_) => Some(1_000_000),
+        None if NATIVE_1M_MODELS.contains(&lower.as_str()) => Some(1_000_000),
+        None if KNOWN_200K_PREFIXES.iter().any(|p| lower.starts_with(p)) => Some(200_000),
+        None => None,
     }
 }
 
@@ -188,9 +215,7 @@ impl LiveSessionRegistry {
         projects_root: &Path,
         now: DateTime<Utc>,
     ) -> Option<ContextWarning> {
-        let Some((parent_key, session_id)) = registry_key(touched_file, projects_root) else {
-            return None;
-        };
+        let (parent_key, session_id) = registry_key(touched_file, projects_root)?;
         let Ok((total_tokens, total_cost_usd)) = db.live_session_totals(&parent_key) else {
             return None;
         };
@@ -213,17 +238,28 @@ impl LiveSessionRegistry {
             .get(&parent_key)
             .map(|e| e.context_warning_armed)
             .unwrap_or(true);
-        let pct = if context_tokens > 0 {
-            ((context_tokens as f64 / context_window_for(&model) as f64) * 100.0) as u32
-        } else {
-            0
-        };
-        let (warn, now_armed) = if was_armed && pct >= CONTEXT_WARN_PCT {
-            (true, false)
-        } else if pct < CONTEXT_REARM_PCT {
-            (false, true)
-        } else {
-            (false, was_armed)
+        let context_window = context_window_for(&model);
+        let (warn, now_armed, pct) = match context_window {
+            // Window can't be confidently resolved (e.g. a third-party
+            // provider model like GLM or DeepSeek) — skip the warning
+            // entirely rather than guess, and leave the armed/disarmed
+            // hysteresis state untouched since we have no basis to change
+            // it.
+            None => (false, was_armed, 0u32),
+            Some(window) => {
+                let pct = if context_tokens > 0 {
+                    ((context_tokens as f64 / window as f64) * 100.0) as u32
+                } else {
+                    0
+                };
+                if was_armed && pct >= CONTEXT_WARN_PCT {
+                    (true, false, pct)
+                } else if pct < CONTEXT_REARM_PCT {
+                    (false, true, pct)
+                } else {
+                    (false, was_armed, pct)
+                }
+            }
         };
         if is_new_live_period {
             // A genuinely new live period is starting for this session_id
@@ -427,21 +463,25 @@ mod tests {
             "claude-fable-5",
             "claude-mythos-5",
         ] {
-            assert_eq!(context_window_for(m), 1_000_000, "{m} should resolve to 1M");
+            assert_eq!(context_window_for(m), Some(1_000_000), "{m} should resolve to 1M");
         }
     }
 
     #[test]
-    fn context_window_for_unknown_or_third_party_defaults_to_200k() {
-        assert_eq!(context_window_for("claude-sonnet-4-6"), 200_000, "known-but-not-1M Anthropic model");
-        assert_eq!(context_window_for("glm-4.6"), 200_000, "third-party model");
-        assert_eq!(context_window_for("some-future-model-id"), 200_000, "unrecognized model");
+    fn context_window_for_known_200k_prefix_resolves() {
+        assert_eq!(context_window_for("claude-sonnet-4-6"), Some(200_000), "known-but-not-1M Anthropic model");
+    }
+
+    #[test]
+    fn context_window_for_unresolvable_models_return_none() {
+        assert_eq!(context_window_for("glm-4.6"), None, "third-party model");
+        assert_eq!(context_window_for("some-future-model-id"), None, "unrecognized model");
     }
 
     #[test]
     fn context_window_for_strips_1m_suffix_case_insensitively() {
-        assert_eq!(context_window_for("claude-sonnet-4-6[1m]"), 1_000_000);
-        assert_eq!(context_window_for("claude-sonnet-4-6[1M]"), 1_000_000);
+        assert_eq!(context_window_for("claude-sonnet-4-6[1m]"), Some(1_000_000));
+        assert_eq!(context_window_for("claude-sonnet-4-6[1M]"), Some(1_000_000));
     }
 
     #[test]
@@ -515,6 +555,25 @@ mod tests {
         assert!(
             reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(150)).is_none(),
             "a write during Cooling while still disarmed and still >80% must not refire"
+        );
+    }
+
+    #[test]
+    fn unresolvable_model_never_fires_a_context_warning_even_at_huge_token_counts() {
+        // Proves the GLM false-alarm bug is fixed: glm-5.2's real window
+        // (per the "glm" preset's CLAUDE_CODE_MAX_CONTEXT_TOKENS) is
+        // 1,000,000, but context_window_for can't know that from the model
+        // name alone. Before the fix this guessed 200K and fired a warning
+        // at just 16% of the real window; now it must resolve to None and
+        // never warn, no matter how large context_tokens gets.
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        let reg = LiveSessionRegistry::default();
+        seed_at_line(&db, key, 5_000_000, "glm-5.2", 0); // absurdly large, would be "500%" of a 1M guess
+        let w = reg.note_ingest(&db, &file, &root, Utc::now());
+        assert!(
+            w.is_none(),
+            "an unresolvable model must never produce a ContextWarning, regardless of token count"
         );
     }
 
