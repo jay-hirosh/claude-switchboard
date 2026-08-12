@@ -135,6 +135,18 @@ pub struct BurnRateProjection {
     pub projected_at_reset: f64,
 }
 
+/// Linear projection of pay-as-you-go spend, sibling to BurnRateProjection:
+/// in-memory samples only (empty right after launch), >=2 samples spanning
+/// >=2 minutes. Dollars are tracked as cents to match the API payload.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ExtraBurnRate {
+    /// Spend velocity in cents per minute.
+    pub cents_per_min: f64,
+    /// Projected used_credits_cents at extra_usage.resets_at. None when the
+    /// account reports no reset date (common for PAYG).
+    pub projected_cents_at_reset: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct CachedUsage {
     pub snapshot: UsageSnapshot,
@@ -143,6 +155,8 @@ pub struct CachedUsage {
     pub last_error: Option<String>,
     #[serde(default)]
     pub burn_rate: Option<BurnRateProjection>,
+    #[serde(default)]
+    pub extra_burn_rate: Option<ExtraBurnRate>,
     pub auth_source: AuthSource,
 }
 

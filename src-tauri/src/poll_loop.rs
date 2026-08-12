@@ -1,4 +1,4 @@
-use crate::app_state::{AppState, BackoffState, BurnRateProjection, CachedUsage};
+use crate::app_state::{AppState, BackoffState, BurnRateProjection, CachedUsage, ExtraBurnRate};
 use crate::auth::AuthSource;
 use crate::auth::accounts::ManagedAccount;
 use crate::notifier;
@@ -112,9 +112,19 @@ pub fn next_wake_time(state: &crate::app_state::AppState, now: Instant) -> Insta
         .unwrap_or(now + Duration::from_secs(60))
 }
 
+/// Per-slot burn-rate sample buffers. Bundled into one struct (rather than
+/// two parallel HashMaps) so threading the pair through `poll_all` →
+/// `fetch_and_apply_one` → `apply_fetch_outcome` doesn't explode each
+/// signature with an extra parameter.
+#[derive(Default)]
+pub struct SlotBurnBuffers {
+    five_hour: VecDeque<(DateTime<Utc>, f64)>,
+    extra: VecDeque<(DateTime<Utc>, f64)>,
+}
+
 pub fn spawn(handle: AppHandle, state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
-        let mut burn_buffers: HashMap<u32, VecDeque<(DateTime<Utc>, f64)>> = HashMap::new();
+        let mut burn_buffers: HashMap<u32, SlotBurnBuffers> = HashMap::new();
         loop {
             let _ = poll_all(&handle, &state, &mut burn_buffers).await;
             let now = Instant::now();
@@ -135,7 +145,7 @@ pub fn spawn(handle: AppHandle, state: Arc<AppState>) {
 async fn fetch_and_apply_one(
     handle: &AppHandle,
     state: &AppState,
-    burn_buffers: &mut HashMap<u32, VecDeque<(DateTime<Utc>, f64)>>,
+    burn_buffers: &mut HashMap<u32, SlotBurnBuffers>,
     slot: u32,
     accounts: &[ManagedAccount],
 ) {
@@ -219,7 +229,7 @@ async fn fetch_and_apply_one(
 async fn apply_fetch_outcome(
     handle: &AppHandle,
     state: &AppState,
-    burn_buffers: &mut HashMap<u32, VecDeque<(DateTime<Utc>, f64)>>,
+    burn_buffers: &mut HashMap<u32, SlotBurnBuffers>,
     slot: u32,
     acc: &ManagedAccount,
     active_slot: Option<u32>,
@@ -227,14 +237,16 @@ async fn apply_fetch_outcome(
 ) {
     match outcome {
         FetchOutcome::Ok(snapshot) => {
-            let buf = burn_buffers.entry(slot).or_default();
-            let burn_rate = update_burn_rate(buf, &snapshot, Utc::now());
+            let bufs = burn_buffers.entry(slot).or_default();
+            let burn_rate = update_burn_rate(&mut bufs.five_hour, &snapshot, Utc::now());
+            let extra_burn_rate = update_extra_burn_rate(&mut bufs.extra, &snapshot, Utc::now());
             let cached = CachedUsage {
                 snapshot: snapshot.clone(),
                 account_id: acc.account_uuid.clone(),
                 account_email: acc.email.clone(),
                 last_error: None,
                 burn_rate,
+                extra_burn_rate,
                 auth_source: if Some(slot) == active_slot {
                     AuthSource::ClaudeCode
                 } else {
@@ -367,7 +379,7 @@ async fn apply_fetch_outcome(
 async fn poll_all(
     handle: &AppHandle,
     state: &AppState,
-    burn_buffers: &mut HashMap<u32, VecDeque<(DateTime<Utc>, f64)>>,
+    burn_buffers: &mut HashMap<u32, SlotBurnBuffers>,
 ) -> Result<(), anyhow::Error> {
     // 1. Reconcile active slot from live CC creds.
     let live = state.auth.read_live_claude_code().await.ok().flatten();
@@ -529,6 +541,7 @@ fn placeholder_cached(
         account_email: acc.email.clone(),
         last_error: Some(err.to_string()),
         burn_rate: None,
+        extra_burn_rate: None,
         auth_source: AuthSource::OAuth,
     }
 }
@@ -628,6 +641,7 @@ pub fn hydrated_caches(
                         account_email: acc.email.clone(),
                         last_error: None,
                         burn_rate: None,
+                        extra_burn_rate: None,
                         auth_source: AuthSource::OAuth,
                     },
                 );
@@ -674,6 +688,44 @@ fn update_burn_rate(
         utilization_per_min: slope,
         projected_at_reset: u1 + slope * mins_until_reset,
     })
+}
+
+fn update_extra_burn_rate(
+    buf: &mut VecDeque<(DateTime<Utc>, f64)>,
+    snapshot: &UsageSnapshot,
+    now: DateTime<Utc>,
+) -> Option<ExtraBurnRate> {
+    let extra = snapshot.extra_usage.as_ref()?;
+    if !extra.is_enabled {
+        return None;
+    }
+    // PAYG windows run ~30 days; a rolling day of samples gives a stable
+    // slope without unbounded growth.
+    let cutoff = now - ChronoDuration::hours(24);
+    while let Some(&(ts, _)) = buf.front() {
+        if ts < cutoff {
+            buf.pop_front();
+        } else {
+            break;
+        }
+    }
+    let used = extra.used_credits_cents as f64;
+    buf.push_back((now, used));
+    if buf.len() < 2 {
+        return None;
+    }
+    let &(t0, u0) = buf.front()?;
+    let &(t1, u1) = buf.back()?;
+    let span_minutes = (t1 - t0).num_seconds() as f64 / 60.0;
+    if span_minutes < 2.0 {
+        return None;
+    }
+    let cents_per_min = (u1 - u0) / span_minutes;
+    let projected_cents_at_reset = extra.resets_at.map(|reset| {
+        let mins_until_reset = ((reset - now).num_seconds() as f64 / 60.0).max(0.0);
+        u1 + cents_per_min * mins_until_reset
+    });
+    Some(ExtraBurnRate { cents_per_min, projected_cents_at_reset })
 }
 
 #[cfg(test)]
@@ -779,6 +831,71 @@ mod tests {
         assert_eq!(backoff_for_429(Some(d(120))), Some(d(120)));
         assert_eq!(backoff_for_429(Some(d(5))), Some(d(60)));
         assert_eq!(backoff_for_429(Some(d(3600))), Some(d(600)));
+    }
+
+    // `now` is threaded in (rather than the fixture calling `Utc::now()`
+    // internally) so `resets_at` stays anchored to the synthetic timeline a
+    // test is driving, matching how a real snapshot's reset date holds
+    // steady across polls within one billing period. Sampling `Utc::now()`
+    // here instead would desync `resets_at` from the `now` passed
+    // separately to `update_extra_burn_rate`, skewing the projection by
+    // however far apart the two clocks happen to be.
+    fn snap_with_extra(used_cents: u64, now: DateTime<Utc>, reset_in_hours: Option<i64>) -> UsageSnapshot {
+        UsageSnapshot {
+            five_hour: None,
+            seven_day: None,
+            seven_day_sonnet: None,
+            seven_day_opus: None,
+            extra_usage: Some(crate::usage_api::ExtraUsage {
+                is_enabled: true,
+                monthly_limit_cents: 10_000,
+                used_credits_cents: used_cents,
+                utilization: Some(used_cents as f64 / 100.0),
+                resets_at: reset_in_hours.map(|h| now + chrono::Duration::hours(h)),
+            }),
+            fetched_at: now,
+            unknown: Default::default(),
+        }
+    }
+
+    #[test]
+    fn extra_burn_rate_projects_dollars_at_reset() {
+        let mut buf = VecDeque::new();
+        let t0 = Utc::now();
+        assert!(
+            update_extra_burn_rate(&mut buf, &snap_with_extra(1000, t0, Some(24)), t0).is_none()
+        );
+        // 10 minutes later, 100 more cents spent → 10 cents/min.
+        let t1 = t0 + chrono::Duration::minutes(10);
+        let r = update_extra_burn_rate(&mut buf, &snap_with_extra(1100, t1, Some(24)), t1)
+            .expect("two samples 10min apart project");
+        assert!((r.cents_per_min - 10.0).abs() < 0.01);
+        let projected = r.projected_cents_at_reset.expect("reset known");
+        // 1100 + 10c/min * 24h(1440min) = 15500
+        assert!((projected - 15_500.0).abs() < 60.0, "got {projected}");
+    }
+
+    #[test]
+    fn extra_burn_rate_none_without_reset_date_still_reports_slope() {
+        let mut buf = VecDeque::new();
+        let t0 = Utc::now();
+        update_extra_burn_rate(&mut buf, &snap_with_extra(1000, t0, None), t0);
+        let t1 = t0 + chrono::Duration::minutes(10);
+        let r = update_extra_burn_rate(&mut buf, &snap_with_extra(1100, t1, None), t1)
+            .expect("slope computable without reset");
+        assert!(r.projected_cents_at_reset.is_none());
+        assert!((r.cents_per_min - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn extra_burn_rate_needs_two_minutes_of_span() {
+        let mut buf = VecDeque::new();
+        let t0 = Utc::now();
+        update_extra_burn_rate(&mut buf, &snap_with_extra(1000, t0, Some(24)), t0);
+        let t1 = t0 + chrono::Duration::seconds(60);
+        assert!(
+            update_extra_burn_rate(&mut buf, &snap_with_extra(1010, t1, Some(24)), t1).is_none()
+        );
     }
 
     mod hydrate {
