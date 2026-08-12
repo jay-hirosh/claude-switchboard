@@ -48,6 +48,20 @@ pub struct StoredCompaction {
     pub uuid: String,
 }
 
+/// The parent transcript's most recent event — used by the live-session
+/// registry to answer "what is this session doing right now." Subagent
+/// transcripts are deliberately excluded: they have their own context
+/// windows and aren't part of what the parent session's readout shows.
+#[derive(Debug, Clone)]
+pub struct LatestEventInfo {
+    pub project: String,
+    pub model: String,
+    /// input + cache_read + cache_creation_5m + cache_creation_1h tokens on
+    /// this one event — the same context-size formula used elsewhere in
+    /// this codebase's peak-context tracking.
+    pub context_tokens: u64,
+}
+
 fn insert_compactions_in_tx(tx: &Transaction<'_>, rows: &[StoredCompaction]) -> Result<usize> {
     if rows.is_empty() {
         return Ok(0);
@@ -336,6 +350,59 @@ impl Db {
             slot.1 += cost;
         }
         Ok(out)
+    }
+
+    /// Aggregate tokens/cost for one live session: the parent transcript
+    /// plus any subagent transcripts folded under it via the same
+    /// `/subagents/` convention `session_totals()` uses for the full-table
+    /// historical report. Scoped to a single session (two bound params),
+    /// unlike `session_totals()`'s full-table GROUP BY — this runs on every
+    /// ingest touch, so it stays cheap regardless of total history size.
+    pub fn live_session_totals(&self, parent_source_file: &str) -> Result<(u64, f64)> {
+        let conn = self.conn();
+        let prefix = parent_source_file
+            .strip_suffix(".jsonl")
+            .unwrap_or(parent_source_file);
+        let subagent_pattern = format!("{prefix}/subagents/%");
+        conn.query_row(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0), COALESCE(SUM(cost_usd), 0.0)
+             FROM session_events WHERE source_file = ?1 OR source_file LIKE ?2",
+            params![parent_source_file, subagent_pattern],
+            |r| {
+                let tokens: i64 = r.get(0)?;
+                let cost: f64 = r.get(1)?;
+                Ok((tokens.max(0) as u64, cost))
+            },
+        )
+        .map_err(Into::into)
+    }
+
+    /// The parent file's most recent event (by `source_line`), or `None` if
+    /// nothing has been ingested for it yet. Subagent files are excluded by
+    /// the exact `source_file` match (no LIKE) — see `LatestEventInfo`.
+    pub fn latest_event_for_file(&self, source_file: &str) -> Result<Option<LatestEventInfo>> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT project, model, input_tokens, cache_read_tokens,
+                    cache_creation_5m_tokens, cache_creation_1h_tokens
+             FROM session_events WHERE source_file = ?1
+             ORDER BY source_line DESC LIMIT 1",
+            params![source_file],
+            |r| {
+                let input: i64 = r.get(2)?;
+                let cache_read: i64 = r.get(3)?;
+                let cache_5m: i64 = r.get(4)?;
+                let cache_1h: i64 = r.get(5)?;
+                Ok(LatestEventInfo {
+                    project: r.get(0)?,
+                    model: r.get(1)?,
+                    context_tokens: (input.max(0) + cache_read.max(0) + cache_5m.max(0) + cache_1h.max(0))
+                        as u64,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     pub fn compactions_between(
@@ -823,5 +890,86 @@ mod tests {
         db.insert_events(&[mk(old, 1), mk(recent, 2)]).unwrap();
         let cutoff = Utc::now() - chrono::Duration::days(90);
         assert_eq!(db.prune_events_older_than(cutoff).unwrap(), 1);
+    }
+
+    fn mk_event(source_file: &str, source_line: i64, input: u64, cost: f64) -> StoredSessionEvent {
+        StoredSessionEvent {
+            ts: Utc::now(),
+            project: "my-proj".into(),
+            model: "claude-opus-5".into(),
+            input_tokens: input,
+            output_tokens: 5,
+            cache_read_tokens: 100,
+            cache_creation_5m_tokens: 10,
+            cache_creation_1h_tokens: 0,
+            cost_usd: cost,
+            source_file: source_file.into(),
+            source_line,
+            event_id: format!("{source_file}:{source_line}"),
+        }
+    }
+
+    #[test]
+    fn live_session_totals_folds_subagents_onto_parent() {
+        let (_dir, db) = fresh_db();
+        let parent = "-Users-me-proj/sess1.jsonl";
+        db.ingest_atomic(parent, &[mk_event(parent, 0, 100, 0.5), mk_event(parent, 1, 100, 0.5)], &[], 1, 200).unwrap();
+        let sub = "-Users-me-proj/sess1/subagents/agent-a.jsonl";
+        db.ingest_atomic(sub, &[mk_event(sub, 0, 50, 0.1)], &[], 1, 100).unwrap();
+        // A different session must not leak in.
+        let other = "-Users-me-proj/sess2.jsonl";
+        db.ingest_atomic(other, &[mk_event(other, 0, 999, 9.0)], &[], 1, 100).unwrap();
+
+        let (tokens, cost) = db.live_session_totals(parent).unwrap();
+        // input+output per event: (100+5)+(100+5)+(50+5) = 265
+        assert_eq!(tokens, 265);
+        assert!((cost - 1.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_session_totals_zero_for_unknown_session() {
+        let (_dir, db) = fresh_db();
+        let (tokens, cost) = db.live_session_totals("-Users-me-proj/never-seen.jsonl").unwrap();
+        assert_eq!(tokens, 0);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn latest_event_for_file_returns_most_recent_by_source_line() {
+        let (_dir, db) = fresh_db();
+        let parent = "-Users-me-proj/sess1.jsonl";
+        db.ingest_atomic(
+            parent,
+            &[
+                mk_event(parent, 0, 1000, 0.1),
+                { let mut e = mk_event(parent, 5, 2000, 0.2); e.model = "claude-sonnet-5".into(); e.cache_read_tokens = 500; e.cache_creation_5m_tokens = 50; e },
+            ],
+            &[],
+            1,
+            300,
+        ).unwrap();
+        let info = db.latest_event_for_file(parent).unwrap().expect("row present");
+        assert_eq!(info.project, "my-proj");
+        assert_eq!(info.model, "claude-sonnet-5");
+        // 2000 input + 500 cache_read + 50 cache_5m + 0 cache_1h
+        assert_eq!(info.context_tokens, 2550);
+    }
+
+    #[test]
+    fn latest_event_for_file_ignores_subagent_files() {
+        let (_dir, db) = fresh_db();
+        let parent = "-Users-me-proj/sess1.jsonl";
+        db.ingest_atomic(parent, &[mk_event(parent, 0, 100, 0.1)], &[], 1, 100).unwrap();
+        let sub = "-Users-me-proj/sess1/subagents/agent-a.jsonl";
+        db.ingest_atomic(sub, &[mk_event(sub, 99, 50000, 5.0)], &[], 1, 100).unwrap();
+        // Querying the PARENT file must not pick up the subagent's huge event.
+        let info = db.latest_event_for_file(parent).unwrap().expect("row present");
+        assert_eq!(info.context_tokens, 100 + 100 + 10); // input+cache_read+cache_5m from mk_event
+    }
+
+    #[test]
+    fn latest_event_for_file_none_when_no_rows() {
+        let (_dir, db) = fresh_db();
+        assert!(db.latest_event_for_file("-Users-me-proj/never.jsonl").unwrap().is_none());
     }
 }
