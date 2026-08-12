@@ -149,3 +149,21 @@ describe('AccountRow warm-up section', () => {
     expect(screen.queryByRole('switch')).toBeNull();
   });
 });
+
+describe('AccountRow best-available badge', () => {
+  it('renders the pill when isBest is set', () => {
+    render(
+      <AccountRow
+        entry={entry({ is_active: false })}
+        thresholds={[75, 90]}
+        isBest
+      />,
+    );
+    expect(screen.getByText('Best available')).toBeTruthy();
+  });
+
+  it('renders no pill when isBest is omitted', () => {
+    render(<AccountRow entry={entry({ is_active: false })} thresholds={[75, 90]} />);
+    expect(screen.queryByText('Best available')).toBeNull();
+  });
+});

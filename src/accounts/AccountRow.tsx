@@ -14,6 +14,8 @@ interface Props {
   entry: AccountListEntry;
   thresholds: [number, number];
   shareHint?: string | null;
+  /** Flags this row as the best account to switch to (most headroom). */
+  isBest?: boolean;
   onSwap?: () => void;
   swapBusy?: boolean;
   swapping?: boolean;
@@ -61,6 +63,21 @@ function PlanBadge({ plan }: { plan: string | null }) {
       `}
     >
       {plan}
+    </span>
+  );
+}
+
+function BestBadge() {
+  return (
+    <span
+      className="
+        shrink-0 inline-flex items-center rounded-[var(--radius-pill)]
+        bg-[var(--color-teal-dim)] px-[var(--space-xs)] py-[1px]
+        text-[length:var(--text-micro)] font-[var(--weight-semibold)]
+        uppercase tracking-[var(--tracking-label)] text-[color:var(--color-teal)]
+      "
+    >
+      Best available
     </span>
   );
 }
@@ -119,6 +136,7 @@ export function AccountRow({
   entry,
   thresholds,
   shareHint,
+  isBest = false,
   onSwap,
   swapBusy = false,
   swapping = false,
@@ -304,6 +322,7 @@ export function AccountRow({
         >
           {entry.email}
         </span>
+        {isBest && <BestBadge />}
         <PlanBadge plan={entry.subscription_type ?? null} />
         {entry.is_active && (
           <span
