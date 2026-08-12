@@ -160,4 +160,19 @@ describe('pay-as-you-go dollars and forecast', () => {
     expect(screen.queryByText(/ of \$/)).toBeNull();
     expect(screen.queryByText(/by reset/)).toBeNull();
   });
+
+  it('clamps a negative projected forecast to $0 instead of showing a negative dollar figure', () => {
+    // A reset/top-up can leave a brief negative projection before the
+    // backend's buffer clears on the next poll — the UI must never render
+    // a "→ ~$-N by reset" figure.
+    const u = paygUsage();
+    u.extra_burn_rate = {
+      cents_per_min: -5,
+      projected_cents_at_reset: -587_500,
+    };
+    render(<UsageSummary usage={u} thresholds={[75, 90]} />);
+    expect(screen.getByText(/→ ~\$0 by reset/)).toBeTruthy();
+    expect(screen.queryByText(/-\$/)).toBeNull();
+    expect(screen.queryByText(/\$-/)).toBeNull();
+  });
 });

@@ -710,6 +710,12 @@ fn update_extra_burn_rate(
         }
     }
     let used = extra.used_credits_cents as f64;
+    if buf.back().is_some_and(|&(_, prev)| used < prev) {
+        // used_credits_cents dropped — a reset or credit top-up happened.
+        // Old samples straddle the discontinuity and would produce a wild
+        // slope; start the projection fresh from this point.
+        buf.clear();
+    }
     buf.push_back((now, used));
     if buf.len() < 2 {
         return None;
@@ -717,7 +723,11 @@ fn update_extra_burn_rate(
     let &(t0, u0) = buf.front()?;
     let &(t1, u1) = buf.back()?;
     let span_minutes = (t1 - t0).num_seconds() as f64 / 60.0;
-    if span_minutes < 2.0 {
+    // PAYG projects across up to a 30-day horizon (43,200 min) vs. the 5h
+    // sibling's 300 min — ~144x more amplification per minute of sample
+    // gap — so this floor is raised to 30 minutes to blunt cold-start
+    // extrapolation from a single short polling gap.
+    if span_minutes < 30.0 {
         return None;
     }
     let cents_per_min = (u1 - u0) / span_minutes;
@@ -865,14 +875,14 @@ mod tests {
         assert!(
             update_extra_burn_rate(&mut buf, &snap_with_extra(1000, t0, Some(24)), t0).is_none()
         );
-        // 10 minutes later, 100 more cents spent → 10 cents/min.
-        let t1 = t0 + chrono::Duration::minutes(10);
-        let r = update_extra_burn_rate(&mut buf, &snap_with_extra(1100, t1, Some(24)), t1)
-            .expect("two samples 10min apart project");
+        // 40 minutes later (above the 30min floor), 400 more cents spent → 10 cents/min.
+        let t1 = t0 + chrono::Duration::minutes(40);
+        let r = update_extra_burn_rate(&mut buf, &snap_with_extra(1400, t1, Some(24)), t1)
+            .expect("two samples 40min apart project");
         assert!((r.cents_per_min - 10.0).abs() < 0.01);
         let projected = r.projected_cents_at_reset.expect("reset known");
-        // 1100 + 10c/min * 24h(1440min) = 15500
-        assert!((projected - 15_500.0).abs() < 60.0, "got {projected}");
+        // 1400 + 10c/min * 24h(1440min) = 15800
+        assert!((projected - 15_800.0).abs() < 60.0, "got {projected}");
     }
 
     #[test]
@@ -880,21 +890,65 @@ mod tests {
         let mut buf = VecDeque::new();
         let t0 = Utc::now();
         update_extra_burn_rate(&mut buf, &snap_with_extra(1000, t0, None), t0);
-        let t1 = t0 + chrono::Duration::minutes(10);
-        let r = update_extra_burn_rate(&mut buf, &snap_with_extra(1100, t1, None), t1)
+        // 40 minutes later (above the 30min floor), 400 more cents spent → 10 cents/min.
+        let t1 = t0 + chrono::Duration::minutes(40);
+        let r = update_extra_burn_rate(&mut buf, &snap_with_extra(1400, t1, None), t1)
             .expect("slope computable without reset");
         assert!(r.projected_cents_at_reset.is_none());
         assert!((r.cents_per_min - 10.0).abs() < 0.01);
     }
 
     #[test]
-    fn extra_burn_rate_needs_two_minutes_of_span() {
+    fn extra_burn_rate_needs_thirty_minutes_of_span() {
+        // PAYG projects across up to a 30-day horizon rather than the 5h
+        // sibling's 5h horizon (~144x more amplification per minute of
+        // sample gap), so its floor is raised to 30 minutes. 10 minutes of
+        // span is well under that and must not yet produce a projection.
         let mut buf = VecDeque::new();
         let t0 = Utc::now();
         update_extra_burn_rate(&mut buf, &snap_with_extra(1000, t0, Some(24)), t0);
-        let t1 = t0 + chrono::Duration::seconds(60);
+        let t1 = t0 + chrono::Duration::minutes(10);
         assert!(
             update_extra_burn_rate(&mut buf, &snap_with_extra(1010, t1, Some(24)), t1).is_none()
+        );
+    }
+
+    #[test]
+    fn extra_burn_rate_clears_buffer_on_credit_drop() {
+        // A reset or mid-cycle top-up makes used_credits_cents drop. Old
+        // samples from before the drop must not survive into the new
+        // window — otherwise the slope goes sharply negative and gets
+        // extrapolated across the ~30-day horizon. Assert the buffer
+        // restarts clean: the sample right after the drop doesn't pair
+        // with anything, so it takes two MORE samples before a projection
+        // reappears.
+        let mut buf = VecDeque::new();
+        let t0 = Utc::now();
+        let t1 = t0 + chrono::Duration::minutes(40);
+        update_extra_burn_rate(&mut buf, &snap_with_extra(1000, t0, Some(24)), t0);
+        let r1 = update_extra_burn_rate(&mut buf, &snap_with_extra(1400, t1, Some(24)), t1)
+            .expect("two samples 40min apart project");
+        assert!(r1.cents_per_min > 0.0);
+
+        // Credits used drops (reset/top-up) — this sample alone can't pair
+        // with anything since the buffer was just cleared.
+        let t2 = t1 + chrono::Duration::minutes(40);
+        assert!(
+            update_extra_burn_rate(&mut buf, &snap_with_extra(0, t2, Some(24)), t2).is_none(),
+            "buffer should have cleared on the downward discontinuity"
+        );
+
+        // One more sample after the drop still isn't enough — it only
+        // pairs with the drop sample, and that pair alone should NOT still
+        // contain the old pre-drop points. Confirm a normal projection
+        // resumes with fresh, non-negative slope.
+        let t3 = t2 + chrono::Duration::minutes(40);
+        let r3 = update_extra_burn_rate(&mut buf, &snap_with_extra(400, t3, Some(24)), t3)
+            .expect("fresh pair after the drop projects again");
+        assert!(
+            r3.cents_per_min > 0.0,
+            "slope should reflect only post-drop samples, got {}",
+            r3.cents_per_min
         );
     }
 

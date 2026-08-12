@@ -251,7 +251,7 @@ function ExtraRow({
               className="text-[length:var(--text-micro)] tabular-nums text-[color:var(--color-text-muted)]"
               title={`${burn.cents_per_min >= 0 ? '+' : ''}${(burn.cents_per_min * 14.4).toFixed(2)} $/day`}
             >
-              → ~${Math.round((burn.projected_cents_at_reset as number) / 100)} by reset
+              → ~${Math.round(Math.max(0, burn.projected_cents_at_reset as number) / 100)} by reset
             </span>
           )}
         </div>
