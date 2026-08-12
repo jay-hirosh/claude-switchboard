@@ -725,7 +725,7 @@ pub fn run() {
                     use tauri::Emitter;
                     while let Some((path, n)) = rx.recv().await {
                         let _ = handle_for_events.emit("session_ingested", n);
-                        state_for_ingest.live_sessions.note_ingest(
+                        let context_warning = state_for_ingest.live_sessions.note_ingest(
                             &state_for_ingest.db,
                             &path,
                             &root_for_ingest,
@@ -735,6 +735,17 @@ pub fn run() {
                             "live_sessions_changed",
                             state_for_ingest.live_sessions.live_snapshot(),
                         );
+                        if let Some(w) = context_warning {
+                            if state_for_ingest.settings.read().notify_context_warning {
+                                use tauri_plugin_notification::NotificationExt;
+                                let _ = handle_for_events
+                                    .notification()
+                                    .builder()
+                                    .title(format!("Session context at {}%", w.pct))
+                                    .body(format!("{} — approaching compaction", w.project))
+                                    .show();
+                            }
+                        }
                     }
                 });
                 // The WatcherHandle owns the notify-debouncer that drives the

@@ -57,6 +57,11 @@ pub struct Settings {
     /// mechanism that already makes `payg_threshold` default to 85 (not 0)
     /// with no field-level attribute of its own.
     pub notify_session_finished: bool,
+    /// Notify when a session's context crosses 80% of its window. No
+    /// field-level `#[serde(default = "...")]` needed — same mechanism as
+    /// `notify_session_finished` (container-level `#[serde(default)]` +
+    /// this being `true` in the custom `Default` impl below).
+    pub notify_context_warning: bool,
 }
 
 impl Default for Settings {
@@ -72,6 +77,7 @@ impl Default for Settings {
             preferred_auth_source: None,
             terminal: None,
             notify_session_finished: true,
+            notify_context_warning: true,
         }
     }
 }
@@ -128,6 +134,24 @@ mod settings_tests {
         }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert!(s.notify_session_finished);
+    }
+
+    #[test]
+    fn settings_without_notify_context_warning_field_defaults_to_true() {
+        // Same legacy-shaped fixture as the sibling notify_session_finished
+        // test — missing both notification-toggle fields entirely.
+        let json = r#"{
+            "polling_interval_secs": 300,
+            "stagger_gap_secs": 30,
+            "thresholds": [75, 90],
+            "payg_threshold": 85,
+            "theme": "system",
+            "launch_at_login": false,
+            "crash_reports": false,
+            "preferred_auth_source": null
+        }"#;
+        let s: Settings = serde_json::from_str(json).expect("legacy settings must still parse");
+        assert!(s.notify_context_warning);
     }
 
     #[test]
