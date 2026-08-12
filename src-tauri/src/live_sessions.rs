@@ -26,6 +26,12 @@ struct LiveEntry {
     first_seen: DateTime<Utc>,
     last_activity: DateTime<Utc>,
     state: SessionState,
+    /// Hysteresis for the context-window warning: true = eligible to fire
+    /// the next time `CONTEXT_WARN_PCT` is crossed; false = already fired
+    /// for this climb, won't refire until pct drops below
+    /// `CONTEXT_REARM_PCT`. New entries start `true` — a resumed session
+    /// already above the threshold fires on its first touch.
+    context_warning_armed: bool,
 }
 
 /// A session that just departed (Cooling -> removed) with enough live span
@@ -44,6 +50,57 @@ pub struct FinishedSession {
 /// their departure is worth a notification — short-lived sessions (a couple
 /// of quick questions) would otherwise fire noise on every departure.
 const MIN_NOTIFY_SPAN_SECS: i64 = 600;
+
+const CONTEXT_WARN_PCT: u32 = 80;
+const CONTEXT_REARM_PCT: u32 = 70;
+
+/// Models whose registry entry sets `context.native_1m: true` — MUST stay
+/// in sync with `NATIVE_1M_MODELS` in `src/sessions/contextWindow.ts` (that
+/// file's comment points back here). Explicit list, not a family prefix:
+/// the split runs within families (Sonnet 5 is 1M, Sonnet 4.6 is 200K).
+const NATIVE_1M_MODELS: &[&str] = &[
+    "claude-sonnet-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+];
+
+/// Resolves a model id to its context window in tokens. Mirrors
+/// `contextWindow.ts::windowFor`'s ACTUAL behavior (only a trailing `[1m]`
+/// suffix is stripped — that TS function does no provider-prefix
+/// stripping, despite what an earlier draft of this feature's spec
+/// claimed). Deliberately always returns a concrete size, never "unknown":
+/// unlike the frontend's `windowFor` (which returns `null` for
+/// unrecognized/third-party models so the UI never shows a fabricated
+/// percentage), a notification's job is to warn early rather than never,
+/// so anything outside `NATIVE_1M_MODELS` defaults to 200K.
+///
+/// The `[1m]` suffix is its OWN independent trigger for 1M — not merely
+/// stripped before a `NATIVE_1M_MODELS` lookup. This mirrors the TS
+/// reference's `NATIVE_1M_MODELS.has(bare) || /\[1m\]$/i.test(model)`: a
+/// model id carrying the suffix (e.g. from a provider config) resolves to
+/// 1M even if its bare name isn't itself in the known-1M list.
+fn context_window_for(model: &str) -> u64 {
+    let lower = model.to_ascii_lowercase();
+    match lower.strip_suffix("[1m]") {
+        // A `[1m]` suffix means 1M unconditionally, regardless of whether
+        // the stripped bare name is itself a recognized model.
+        Some(_) => 1_000_000,
+        None if NATIVE_1M_MODELS.contains(&lower.as_str()) => 1_000_000,
+        None => 200_000,
+    }
+}
+
+/// A live session's context crossed `CONTEXT_WARN_PCT` of its window —
+/// worth a "approaching compaction" notification. See
+/// `LiveSessionRegistry::note_ingest`.
+#[derive(Debug, Clone)]
+pub struct ContextWarning {
+    pub project: String,
+    pub pct: u8,
+}
 
 /// One row of `get_live_sessions`. Deliberately structured so future
 /// features (session-finished notifications, context-window warnings) can
@@ -130,18 +187,21 @@ impl LiveSessionRegistry {
         touched_file: &Path,
         projects_root: &Path,
         now: DateTime<Utc>,
-    ) {
+    ) -> Option<ContextWarning> {
         let Some((parent_key, session_id)) = registry_key(touched_file, projects_root) else {
-            return;
+            return None;
         };
         let Ok((total_tokens, total_cost_usd)) = db.live_session_totals(&parent_key) else {
-            return;
+            return None;
         };
         // The parent file's own latest event may not exist yet on the very
         // first subagent touch (main file written after its first
         // subagent in rare orderings) — fall back to sensible empties
         // rather than dropping the touch entirely.
         let latest = db.latest_event_for_file(&parent_key).ok().flatten();
+        let project = latest.as_ref().map(|l| l.project.clone()).unwrap_or_default();
+        let model = latest.as_ref().map(|l| l.model.clone()).unwrap_or_default();
+        let context_tokens = latest.map(|l| l.context_tokens).unwrap_or(0);
 
         let mut sessions = self.sessions.write();
         let is_new_live_period = !sessions.contains_key(&parent_key);
@@ -149,6 +209,22 @@ impl LiveSessionRegistry {
             .get(&parent_key)
             .map(|e| e.first_seen)
             .unwrap_or(now);
+        let was_armed = sessions
+            .get(&parent_key)
+            .map(|e| e.context_warning_armed)
+            .unwrap_or(true);
+        let pct = if context_tokens > 0 {
+            ((context_tokens as f64 / context_window_for(&model) as f64) * 100.0) as u32
+        } else {
+            0
+        };
+        let (warn, now_armed) = if was_armed && pct >= CONTEXT_WARN_PCT {
+            (true, false)
+        } else if pct < CONTEXT_REARM_PCT {
+            (false, true)
+        } else {
+            (false, was_armed)
+        };
         if is_new_live_period {
             // A genuinely new live period is starting for this session_id
             // (no existing entry — as opposed to a write during Cooling,
@@ -170,19 +246,23 @@ impl LiveSessionRegistry {
             LiveEntry {
                 session_id,
                 source_file: parent_key,
-                project: latest
-                    .as_ref()
-                    .map(|l| l.project.clone())
-                    .unwrap_or_default(),
-                model: latest.as_ref().map(|l| l.model.clone()).unwrap_or_default(),
+                project: project.clone(),
+                model,
                 total_tokens,
                 total_cost_usd,
-                context_tokens: latest.map(|l| l.context_tokens).unwrap_or(0),
+                context_tokens,
                 first_seen,
                 last_activity: now,
                 state: SessionState::Live,
+                context_warning_armed: now_armed,
             },
         );
+
+        if warn {
+            Some(ContextWarning { project, pct: pct.min(100) as u8 })
+        } else {
+            None
+        }
     }
 
     /// Walks every entry: Live -> Cooling at `LIVE_QUIET_SECS` quiet,
@@ -312,6 +392,130 @@ mod tests {
         let root = PathBuf::from("/home/me/.claude/projects");
         let rel = "-proj/sess1.jsonl";
         (root.clone(), root.join(rel), rel)
+    }
+
+    /// Like `seed()`, but with an explicit `source_line` so a test can seed
+    /// a SEQUENCE of events on the same file and rely on
+    /// `latest_event_for_file` picking the last one deterministically —
+    /// `seed()` hardcodes `source_line: 0` for every call, which is fine
+    /// for single-seed tests but ambiguous across multiple.
+    fn seed_at_line(db: &Db, source_file: &str, tokens: u64, model: &str, line: i64) {
+        let ev = StoredSessionEvent {
+            ts: Utc::now(),
+            project: "proj".into(),
+            model: model.into(),
+            input_tokens: tokens,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 0.01,
+            source_file: source_file.into(),
+            source_line: line,
+            event_id: format!("{source_file}:seed:{line}"),
+        };
+        db.ingest_atomic(source_file, &[ev], &[], 1, 100).unwrap();
+    }
+
+    #[test]
+    fn context_window_for_native_1m_models() {
+        for m in [
+            "claude-sonnet-5",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5",
+        ] {
+            assert_eq!(context_window_for(m), 1_000_000, "{m} should resolve to 1M");
+        }
+    }
+
+    #[test]
+    fn context_window_for_unknown_or_third_party_defaults_to_200k() {
+        assert_eq!(context_window_for("claude-sonnet-4-6"), 200_000, "known-but-not-1M Anthropic model");
+        assert_eq!(context_window_for("glm-4.6"), 200_000, "third-party model");
+        assert_eq!(context_window_for("some-future-model-id"), 200_000, "unrecognized model");
+    }
+
+    #[test]
+    fn context_window_for_strips_1m_suffix_case_insensitively() {
+        assert_eq!(context_window_for("claude-sonnet-4-6[1m]"), 1_000_000);
+        assert_eq!(context_window_for("claude-sonnet-4-6[1M]"), 1_000_000);
+    }
+
+    #[test]
+    fn a_resumed_session_already_above_80_fires_on_its_first_touch() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        let reg = LiveSessionRegistry::default();
+        seed_at_line(&db, key, 900_000, "claude-opus-5", 0); // 90% of 1M
+        let w = reg.note_ingest(&db, &file, &root, Utc::now());
+        let w = w.expect("a fresh entry defaults armed=true, so an already-high session fires immediately");
+        assert_eq!(w.pct, 90);
+        assert_eq!(w.project, "proj");
+    }
+
+    #[test]
+    fn context_warning_fires_once_crossing_80_then_does_not_refire_while_still_high() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+
+        seed_at_line(&db, key, 790_000, "claude-opus-5", 0); // 79%
+        assert!(reg.note_ingest(&db, &file, &root, t0).is_none(), "79% must not fire");
+
+        seed_at_line(&db, key, 810_000, "claude-opus-5", 1); // 81%
+        let w = reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(10));
+        let w = w.expect("crossing 80% must fire");
+        assert_eq!(w.pct, 81);
+
+        seed_at_line(&db, key, 850_000, "claude-opus-5", 2); // 85%, still high
+        assert!(
+            reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(20)).is_none(),
+            "staying above 80% after already firing must not refire"
+        );
+    }
+
+    #[test]
+    fn context_warning_rearms_below_70_and_refires_on_the_next_climb() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+
+        seed_at_line(&db, key, 850_000, "claude-opus-5", 0); // 85% — fires
+        assert!(reg.note_ingest(&db, &file, &root, t0).is_some());
+
+        seed_at_line(&db, key, 650_000, "claude-opus-5", 1); // 65% — compaction happened
+        assert!(
+            reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(10)).is_none(),
+            "dropping below 70% must not itself fire — it only re-arms"
+        );
+
+        seed_at_line(&db, key, 820_000, "claude-opus-5", 2); // climbs past 80% again
+        let w = reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(20));
+        assert!(w.is_some(), "a re-armed session must fire again on a fresh climb past 80%");
+    }
+
+    #[test]
+    fn context_warning_armed_state_survives_a_cooling_round_trip() {
+        // Same "write during Cooling preserves first_seen" property F1 already
+        // relies on — armed state must be preserved the same way, not reset.
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+
+        seed_at_line(&db, key, 850_000, "claude-opus-5", 0); // fires, now disarmed
+        assert!(reg.note_ingest(&db, &file, &root, t0).is_some());
+        reg.prune(t0 + Duration::seconds(121)); // -> Cooling, still disarmed
+        seed_at_line(&db, key, 860_000, "claude-opus-5", 1); // write during Cooling, still >80%
+        assert!(
+            reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(150)).is_none(),
+            "a write during Cooling while still disarmed and still >80% must not refire"
+        );
     }
 
     #[test]
