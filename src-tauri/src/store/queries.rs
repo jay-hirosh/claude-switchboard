@@ -1,6 +1,6 @@
 use super::Db;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +75,29 @@ pub struct WindowPeak {
     pub peak_pct: f64,
     #[specta(type = String)]
     pub peak_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ProjectAttribution {
+    pub project: String,
+    pub cost_usd: f64,
+}
+
+/// One managed account's limit-hit history over a report window. `hits`
+/// are windows whose peak_pct cleared the caller-supplied danger threshold
+/// — a non-hit window still exists in `window_peaks` but never appears
+/// here (changing the threshold in Settings retroactively reclassifies
+/// history at read time; nothing is filtered at write time).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct AccountLimitHits {
+    pub account_id: String,
+    pub email: String,
+    pub five_hour_hits: u32,
+    pub seven_day_hits: u32,
+    /// Always length 24; index = local hour (0-23) a hit's peak was observed.
+    pub hourly_distribution: Vec<u32>,
+    /// Top 5 by summed cost, across every hit window's [window_start, peak_at] span.
+    pub top_projects: Vec<ProjectAttribution>,
 }
 
 fn insert_compactions_in_tx(tx: &Transaction<'_>, rows: &[StoredCompaction]) -> Result<usize> {
@@ -613,6 +636,60 @@ impl Db {
         Ok(out)
     }
 
+    /// Aggregate one account's limit-hit history: hit counts per bucket,
+    /// an hour-of-day distribution of when hits peaked, and the projects
+    /// that consumed each hit window beforehand. Read-only, computed
+    /// entirely from already-stored data — reuses `events_between` rather
+    /// than adding a new session_events query.
+    pub fn limit_hit_stats(
+        &self,
+        account_id: &str,
+        email: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        danger_threshold: f64,
+    ) -> Result<AccountLimitHits> {
+        let peaks = self.window_peaks_between(account_id, from, to)?;
+        let mut five_hour_hits = 0u32;
+        let mut seven_day_hits = 0u32;
+        let mut hourly_distribution = vec![0u32; 24];
+        let mut project_totals: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
+
+        for peak in &peaks {
+            if peak.peak_pct < danger_threshold {
+                continue;
+            }
+            match peak.bucket.as_str() {
+                "five_hour" => five_hour_hits += 1,
+                "seven_day" => seven_day_hits += 1,
+                _ => {}
+            }
+            let hour = peak.peak_at.with_timezone(&chrono::Local).hour() as usize;
+            hourly_distribution[hour] += 1;
+
+            for event in self.events_between(peak.window_start, peak.peak_at)? {
+                *project_totals.entry(event.project).or_insert(0.0) += event.cost_usd;
+            }
+        }
+
+        let mut top_projects: Vec<ProjectAttribution> = project_totals
+            .into_iter()
+            .map(|(project, cost_usd)| ProjectAttribution { project, cost_usd })
+            .collect();
+        top_projects.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap());
+        top_projects.truncate(5);
+
+        Ok(AccountLimitHits {
+            account_id: account_id.to_string(),
+            email: email.to_string(),
+            five_hour_hits,
+            seven_day_hits,
+            hourly_distribution,
+            top_projects,
+        })
+    }
+
     /// Persist user settings to the `settings` table as a single JSON blob
     /// keyed on `"settings"`. Subsequent calls overwrite the previous value.
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -1111,5 +1188,75 @@ mod tests {
             .unwrap();
         assert_eq!(peaks.len(), 1);
         assert_eq!(peaks[0].bucket, "five_hour");
+    }
+
+    #[test]
+    fn limit_hit_stats_counts_hits_and_attributes_projects() {
+        let (_dir, db) = fresh_db();
+        let resets_at = Utc::now() + chrono::Duration::hours(2);
+        let window_start = Utc::now() - chrono::Duration::hours(3);
+        let peak_at = window_start + chrono::Duration::hours(1);
+
+        // A hit (>= 90 threshold) and a miss (< 90) — only the hit should count.
+        // Record window start first (with low reading), then peak; this establishes window_start in DB.
+        db.record_window_peak("acc1", "five_hour", resets_at, window_start, 0.0).unwrap();
+        db.record_window_peak("acc1", "five_hour", resets_at, peak_at, 95.0).unwrap();
+        db.record_window_peak("acc1", "seven_day", resets_at, window_start, 0.0).unwrap();
+        db.record_window_peak("acc1", "seven_day", resets_at, peak_at, 50.0).unwrap();
+
+        // One event inside the hit window, one outside it — only the inside one attributes.
+        db.insert_events(&[StoredSessionEvent {
+            ts: window_start + chrono::Duration::minutes(30),
+            project: "switchboard".into(),
+            model: "claude-sonnet-4-6".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 1.23,
+            source_file: "/a.jsonl".into(),
+            source_line: 1,
+            event_id: "evt-in".into(),
+        }])
+        .unwrap();
+        db.insert_events(&[StoredSessionEvent {
+            ts: peak_at + chrono::Duration::hours(5),
+            project: "other-project".into(),
+            model: "claude-sonnet-4-6".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 9.99,
+            source_file: "/b.jsonl".into(),
+            source_line: 1,
+            event_id: "evt-out".into(),
+        }])
+        .unwrap();
+
+        let stats = db
+            .limit_hit_stats("acc1", "a@example.com", Utc::now() - chrono::Duration::hours(4), Utc::now() + chrono::Duration::hours(4), 90.0)
+            .unwrap();
+
+        assert_eq!(stats.five_hour_hits, 1);
+        assert_eq!(stats.seven_day_hits, 0);
+        assert_eq!(stats.hourly_distribution.len(), 24);
+        assert_eq!(stats.hourly_distribution.iter().sum::<u32>(), 1);
+        assert_eq!(stats.top_projects.len(), 1);
+        assert_eq!(stats.top_projects[0].project, "switchboard");
+        assert_eq!(stats.top_projects[0].cost_usd, 1.23);
+    }
+
+    #[test]
+    fn limit_hit_stats_returns_zeroed_struct_for_an_account_with_no_history() {
+        let (_dir, db) = fresh_db();
+        let stats = db
+            .limit_hit_stats("acc1", "a@example.com", Utc::now() - chrono::Duration::days(30), Utc::now(), 90.0)
+            .unwrap();
+        assert_eq!(stats.five_hour_hits, 0);
+        assert_eq!(stats.seven_day_hits, 0);
+        assert!(stats.top_projects.is_empty());
     }
 }
