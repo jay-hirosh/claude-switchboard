@@ -663,7 +663,7 @@ impl Db {
             match peak.bucket.as_str() {
                 "five_hour" => five_hour_hits += 1,
                 "seven_day" => seven_day_hits += 1,
-                _ => {}
+                _ => continue,
             }
             let hour = peak.peak_at.with_timezone(&chrono::Local).hour() as usize;
             hourly_distribution[hour] += 1;
@@ -1258,5 +1258,68 @@ mod tests {
         assert_eq!(stats.five_hour_hits, 0);
         assert_eq!(stats.seven_day_hits, 0);
         assert!(stats.top_projects.is_empty());
+    }
+
+    #[test]
+    fn limit_hit_stats_sums_project_cost_across_multiple_hit_windows() {
+        let (_dir, db) = fresh_db();
+        // Two separate five_hour windows (different resets_at times).
+        let resets_at_1 = Utc::now() + chrono::Duration::hours(2);
+        let window_start_1 = Utc::now() - chrono::Duration::hours(6);
+        let peak_at_1 = window_start_1 + chrono::Duration::hours(1);
+
+        let resets_at_2 = Utc::now() + chrono::Duration::hours(7);  // Different reset time
+        let window_start_2 = Utc::now() - chrono::Duration::hours(1);
+        let peak_at_2 = window_start_2 + chrono::Duration::hours(1);
+
+        // First window: record a hit.
+        db.record_window_peak("acc1", "five_hour", resets_at_1, window_start_1, 0.0).unwrap();
+        db.record_window_peak("acc1", "five_hour", resets_at_1, peak_at_1, 95.0).unwrap();
+
+        // Second window: record another hit.
+        db.record_window_peak("acc1", "five_hour", resets_at_2, window_start_2, 0.0).unwrap();
+        db.record_window_peak("acc1", "five_hour", resets_at_2, peak_at_2, 92.0).unwrap();
+
+        // Insert same project in both windows — costs should accumulate.
+        db.insert_events(&[StoredSessionEvent {
+            ts: window_start_1 + chrono::Duration::minutes(30),
+            project: "my-app".into(),
+            model: "claude-sonnet-4-6".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 2.50,
+            source_file: "/a.jsonl".into(),
+            source_line: 1,
+            event_id: "evt-window1".into(),
+        }])
+        .unwrap();
+
+        db.insert_events(&[StoredSessionEvent {
+            ts: window_start_2 + chrono::Duration::minutes(30),
+            project: "my-app".into(),
+            model: "claude-sonnet-4-6".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 1.75,
+            source_file: "/b.jsonl".into(),
+            source_line: 1,
+            event_id: "evt-window2".into(),
+        }])
+        .unwrap();
+
+        let stats = db
+            .limit_hit_stats("acc1", "a@example.com", Utc::now() - chrono::Duration::hours(8), Utc::now() + chrono::Duration::hours(8), 90.0)
+            .unwrap();
+
+        assert_eq!(stats.five_hour_hits, 2, "should find both hit windows");
+        assert_eq!(stats.top_projects.len(), 1, "should have one project (accumulated across windows)");
+        assert_eq!(stats.top_projects[0].project, "my-app");
+        assert!((stats.top_projects[0].cost_usd - 4.25).abs() < 1e-6, "costs should sum: 2.50 + 1.75 = 4.25");
     }
 }
