@@ -144,10 +144,27 @@ impl LiveSessionRegistry {
         let latest = db.latest_event_for_file(&parent_key).ok().flatten();
 
         let mut sessions = self.sessions.write();
+        let is_new_live_period = !sessions.contains_key(&parent_key);
         let first_seen = sessions
             .get(&parent_key)
             .map(|e| e.first_seen)
             .unwrap_or(now);
+        if is_new_live_period {
+            // A genuinely new live period is starting for this session_id
+            // (no existing entry — as opposed to a write during Cooling,
+            // which reuses the entry and its first_seen). Clear any stale
+            // `notified` entry left behind by a PRIOR departure of the same
+            // session_id, so this run gets its own fair shot at a
+            // "finished" notification later — see prune()'s dedup set.
+            //
+            // Lock ordering: this acquires `notified` while still holding
+            // `sessions` (write). That's safe only because every other
+            // acquisition of both locks — see `prune()` — acquires
+            // `sessions` first and always drops it before touching
+            // `notified`, never the reverse; keep that invariant if either
+            // function's locking changes.
+            self.notified.write().remove(&session_id);
+        }
         sessions.insert(
             parent_key.clone(),
             LiveEntry {
@@ -540,5 +557,37 @@ mod tests {
         let (_, finished) = reg.prune(t0 + Duration::seconds(600) + Duration::seconds(301));
         assert_eq!(finished[0].project, "proj");
         assert!(finished[0].total_cost_usd > 0.0);
+    }
+
+    #[test]
+    fn a_new_live_period_for_the_same_session_id_gets_its_own_notification() {
+        let (_d, db) = fresh();
+        let (root, file, key) = root_and_file();
+        seed(&db, key, 100, "claude-opus-5");
+        let reg = LiveSessionRegistry::default();
+        let t0 = Utc::now();
+        reg.note_ingest(&db, &file, &root, t0);
+        reg.note_ingest(&db, &file, &root, t0 + Duration::seconds(600));
+        let departed_at = t0 + Duration::seconds(600) + Duration::seconds(301);
+        let (_, first) = reg.prune(departed_at);
+        assert_eq!(first.len(), 1, "first departure must be reported");
+
+        // A brand-new live period starts for the SAME session_id/registry
+        // key (e.g. the user resumes the same Claude Code session after a
+        // break) — this is a `None` hit in note_ingest's `sessions.get`
+        // lookup, i.e. a genuinely fresh first_seen, not a Cooling
+        // round-trip. It must get its own fair shot at a notification, not
+        // be silently swallowed by the `notified` set entry left behind by
+        // the prior departure.
+        let t1 = departed_at + Duration::seconds(1000);
+        reg.note_ingest(&db, &file, &root, t1);
+        reg.note_ingest(&db, &file, &root, t1 + Duration::seconds(600));
+        let (_, second) = reg.prune(t1 + Duration::seconds(600) + Duration::seconds(301));
+        assert_eq!(
+            second.len(),
+            1,
+            "a new live period for the same session_id must be reported again, not \
+             suppressed by a stale notified-set entry from the prior departure"
+        );
     }
 }
