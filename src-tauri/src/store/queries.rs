@@ -62,6 +62,21 @@ pub struct LatestEventInfo {
     pub context_tokens: u64,
 }
 
+/// A finished (or in-progress) 5H/7D window's peak utilization, as tracked
+/// incrementally by `record_window_peak`. `(account_id, bucket, resets_at)`
+/// is the window's identity.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct WindowPeak {
+    pub bucket: String,
+    #[specta(type = String)]
+    pub resets_at: DateTime<Utc>,
+    #[specta(type = String)]
+    pub window_start: DateTime<Utc>,
+    pub peak_pct: f64,
+    #[specta(type = String)]
+    pub peak_at: DateTime<Utc>,
+}
+
 fn insert_compactions_in_tx(tx: &Transaction<'_>, rows: &[StoredCompaction]) -> Result<usize> {
     if rows.is_empty() {
         return Ok(0);
@@ -540,6 +555,64 @@ impl Db {
         Ok(())
     }
 
+    /// Record one poll's reading for a window, keeping the running peak.
+    /// `(account_id, bucket, resets_at)` identifies the window — a new
+    /// `resets_at` value creates a fresh row rather than updating the old
+    /// one, which is how a window rollover gets detected with no explicit
+    /// bookkeeping. Best-effort from the caller's perspective: errors
+    /// propagate but callers on the poll-loop path treat them as
+    /// log-and-continue (see poll_loop.rs).
+    pub fn record_window_peak(
+        &self,
+        account_id: &str,
+        bucket: &str,
+        resets_at: DateTime<Utc>,
+        observed_at: DateTime<Utc>,
+        pct: f64,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO window_peaks (account_id, bucket, resets_at, window_start, peak_pct, peak_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?4)
+             ON CONFLICT(account_id, bucket, resets_at) DO UPDATE SET
+                 peak_pct = MAX(peak_pct, excluded.peak_pct),
+                 peak_at = CASE WHEN excluded.peak_pct > peak_pct THEN excluded.peak_at ELSE peak_at END,
+                 window_start = MIN(window_start, excluded.window_start)",
+            params![account_id, bucket, resets_at.timestamp(), observed_at.timestamp(), pct],
+        )?;
+        Ok(())
+    }
+
+    /// All window peaks for one account whose `window_start` falls in
+    /// `[from, to]`, oldest first.
+    pub fn window_peaks_between(
+        &self,
+        account_id: &str,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<WindowPeak>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT bucket, resets_at, window_start, peak_pct, peak_at
+             FROM window_peaks
+             WHERE account_id = ?1 AND window_start BETWEEN ?2 AND ?3
+             ORDER BY peak_at ASC",
+        )?;
+        let rows = stmt.query_map(params![account_id, from.timestamp(), to.timestamp()], |r| {
+            Ok(WindowPeak {
+                bucket: r.get(0)?,
+                resets_at: DateTime::from_timestamp(r.get(1)?, 0).unwrap(),
+                window_start: DateTime::from_timestamp(r.get(2)?, 0).unwrap(),
+                peak_pct: r.get(3)?,
+                peak_at: DateTime::from_timestamp(r.get(4)?, 0).unwrap(),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Persist user settings to the `settings` table as a single JSON blob
     /// keyed on `"settings"`. Subsequent calls overwrite the previous value.
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -983,5 +1056,60 @@ mod tests {
     fn latest_event_for_file_none_when_no_rows() {
         let (_dir, db) = fresh_db();
         assert!(db.latest_event_for_file("-Users-me-proj/never.jsonl").unwrap().is_none());
+    }
+
+    #[test]
+    fn record_window_peak_tracks_the_max_within_one_window() {
+        let (_dir, db) = fresh_db();
+        let resets_at = Utc::now() + chrono::Duration::hours(3);
+        let t1 = Utc::now();
+        let t2 = t1 + chrono::Duration::minutes(5);
+        let t3 = t1 + chrono::Duration::minutes(10);
+
+        db.record_window_peak("acc1", "five_hour", resets_at, t1, 40.0).unwrap();
+        db.record_window_peak("acc1", "five_hour", resets_at, t2, 82.0).unwrap();
+        // A later, lower reading must not overwrite the peak.
+        db.record_window_peak("acc1", "five_hour", resets_at, t3, 60.0).unwrap();
+
+        let peaks = db
+            .window_peaks_between("acc1", t1 - chrono::Duration::minutes(1), t3 + chrono::Duration::minutes(1))
+            .unwrap();
+        assert_eq!(peaks.len(), 1);
+        assert_eq!(peaks[0].peak_pct, 82.0);
+        assert_eq!(peaks[0].peak_at.timestamp(), t2.timestamp());
+        assert_eq!(peaks[0].window_start.timestamp(), t1.timestamp());
+    }
+
+    #[test]
+    fn record_window_peak_starts_a_new_row_when_resets_at_changes() {
+        let (_dir, db) = fresh_db();
+        let window1_resets = Utc::now() + chrono::Duration::hours(1);
+        let window2_resets = Utc::now() + chrono::Duration::hours(6);
+        let now = Utc::now();
+
+        db.record_window_peak("acc1", "five_hour", window1_resets, now, 95.0).unwrap();
+        db.record_window_peak("acc1", "five_hour", window2_resets, now, 10.0).unwrap();
+
+        let peaks = db
+            .window_peaks_between("acc1", now - chrono::Duration::minutes(1), now + chrono::Duration::minutes(1))
+            .unwrap();
+        assert_eq!(peaks.len(), 2, "a new resets_at must create a new row, not overwrite the old one");
+    }
+
+    #[test]
+    fn window_peaks_between_scopes_to_the_requested_account() {
+        let (_dir, db) = fresh_db();
+        db.upsert_account(&StoredAccount { id: "acc2".into(), email: "b@example.com".into(), display_name: None }).unwrap();
+        let resets_at = Utc::now() + chrono::Duration::hours(1);
+        let now = Utc::now();
+
+        db.record_window_peak("acc1", "five_hour", resets_at, now, 91.0).unwrap();
+        db.record_window_peak("acc2", "five_hour", resets_at, now, 91.0).unwrap();
+
+        let peaks = db
+            .window_peaks_between("acc1", now - chrono::Duration::minutes(1), now + chrono::Duration::minutes(1))
+            .unwrap();
+        assert_eq!(peaks.len(), 1);
+        assert_eq!(peaks[0].bucket, "five_hour");
     }
 }
