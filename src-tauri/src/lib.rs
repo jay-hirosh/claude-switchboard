@@ -4,6 +4,7 @@ pub mod branding;
 pub mod cli;
 mod commands;
 pub mod jsonl_parser;
+pub mod live_sessions;
 pub mod logging;
 pub mod migration;
 pub mod notifier;
