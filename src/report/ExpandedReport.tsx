@@ -7,6 +7,7 @@ import { TrendsTab } from './TrendsTab';
 import { RepoTab } from './RepoTab';
 import { HeatmapTab } from './HeatmapTab';
 import { CacheTab } from './CacheTab';
+import { LimitHitsTab } from './LimitHitsTab';
 import { useAppStore } from '../lib/store';
 import { ipc } from '../lib/ipc';
 import { tabSlide } from '../lib/motion';
@@ -23,6 +24,7 @@ const TAB_CONFIG = [
   { id: 'cost', label: 'Cost' },
   { id: 'models', label: 'Models' },
   { id: 'trends', label: 'Trends' },
+  { id: 'limits', label: 'Limit hits' },
   { id: 'heatmap', label: 'Heatmap' },
   { id: 'cache', label: 'Cache' },
   { id: 'providers', label: 'Providers' },
@@ -39,6 +41,7 @@ const TAB_WINDOW_DAYS: Record<string, number | undefined> = {
   cost: WINDOW_DAYS,
   models: 30,
   trends: 30,
+  limits: 30,
   heatmap: 180,
   cache: 30,
   providers: undefined,
@@ -50,6 +53,7 @@ const TAB_COMPONENTS: Record<string, React.FC> = {
   cost: SessionsTab,
   models: ModelsTab,
   trends: TrendsTab,
+  limits: LimitHitsTab,
   heatmap: HeatmapTab,
   cache: CacheTab,
   providers: ProvidersTab,
