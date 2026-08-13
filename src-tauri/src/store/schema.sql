@@ -137,3 +137,14 @@ CREATE TABLE IF NOT EXISTS window_peaks (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_window_peaks_identity
     ON window_peaks(account_id, bucket, resets_at);
+
+-- Singleton row recording Switchboard's own statusLine install, mirroring
+-- provider_default's shape. prior_value is the statusLine JSON that existed
+-- before install (NULL if absent) — the undo record. installed_command is
+-- the exact command string written, used for drift detection on uninstall.
+CREATE TABLE IF NOT EXISTS statusline_install (
+    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+    prior_value        TEXT,
+    installed_command  TEXT NOT NULL,
+    installed_at       INTEGER NOT NULL
+);

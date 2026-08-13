@@ -4,7 +4,7 @@
 //! merged into `env`.
 
 use crate::providers::default_env::{backup, read_settings, stamp, write_atomic};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -50,11 +50,82 @@ pub fn clear(path: &Path, prior: &Option<Value>, written: &Value) -> Result<bool
     Ok(true)
 }
 
+use crate::store::Db;
+use rusqlite::{params, OptionalExtension};
+use serde::{Deserialize, Serialize};
+
+/// What Switchboard wrote as `statusLine`, for the settings UI to display.
+/// The prior value (the undo record) is not part of this — it's an
+/// implementation detail `get_statusline_install` returns alongside it for
+/// `clear`, not something the frontend needs to render.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+pub struct StatuslineInstallState {
+    pub installed_command: String,
+    pub installed_at: i64,
+}
+
+impl Db {
+    pub fn get_statusline_install(&self) -> Result<Option<(StatuslineInstallState, Option<Value>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT prior_value, installed_command, installed_at FROM statusline_install WHERE id = 1",
+        )?;
+        let row = stmt
+            .query_row([], |r| {
+                let prior_value: Option<String> = r.get(0)?;
+                let installed_command: String = r.get(1)?;
+                let installed_at: i64 = r.get(2)?;
+                Ok((prior_value, installed_command, installed_at))
+            })
+            .optional()?;
+        let Some((prior_value, installed_command, installed_at)) = row else {
+            return Ok(None);
+        };
+        let prior: Option<Value> = prior_value.and_then(|s| serde_json::from_str(&s).ok());
+        Ok(Some((StatuslineInstallState { installed_command, installed_at }, prior)))
+    }
+
+    pub fn set_statusline_install(
+        &self,
+        prior: &Option<Value>,
+        command: &str,
+        installed_at: i64,
+    ) -> Result<()> {
+        let prior_json = match prior {
+            Some(v) => Some(serde_json::to_string(v).context("serialize prior statusLine")?),
+            None => None,
+        };
+        self.conn().execute(
+            "INSERT INTO statusline_install (id, prior_value, installed_command, installed_at)
+             VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET
+               prior_value = excluded.prior_value,
+               installed_command = excluded.installed_command,
+               installed_at = excluded.installed_at",
+            params![prior_json, command, installed_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_statusline_install(&self) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM statusline_install WHERE id = 1", [])?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Db;
     use serde_json::{json, Value};
     use tempfile::tempdir;
+
+    fn fresh_db() -> (tempfile::TempDir, Db) {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        (dir, db)
+    }
 
     fn write(path: &std::path::Path, s: &str) {
         std::fs::write(path, s).unwrap();
@@ -128,5 +199,33 @@ mod tests {
         assert!(!ok);
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["statusLine"]["command"], "bash hand-edited.sh");
+    }
+
+    #[test]
+    fn statusline_install_roundtrips_through_the_db() {
+        let (_dir, db) = fresh_db();
+        assert!(db.get_statusline_install().unwrap().is_none());
+
+        let prior = Some(json!({"type": "command", "command": "bash x.sh"}));
+        db.set_statusline_install(&prior, "/usr/local/bin/switchboard statusline", 1_700_000_000)
+            .unwrap();
+
+        let (state, got_prior) = db.get_statusline_install().unwrap().expect("row present");
+        assert_eq!(state.installed_command, "/usr/local/bin/switchboard statusline");
+        assert_eq!(state.installed_at, 1_700_000_000);
+        assert_eq!(got_prior, prior);
+
+        db.clear_statusline_install().unwrap();
+        assert!(db.get_statusline_install().unwrap().is_none());
+    }
+
+    #[test]
+    fn set_statusline_install_overwrites_the_singleton_row() {
+        let (_dir, db) = fresh_db();
+        db.set_statusline_install(&None, "first", 1).unwrap();
+        db.set_statusline_install(&None, "second", 2).unwrap();
+        let (state, _) = db.get_statusline_install().unwrap().expect("row present");
+        assert_eq!(state.installed_command, "second");
+        assert_eq!(state.installed_at, 2);
     }
 }

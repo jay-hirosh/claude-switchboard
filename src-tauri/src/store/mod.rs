@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=10 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=11 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [10_i64],
+            [11_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -179,9 +179,15 @@ impl Db {
                 .context("apply migration 0010")?;
         }
 
+        if current < 11 {
+            tracing::info!("migrating v10 -> v11 (statusline_install for F7)");
+            conn.execute_batch(include_str!("migrations/0011_statusline_install.sql"))
+                .context("apply migration 0011")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [10_i64],
+            [11_i64],
         )?;
         Ok(())
     }
@@ -640,14 +646,14 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_stamped_at_version_10() {
+    fn fresh_database_is_stamped_at_version_11() {
         let dir = tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let version: i64 = db
             .conn()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10, "create_fresh_db and migrate() must both stamp 10");
+        assert_eq!(version, 11, "create_fresh_db and migrate() must both stamp 11");
     }
 
     /// 0009 adds the compactions table and, like 0008, clears cursors so the
