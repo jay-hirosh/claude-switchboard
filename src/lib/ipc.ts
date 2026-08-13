@@ -41,6 +41,9 @@ export const ipc = {
   // Warmup pillar
   getWarmupState: (accountId: string) => commands.getWarmupState(accountId).then(unwrap),
   getWarmupSuggestion: () => commands.getWarmupSuggestion().then(unwrap),
+  getStatuslineInstallState: () => commands.getStatuslineInstallState().then(unwrap),
+  installStatusline: (force: boolean) => commands.installStatusline(force).then(unwrap),
+  uninstallStatusline: () => commands.uninstallStatusline().then(unwrap),
   setWarmupEnabled: (accountId: string, enabled: boolean) =>
     commands.setWarmupEnabled(accountId, enabled).then(unwrap),
   setAccountSchedule: (accountId: string, schedule: import('./generated/bindings').Schedule) =>
