@@ -147,6 +147,10 @@ pub struct LimitHitReport {
 /// second configured threshold (index 1, the "danger" tier) as the bar for
 /// what counts as a limit hit. One `limit_hit_stats` query per managed
 /// account, not just the active one.
+///
+/// A single account's query failing doesn't abort the whole report: it's
+/// logged and skipped so the other accounts' data still reaches the
+/// frontend (same log-and-continue shape as `reconcile_sqlite_account_mirror`).
 #[command]
 #[specta::specta]
 pub async fn get_limit_hit_history(
@@ -162,11 +166,18 @@ pub async fn get_limit_hit_history(
     let accounts = state.accounts.list().map_err(err_to_string)?;
     let mut out = Vec::new();
     for acc in accounts {
-        let hits = state
+        match state
             .db
             .limit_hit_stats(&acc.account_uuid, &acc.email, from, to, danger_threshold)
-            .map_err(err_to_string)?;
-        out.push(hits);
+        {
+            Ok(hits) => out.push(hits),
+            Err(e) => {
+                tracing::warn!(
+                    "get_limit_hit_history: failed for {}: {e:#}",
+                    acc.account_uuid
+                );
+            }
+        }
     }
     Ok(LimitHitReport { accounts: out })
 }
