@@ -2,6 +2,11 @@ name: release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release (e.g. v1.4.0)'
+        required: true
 
 # Required so the workflow's GITHUB_TOKEN can create the release record and
 # upload bundle artifacts to it. Repository-default token permissions are
@@ -26,6 +31,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -55,8 +62,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: ${{ github.ref_name }}
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseBody: 'Unsigned build — see README for first-launch instructions on each OS.'
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
           includeUpdaterJson: true
