@@ -5,7 +5,7 @@ import { formatRelativeTime } from '../lib/format';
 import type { AccountListEntry, Schedule } from '../lib/generated/bindings';
 import { WarmupToggle } from './WarmupToggle';
 import { WarmupNowButton, type WarmupNowStatus } from './WarmupNowButton';
-import { ScheduleSelector } from './ScheduleSelector';
+import { ScheduleSelector, type WarmupSuggestion } from './ScheduleSelector';
 import { WarmupConsentModal } from '../components/modals/WarmupConsentModal';
 import { MoreHorizontal, Trash2, ChevronRight } from '../lib/icons';
 import type { WarmupOutcome } from '../lib/generated/bindings';
@@ -156,10 +156,7 @@ export function AccountRow({
   // to this account (session_events has no per-account dimension), so every
   // row fetches and shows the same suggestion. null while loading or when
   // there isn't enough history yet (the chip simply doesn't render).
-  const [warmupSuggestion, setWarmupSuggestion] = useState<{
-    anchor: { hour: number; minute: number };
-    activeDays: number;
-  } | null>(null);
+  const [warmupSuggestion, setWarmupSuggestion] = useState<WarmupSuggestion | null>(null);
   const [showConsent, setShowConsent] = useState(false);
   // The warm-up block is collapsed by default to keep account rows
   // scannable — its state stays visible as a one-line summary.
