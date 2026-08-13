@@ -15,7 +15,7 @@ const MAX_BACKUPS: usize = 5;
 
 /// Read + parse. A missing file is an empty object; a malformed file is an
 /// error, never something we overwrite.
-fn read_settings(path: &Path) -> Result<Map<String, Value>> {
+pub(crate) fn read_settings(path: &Path) -> Result<Map<String, Value>> {
     if !path.exists() {
         return Ok(Map::new());
     }
@@ -41,7 +41,7 @@ fn backup_path(path: &Path, ts: i64) -> PathBuf {
     path.with_file_name(name)
 }
 
-fn backup(path: &Path) -> Result<()> {
+pub(crate) fn backup(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
@@ -63,12 +63,12 @@ fn backup(path: &Path) -> Result<()> {
 /// itself (`/config`, plugin toggles, statusLine, theme), so an atomic rename
 /// is not enough — it prevents a torn file, not a lost update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileStamp {
+pub(crate) struct FileStamp {
     mtime_ns: i128,
     len: u64,
 }
 
-fn stamp(path: &Path) -> Result<Option<FileStamp>> {
+pub(crate) fn stamp(path: &Path) -> Result<Option<FileStamp>> {
     match std::fs::metadata(path) {
         Ok(m) => {
             let mtime_ns = m
@@ -123,7 +123,7 @@ fn prune_backups(path: &Path) -> Result<()> {
 /// `fs::write` produces 0644 under a typical umask, and since we rename over
 /// the target, that would silently downgrade a 0600 settings.json — in a file
 /// that holds a plaintext API key once a default is set.
-fn write_atomic(path: &Path, map: &Map<String, Value>, expected: Option<FileStamp>) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, map: &Map<String, Value>, expected: Option<FileStamp>) -> Result<()> {
     if stamp(path)? != expected {
         anyhow::bail!(
             "settings.json changed while Switchboard was editing it — no changes were written. \
