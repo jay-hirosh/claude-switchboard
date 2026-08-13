@@ -3,7 +3,7 @@ import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
-import { formatTokens, formatCost } from '../lib/format';
+import { formatTokens, formatCost, formatCostPerToken } from '../lib/format';
 import { IconChart } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
@@ -143,9 +143,14 @@ export function ModelsTab() {
                 <span className="mono text-[length:var(--text-label)] text-[color:var(--color-text-secondary)] tabular-nums min-w-[52px] text-right">
                   {seg.pct.toFixed(0)}%
                 </span>
-                <span className="mono text-[length:var(--text-label)] text-[color:var(--color-text-muted)] tabular-nums min-w-[48px] text-right">
-                  {formatCost(seg.cost_usd)}
-                </span>
+                <div className="flex flex-col items-end min-w-[48px]">
+                  <span className="mono text-[length:var(--text-label)] text-[color:var(--color-text-muted)] tabular-nums">
+                    {formatCost(seg.cost_usd)}
+                  </span>
+                  <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
+                    {formatCostPerToken(seg.cost_usd, seg.total)}
+                  </span>
+                </div>
               </div>
             </div>
           </Card>

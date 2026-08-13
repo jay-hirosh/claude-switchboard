@@ -37,7 +37,19 @@ function RowGroup({ children }: { children: React.ReactNode }) {
   );
 }
 
-type SortMode = 'recent' | 'cost';
+type SortMode = 'recent' | 'cost' | 'duration';
+
+const NEXT_SORT_MODE: Record<SortMode, SortMode> = {
+  recent: 'cost',
+  cost: 'duration',
+  duration: 'recent',
+};
+
+const SORT_MODE_LABEL: Record<SortMode, string> = {
+  recent: 'Recent',
+  cost: 'Cost',
+  duration: 'Duration',
+};
 
 export function SessionsBrowserTab() {
   const { sessions, loading, error } = useResumableSessions();
@@ -53,6 +65,11 @@ export function SessionsBrowserTab() {
   const filtered = useMemo(() => {
     const base = q ? sessions.filter((s) => matches(s, q)) : sessions;
     if (sortMode === 'recent') return base;
+    if (sortMode === 'duration') {
+      return [...base].sort(
+        (a, b) => durationMinutes(b.started_at, b.ended_at) - durationMinutes(a.started_at, a.ended_at),
+      );
+    }
     return [...base].sort((a, b) => b.total_cost_usd - a.total_cost_usd);
   }, [sessions, q, sortMode]);
 
@@ -89,6 +106,7 @@ export function SessionsBrowserTab() {
       minutes: list.reduce((sum, s) => sum + durationMinutes(s.started_at, s.ended_at), 0),
     }));
     if (sortMode === 'cost') result.sort((a, b) => b.cost - a.cost);
+    if (sortMode === 'duration') result.sort((a, b) => b.minutes - a.minutes);
     return result;
   }, [filtered, q, sortMode]);
 
@@ -150,7 +168,7 @@ export function SessionsBrowserTab() {
           <>
             <button
               type="button"
-              onClick={() => setSortMode((m) => (m === 'recent' ? 'cost' : 'recent'))}
+              onClick={() => setSortMode((m) => NEXT_SORT_MODE[m])}
               className="
                 flex shrink-0 items-center gap-[var(--space-xs)] rounded-[var(--radius-sm)]
                 border border-[var(--color-border)] bg-[var(--color-bg-card)]
@@ -162,7 +180,7 @@ export function SessionsBrowserTab() {
               title="Toggle sort order"
             >
               <ArrowUpDown size={11} aria-hidden />
-              {sortMode === 'recent' ? 'Recent' : 'Cost'}
+              {SORT_MODE_LABEL[sortMode]}
             </button>
             <span className="mono shrink-0 text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
               {filtered.length} of {sessions.length}

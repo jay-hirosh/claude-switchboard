@@ -1,10 +1,10 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { DailyBucket, DailyModelBucket } from '../lib/types';
 
 const TRENDS: DailyBucket[] = [
-  { date: '2026-07-24', input_tokens: 8_000_000, output_tokens: 4_400_000, cost_usd: 4.82 },
-  { date: '2026-07-25', input_tokens: 2_000_000, output_tokens: 1_000_000, cost_usd: 1.1 },
+  { date: '2026-07-24', input_tokens: 8_000_000, output_tokens: 4_400_000, cost_usd: 4.82, request_count: 12 },
+  { date: '2026-07-25', input_tokens: 2_000_000, output_tokens: 1_000_000, cost_usd: 1.1, request_count: 5 },
 ];
 
 const BREAKDOWN: DailyModelBucket[] = [
@@ -27,9 +27,13 @@ const BREAKDOWN: DailyModelBucket[] = [
 const ipcMock = vi.hoisted(() => ({
   getDailyTrends: vi.fn(),
   getDailyModelBreakdown: vi.fn(),
+  exportTrendsCsv: vi.fn(),
 }));
 
 vi.mock('../lib/ipc', () => ({ ipc: ipcMock }));
+
+const dialogMock = vi.hoisted(() => ({ save: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => dialogMock);
 
 vi.mock('../lib/store', async () => {
   const actual = await vi.importActual<typeof import('../lib/store')>('../lib/store');
@@ -101,5 +105,157 @@ describe('TrendsTab — day breakdown panel', () => {
 
     fireEvent.click(screen.getByText('7d'));
     await waitFor(() => expect(screen.queryByTestId('day-breakdown-panel')).not.toBeInTheDocument());
+  });
+});
+
+describe('TrendsTab — period comparison strip', () => {
+  // "now" = 2026-08-14 (Fri). Current week: Aug 8–14. Prior week: Aug 1–7.
+  // Current month: Aug 1–14. Prior month: all of July.
+  const PERIOD_TRENDS: DailyBucket[] = [
+    { date: '2026-08-01', input_tokens: 1000, output_tokens: 0, cost_usd: 1, request_count: 1 },
+    { date: '2026-08-14', input_tokens: 1000, output_tokens: 0, cost_usd: 2, request_count: 1 },
+    { date: '2026-07-15', input_tokens: 1000, output_tokens: 0, cost_usd: 5, request_count: 1 },
+  ];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 7, 14));
+    ipcMock.getDailyTrends.mockClear();
+    ipcMock.getDailyModelBreakdown.mockClear();
+    ipcMock.getDailyTrends.mockResolvedValue(PERIOD_TRENDS);
+    ipcMock.getDailyModelBreakdown.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows week-over-week deltas by default', async () => {
+    render(<TrendsTab />);
+    // Cost: current week (Aug 8–14) = 2, prior week (Aug 1–7) = 1 → doubled.
+    await screen.findByText('▲ +100%');
+  });
+
+  it('switches to month-over-month deltas when Month is clicked', async () => {
+    render(<TrendsTab />);
+    await screen.findByText('▲ +100%');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Month' }));
+
+    // Cost: current month (Aug 1–14) = 1 + 2 = 3, prior month (all of July) = 5 → down 40%.
+    await screen.findByText('▼ -40%');
+  });
+
+  it('shows "new" for every metric when there is no prior-period data at all', async () => {
+    ipcMock.getDailyTrends.mockResolvedValue([
+      { date: '2026-08-14', input_tokens: 1000, output_tokens: 0, cost_usd: 2, request_count: 1 },
+    ]);
+
+    render(<TrendsTab />);
+    const newLabels = await screen.findAllByText('new');
+    expect(newLabels).toHaveLength(3); // cost, tokens, requests all lack prior data
+  });
+});
+
+describe('TrendsTab — monthly cost pacing', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Aug 10, 2026 — 10th day of a 31-day month.
+    vi.setSystemTime(new Date(2026, 7, 10));
+    ipcMock.getDailyTrends.mockClear();
+    ipcMock.getDailyModelBreakdown.mockClear();
+    ipcMock.getDailyModelBreakdown.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows spent-so-far and the whole-dollar projected total for the month', async () => {
+    ipcMock.getDailyTrends.mockResolvedValue([
+      { date: '2026-08-01', input_tokens: 0, output_tokens: 0, cost_usd: 20, request_count: 1 },
+      { date: '2026-08-10', input_tokens: 0, output_tokens: 0, cost_usd: 30, request_count: 1 },
+    ]);
+
+    render(<TrendsTab />);
+    // spent so far: 20 + 30 = 50. rate = 50/10 = 5/day; projected = 5 * 31 = 155.
+    await screen.findByText('$50.00 this month');
+    await screen.findByText('→ ~$155 this month');
+  });
+});
+
+describe('TrendsTab — anomaly flagging', () => {
+  beforeEach(() => {
+    ipcMock.getDailyTrends.mockClear();
+    ipcMock.getDailyModelBreakdown.mockClear();
+    ipcMock.getDailyModelBreakdown.mockResolvedValue([]);
+  });
+
+  it('marks a day whose cost spikes well above its trailing baseline, with the ratio in its tooltip', async () => {
+    const baseline = Array.from({ length: 7 }, (_, i) => ({
+      date: `2026-07-2${i}`,
+      input_tokens: 1000,
+      output_tokens: 0,
+      cost_usd: 1,
+      request_count: 1,
+    }));
+    const spike = { date: '2026-07-27', input_tokens: 1000, output_tokens: 0, cost_usd: 4, request_count: 1 };
+    ipcMock.getDailyTrends.mockResolvedValue([...baseline, spike]);
+
+    render(<TrendsTab />);
+    const dot = await screen.findByTestId('day-anomaly-2026-07-27');
+    expect(dot).toBeInTheDocument();
+    // No dot on a normal baseline day.
+    expect(screen.queryByTestId('day-anomaly-2026-07-20')).not.toBeInTheDocument();
+    expect(screen.getByText('4.0x your recent average')).toBeInTheDocument();
+  });
+
+  it('does not mark any day when nothing exceeds the baseline', async () => {
+    const steady = Array.from({ length: 8 }, (_, i) => ({
+      date: `2026-07-2${i}`,
+      input_tokens: 1000,
+      output_tokens: 0,
+      cost_usd: 1,
+      request_count: 1,
+    }));
+    ipcMock.getDailyTrends.mockResolvedValue(steady);
+
+    render(<TrendsTab />);
+    await screen.findByTestId(`day-bar-${steady[0].date}`);
+    expect(screen.queryByText(/your recent average/)).not.toBeInTheDocument();
+  });
+});
+
+describe('TrendsTab — CSV export', () => {
+  beforeEach(() => {
+    ipcMock.getDailyTrends.mockClear();
+    ipcMock.getDailyModelBreakdown.mockClear();
+    ipcMock.exportTrendsCsv.mockClear();
+    dialogMock.save.mockClear();
+    ipcMock.getDailyTrends.mockResolvedValue(TRENDS);
+    ipcMock.getDailyModelBreakdown.mockResolvedValue(BREAKDOWN);
+  });
+
+  it('exports to the chosen path when the user picks one', async () => {
+    dialogMock.save.mockResolvedValue('/Users/me/switchboard-trends.csv');
+    render(<TrendsTab />);
+    await screen.findByRole('button', { name: /Jul 24/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+    await waitFor(() =>
+      expect(ipcMock.exportTrendsCsv).toHaveBeenCalledWith('/Users/me/switchboard-trends.csv', 62),
+    );
+  });
+
+  it('does not export when the user cancels the save dialog', async () => {
+    dialogMock.save.mockResolvedValue(null);
+    render(<TrendsTab />);
+    await screen.findByRole('button', { name: /Jul 24/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+
+    await waitFor(() => expect(dialogMock.save).toHaveBeenCalled());
+    expect(ipcMock.exportTrendsCsv).not.toHaveBeenCalled();
   });
 });

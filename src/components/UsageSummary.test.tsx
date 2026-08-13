@@ -125,6 +125,74 @@ describe('UsageSummary collapsible details', () => {
     render(<UsageSummary usage={u} thresholds={[75, 90]} />);
     expect(screen.getByText(/~113% by reset/)).toBeTruthy();
   });
+
+  it('shows the 7-day burn-rate projection caption when present', () => {
+    const u = usage();
+    u.seven_day_burn_rate = { utilization_per_min: 0.05, projected_at_reset: 68 };
+    render(<UsageSummary usage={u} thresholds={[75, 90]} />);
+    expect(screen.getByText(/~68% by reset/)).toBeTruthy();
+  });
+
+  it('shows a 7-day slope too small for the 5h jitter floor but real at 7-day scale', () => {
+    // 0.005%/min is well under 5H's 0.1 floor but above the 7D-scaled floor
+    // (~0.1 * 300/10080 ≈ 0.003) — real drift at 7-day scale, not noise.
+    const u = usage();
+    u.seven_day_burn_rate = { utilization_per_min: 0.005, projected_at_reset: 40 };
+    render(<UsageSummary usage={u} thresholds={[75, 90]} />);
+    expect(screen.getByText(/~40% by reset/)).toBeTruthy();
+  });
+
+  it('still hides a 7-day slope below even the 7D-scaled jitter floor', () => {
+    const u = usage();
+    u.seven_day_burn_rate = { utilization_per_min: 0.001, projected_at_reset: 35 };
+    render(<UsageSummary usage={u} thresholds={[75, 90]} />);
+    expect(screen.queryByText(/~35% by reset/)).toBeNull();
+  });
+});
+
+describe('model routing hint', () => {
+  it('shows the hint when the per-model gap clears the warn floor and threshold', () => {
+    const u = usage();
+    u.snapshot.seven_day_opus = { utilization: 90, resets_at: null };
+    u.snapshot.seven_day_sonnet = { utilization: 20, resets_at: null };
+    render(
+      <UsageSummary
+        usage={u}
+        thresholds={[75, 90]}
+        collapsible
+        detailsOpen
+        onToggleDetails={() => {}}
+      />,
+    );
+    expect(screen.getByText(/consider/)).toBeTruthy();
+  });
+
+  it('hides the hint when the gap is under threshold', () => {
+    // Default fixture: opus 40 / sonnet 20 — a 20pp gap, under the 25pp default.
+    render(
+      <UsageSummary
+        usage={usage()}
+        thresholds={[75, 90]}
+        collapsible
+        detailsOpen
+        onToggleDetails={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/consider/)).toBeNull();
+  });
+
+  it('hides the hint on Pro plans with no per-model split', () => {
+    render(
+      <UsageSummary
+        usage={proUsage()}
+        thresholds={[75, 90]}
+        collapsible
+        detailsOpen
+        onToggleDetails={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/consider/)).toBeNull();
+  });
 });
 
 function paygUsage(): CachedUsage {

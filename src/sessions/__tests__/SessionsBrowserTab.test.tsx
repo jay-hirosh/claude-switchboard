@@ -106,6 +106,45 @@ describe('SessionsBrowserTab', () => {
     expect(screen.queryByText('first ask')).toBeNull();
   });
 
+  it('cycles Recent → Cost → Duration → Recent, sorting by each in turn', async () => {
+    ipcMock.listResumableSessions.mockResolvedValue([
+      s({
+        session_id: 'a',
+        title: 'Long session',
+        total_cost_usd: 1,
+        started_at: '2026-07-29T10:00:00Z',
+        ended_at: '2026-07-29T11:00:00Z', // 60 minutes
+      }),
+      s({
+        session_id: 'b',
+        title: 'Big spend',
+        total_cost_usd: 5,
+        started_at: '2026-07-29T10:00:00Z',
+        ended_at: '2026-07-29T10:10:00Z', // 10 minutes
+      }),
+    ]);
+    render(<SessionsBrowserTab />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('heading', { name: 'alpha' }));
+    await waitFor(() => expect(screen.getByText('Long session')).toBeTruthy());
+
+    const sortButton = screen.getByTitle('Toggle sort order');
+    expect(sortButton).toHaveTextContent('Recent');
+
+    fireEvent.click(sortButton);
+    expect(sortButton).toHaveTextContent('Cost');
+    let order = screen.getAllByText(/Long session|Big spend/).map((el) => el.textContent);
+    expect(order).toEqual(['Big spend', 'Long session']); // cost desc: 5 > 1
+
+    fireEvent.click(sortButton);
+    expect(sortButton).toHaveTextContent('Duration');
+    order = screen.getAllByText(/Long session|Big spend/).map((el) => el.textContent);
+    expect(order).toEqual(['Long session', 'Big spend']); // duration desc: 60min > 10min
+
+    fireEvent.click(sortButton);
+    expect(sortButton).toHaveTextContent('Recent');
+  });
+
   it('distinguishes empty-corpus from no-match', async () => {
     ipcMock.listResumableSessions.mockResolvedValue([]);
     const { rerender } = render(<SessionsBrowserTab />);

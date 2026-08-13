@@ -4,7 +4,7 @@ use crate::auth::accounts::ManagedAccount;
 use crate::notifier;
 use crate::notifier::rules::Bucket;
 use crate::tray;
-use crate::usage_api::{FetchOutcome, UsageSnapshot};
+use crate::usage_api::{FetchOutcome, UsageSnapshot, Utilization};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
@@ -120,6 +120,7 @@ pub fn next_wake_time(state: &crate::app_state::AppState, now: Instant) -> Insta
 #[derive(Default)]
 pub struct SlotBurnBuffers {
     five_hour: VecDeque<(DateTime<Utc>, f64)>,
+    seven_day: VecDeque<(DateTime<Utc>, f64)>,
     extra: VecDeque<(DateTime<Utc>, f64)>,
 }
 
@@ -239,14 +240,29 @@ async fn apply_fetch_outcome(
     match outcome {
         FetchOutcome::Ok(snapshot) => {
             let bufs = burn_buffers.entry(slot).or_default();
-            let burn_rate = update_burn_rate(&mut bufs.five_hour, &snapshot, Utc::now());
-            let extra_burn_rate = update_extra_burn_rate(&mut bufs.extra, &snapshot, Utc::now());
+            let now = Utc::now();
+            let burn_rate = update_burn_rate(
+                &mut bufs.five_hour,
+                snapshot.five_hour.as_ref(),
+                ChronoDuration::hours(5),
+                2.0,
+                now,
+            );
+            let seven_day_burn_rate = update_burn_rate(
+                &mut bufs.seven_day,
+                snapshot.seven_day.as_ref(),
+                ChronoDuration::days(7),
+                60.0,
+                now,
+            );
+            let extra_burn_rate = update_extra_burn_rate(&mut bufs.extra, &snapshot, now);
             let cached = CachedUsage {
                 snapshot: snapshot.clone(),
                 account_id: acc.account_uuid.clone(),
                 account_email: acc.email.clone(),
                 last_error: None,
                 burn_rate,
+                seven_day_burn_rate,
                 extra_burn_rate,
                 auth_source: if Some(slot) == active_slot {
                     AuthSource::ClaudeCode
@@ -566,6 +582,7 @@ fn placeholder_cached(
         account_email: acc.email.clone(),
         last_error: Some(err.to_string()),
         burn_rate: None,
+        seven_day_burn_rate: None,
         extra_burn_rate: None,
         auth_source: AuthSource::OAuth,
     }
@@ -703,6 +720,7 @@ pub fn hydrated_caches(
                         account_email: acc.email.clone(),
                         last_error: None,
                         burn_rate: None,
+                        seven_day_burn_rate: None,
                         extra_burn_rate: None,
                         auth_source: AuthSource::OAuth,
                     },
@@ -719,14 +737,23 @@ pub fn hydrated_caches(
     out
 }
 
+/// Linear utilization projection, shared by the 5H and 7D buckets — only the
+/// window length and minimum sample span differ between them. A longer
+/// window needs a proportionally higher span floor: a 2-minute floor tuned
+/// for 5H's 300-minute horizon would let 7D's ~33x-longer horizon
+/// extrapolate wildly from a couple of samples taken moments apart (the same
+/// amplification-per-sample-gap reasoning `update_extra_burn_rate` already
+/// applies for PAYG's 30-day horizon).
 fn update_burn_rate(
     buf: &mut VecDeque<(DateTime<Utc>, f64)>,
-    snapshot: &UsageSnapshot,
+    bucket: Option<&Utilization>,
+    window: ChronoDuration,
+    min_span_minutes: f64,
     now: DateTime<Utc>,
 ) -> Option<BurnRateProjection> {
-    let five_hour = snapshot.five_hour.as_ref()?;
-    let resets_at = five_hour.resets_at?;
-    let window_start = resets_at - ChronoDuration::hours(5);
+    let bucket = bucket?;
+    let resets_at = bucket.resets_at?;
+    let window_start = resets_at - window;
     while let Some(&(ts, _)) = buf.front() {
         if ts < window_start {
             buf.pop_front();
@@ -734,14 +761,14 @@ fn update_burn_rate(
             break;
         }
     }
-    buf.push_back((now, five_hour.utilization));
+    buf.push_back((now, bucket.utilization));
     if buf.len() < 2 {
         return None;
     }
     let &(t0, u0) = buf.front()?;
     let &(t1, u1) = buf.back()?;
     let span_minutes = (t1 - t0).num_seconds() as f64 / 60.0;
-    if span_minutes < 2.0 {
+    if span_minutes < min_span_minutes {
         return None;
     }
     let slope = (u1 - u0) / span_minutes;
@@ -928,6 +955,92 @@ mod tests {
             fetched_at: now,
             unknown: Default::default(),
         }
+    }
+
+    fn util(utilization: f64, resets_at: Option<DateTime<Utc>>) -> Utilization {
+        Utilization { utilization, resets_at }
+    }
+
+    #[test]
+    fn update_burn_rate_returns_none_without_a_bucket() {
+        let mut buf = VecDeque::new();
+        let now = Utc::now();
+        assert!(update_burn_rate(&mut buf, None, ChronoDuration::hours(5), 2.0, now).is_none());
+    }
+
+    #[test]
+    fn update_burn_rate_returns_none_without_a_reset_date() {
+        let mut buf = VecDeque::new();
+        let now = Utc::now();
+        let bucket = util(20.0, None);
+        assert!(update_burn_rate(&mut buf, Some(&bucket), ChronoDuration::hours(5), 2.0, now).is_none());
+    }
+
+    #[test]
+    fn update_burn_rate_projects_at_5h_scale_params() {
+        // Mirrors the pre-refactor 5H behavior: 2-minute floor, 5-hour window.
+        let mut buf = VecDeque::new();
+        let t0 = Utc::now();
+        let resets_at = t0 + chrono::Duration::hours(4);
+        update_burn_rate(&mut buf, Some(&util(20.0, Some(resets_at))), ChronoDuration::hours(5), 2.0, t0);
+
+        let t1 = t0 + chrono::Duration::minutes(10);
+        let r = update_burn_rate(&mut buf, Some(&util(25.0, Some(resets_at))), ChronoDuration::hours(5), 2.0, t1)
+            .expect("two samples 10min apart, above the 2min floor, project");
+        // slope = 5 util-points / 10 min = 0.5/min
+        assert!((r.utilization_per_min - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn update_burn_rate_seven_day_scale_needs_sixty_minutes_of_span() {
+        // 7D's ~33x-longer horizon than 5H needs a proportionally higher
+        // floor — 10 minutes of span is well under the 60-minute 7D floor.
+        let mut buf = VecDeque::new();
+        let t0 = Utc::now();
+        let resets_at = t0 + chrono::Duration::days(3);
+        update_burn_rate(&mut buf, Some(&util(20.0, Some(resets_at))), ChronoDuration::days(7), 60.0, t0);
+
+        let t1 = t0 + chrono::Duration::minutes(10);
+        assert!(
+            update_burn_rate(&mut buf, Some(&util(25.0, Some(resets_at))), ChronoDuration::days(7), 60.0, t1)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn update_burn_rate_seven_day_scale_projects_past_the_sixty_minute_floor() {
+        let mut buf = VecDeque::new();
+        let t0 = Utc::now();
+        let resets_at = t0 + chrono::Duration::days(3);
+        update_burn_rate(&mut buf, Some(&util(20.0, Some(resets_at))), ChronoDuration::days(7), 60.0, t0);
+
+        let t1 = t0 + chrono::Duration::minutes(120);
+        let r = update_burn_rate(&mut buf, Some(&util(32.0, Some(resets_at))), ChronoDuration::days(7), 60.0, t1)
+            .expect("two samples 120min apart, above the 60min floor, project");
+        // slope = 12 util-points / 120 min = 0.1/min
+        assert!((r.utilization_per_min - 0.1).abs() < 0.01);
+    }
+
+    #[test]
+    fn update_burn_rate_prunes_samples_older_than_the_window() {
+        let mut buf = VecDeque::new();
+        let t0 = Utc::now();
+        // First reset window.
+        let resets_at_1 = t0 + chrono::Duration::hours(1);
+        update_burn_rate(&mut buf, Some(&util(90.0, Some(resets_at_1))), ChronoDuration::hours(5), 2.0, t0);
+        assert_eq!(buf.len(), 1);
+
+        // A new window rolls over (resets_at moves forward by 5h) — the old
+        // sample, now older than `new_resets_at - 5h`, must be pruned so a
+        // fresh pair is required before projecting again.
+        let t1 = t0 + chrono::Duration::minutes(70);
+        let resets_at_2 = resets_at_1 + chrono::Duration::hours(5);
+        assert!(
+            update_burn_rate(&mut buf, Some(&util(10.0, Some(resets_at_2))), ChronoDuration::hours(5), 2.0, t1)
+                .is_none(),
+            "stale pre-rollover sample should have been pruned, leaving only this one"
+        );
+        assert_eq!(buf.len(), 1);
     }
 
     #[test]

@@ -11,6 +11,8 @@ import { motion } from 'framer-motion';
 import { InstrumentColumn, InstrumentRow } from '../popover/InstrumentRow';
 import { ChevronRight } from '../lib/icons';
 import { formatCents } from '../lib/format';
+import { computeModelRoutingHint } from '../lib/modelRoutingHint';
+import { ModelRoutingHint } from './ModelRoutingHint';
 import type { BurnRateProjection, CachedUsage, ExtraBurnRate, Utilization } from '../lib/types';
 
 interface UsageSummaryProps {
@@ -49,6 +51,7 @@ export function UsageSummary({
   const showModelSplit =
     hasModelSplit && snap.seven_day != null && (!collapsible || detailsOpen);
   const showExtra = extra?.is_enabled && (!collapsible || detailsOpen);
+  const routingHint = showModelSplit ? computeModelRoutingHint(snap, [warn, danger]) : null;
 
   return (
     <div className={condensed ? 'flex flex-col gap-[var(--space-xs)]' : 'flex flex-col'}>
@@ -82,12 +85,20 @@ export function UsageSummary({
             dangerAt={danger}
           />
         </div>
-        <InstrumentColumn
-          label="7d"
-          data={snap.seven_day}
-          warnAt={warn}
-          dangerAt={danger}
-        />
+        <div className="flex flex-col gap-[var(--space-xs)]">
+          <InstrumentColumn
+            label="7d"
+            data={snap.seven_day}
+            warnAt={warn}
+            dangerAt={danger}
+          />
+          <BurnRateCaption
+            burnRate={usage.seven_day_burn_rate}
+            warnAt={warn}
+            dangerAt={danger}
+            jitterFloor={SEVEN_DAY_JITTER_FLOOR}
+          />
+        </div>
       </motion.div>
 
       {collapsible && (
@@ -132,6 +143,11 @@ export function UsageSummary({
               active={activeModel === 'sonnet'}
             />
           </div>
+          {routingHint && (
+            <div className="px-[var(--popover-pad)] pb-[var(--space-sm)]">
+              <ModelRoutingHint accountId={usage.account_id} hint={routingHint} />
+            </div>
+          )}
         </>
       )}
 
@@ -165,19 +181,29 @@ export function UsageSummary({
  * thresholds the meter uses. Hidden when there's no projection yet
  * (cold start) or when the projection is essentially flat.
  */
+// 5H's 0.1%/min jitter floor scaled down for 7D's ~33x-longer window, so the
+// same "not actionable" cutoff applies proportionally instead of hiding
+// nearly every real 7-day trend (which would sit under 5H's floor even at a
+// meaningful pace, since the same drift is spread over far more minutes).
+const SEVEN_DAY_JITTER_FLOOR = (0.1 * (5 * 60)) / (7 * 24 * 60);
+
 function BurnRateCaption({
   burnRate,
   warnAt,
   dangerAt,
+  jitterFloor = 0.1,
 }: {
   burnRate: BurnRateProjection | null | undefined;
   warnAt: number;
   dangerAt: number;
+  /** Minimum |utilization_per_min| to show, in points/min — anything under
+   *  this is treated as jitter rather than a real trend. Scale to the
+   *  bucket's window length (see SEVEN_DAY_JITTER_FLOOR); default matches
+   *  the 5h bucket's original calibration. */
+  jitterFloor?: number;
 }) {
   if (!burnRate) return null;
-  // Hide jitter under ~0.1%/min — anything that small extrapolates to a
-  // ≤6% delta over a full 5h window, which isn't actionable signal.
-  if (Math.abs(burnRate.utilization_per_min) < 0.1) return null;
+  if (Math.abs(burnRate.utilization_per_min) < jitterFloor) return null;
 
   const projected = Math.max(0, burnRate.projected_at_reset);
   const color =

@@ -49,6 +49,14 @@ async getDailyTrends(days: number) : Promise<Result<DailyBucket[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async exportTrendsCsv(path: string, days: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_trends_csv", { path, days }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getModelBreakdown(days: number) : Promise<Result<ModelStats[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_model_breakdown", { days }) };
@@ -561,8 +569,14 @@ utilization_per_min: number;
  */
 projected_at_reset: number }
 export type CacheStats = { total_cache_read_tokens: number; total_cache_creation_tokens: number; estimated_savings_usd: number; hit_ratio: number }
-export type CachedUsage = { snapshot: UsageSnapshot; account_id: string; account_email: string; last_error: string | null; burn_rate?: BurnRateProjection | null; extra_burn_rate?: ExtraBurnRate | null; auth_source: AuthSource }
-export type DailyBucket = { date: string; input_tokens: number; output_tokens: number; cost_usd: number }
+export type CachedUsage = { snapshot: UsageSnapshot; account_id: string; account_email: string; last_error: string | null; burn_rate?: BurnRateProjection | null; 
+/**
+ * Same projection shape as `burn_rate`, computed against `seven_day`
+ * instead of `five_hour` — a much longer horizon, so its sample-span
+ * floor is proportionally higher (see `poll_loop::update_burn_rate`).
+ */
+seven_day_burn_rate?: BurnRateProjection | null; extra_burn_rate?: ExtraBurnRate | null; auth_source: AuthSource }
+export type DailyBucket = { date: string; input_tokens: number; output_tokens: number; cost_usd: number; request_count: number }
 export type DailyModelBucket = { date: string; models: ModelStats[] }
 /**
  * What Switchboard wrote into `~/.claude/settings.json`, and what each key

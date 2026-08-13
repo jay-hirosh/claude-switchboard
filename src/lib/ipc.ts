@@ -13,6 +13,7 @@ export const ipc = {
   getLiveSessions: () => commands.getLiveSessions().then(unwrap),
   getCompactions: (days: number) => commands.getCompactions(days).then(unwrap),
   getDailyTrends: (days: number) => commands.getDailyTrends(days).then(unwrap),
+  exportTrendsCsv: (path: string, days: number) => commands.exportTrendsCsv(path, days).then(unwrap),
   getLimitHitHistory: (days: number) => commands.getLimitHitHistory(days).then(unwrap),
   getModelBreakdown: (days: number) => commands.getModelBreakdown(days).then(unwrap),
   getDailyModelBreakdown: (days: number) => commands.getDailyModelBreakdown(days).then(unwrap),

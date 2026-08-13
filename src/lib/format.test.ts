@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatTokens, formatCost, formatCents } from './format';
+import { formatTokens, formatCost, formatCents, formatCostPerToken } from './format';
 
 describe('formatTokens', () => {
   it('returns "0" for zero', () => {
@@ -55,5 +55,23 @@ describe('formatCents', () => {
     expect(formatCents(10000)).toBe('$100.00');
     expect(formatCents(0)).toBe('$0.00');
     expect(formatCents(5)).toBe('$0.05');
+  });
+});
+
+describe('formatCostPerToken', () => {
+  it('returns "$0.00/1K tokens" when tokens is zero', () => {
+    expect(formatCostPerToken(0, 0)).toBe('$0.00/1K tokens');
+  });
+
+  it('returns "<$0.01/1K tokens" for a tiny per-token cost', () => {
+    expect(formatCostPerToken(1, 1_000_000)).toBe('<$0.01/1K tokens');
+  });
+
+  it('returns "$0.42/1K tokens" for 4.2 usd over 10 000 tokens', () => {
+    expect(formatCostPerToken(4.2, 10_000)).toBe('$0.42/1K tokens');
+  });
+
+  it('returns "$1.50/1K tokens" for 15 usd over 10 000 tokens', () => {
+    expect(formatCostPerToken(15, 10_000)).toBe('$1.50/1K tokens');
   });
 });

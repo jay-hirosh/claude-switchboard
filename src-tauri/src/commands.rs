@@ -26,6 +26,7 @@ pub struct DailyBucket {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: f64,
+    pub request_count: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
@@ -255,6 +256,39 @@ pub async fn get_daily_trends(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<DailyBucket>, String> {
     let events = get_session_history(days, state).await?;
+    Ok(bucket_daily_trends(&events))
+}
+
+/// Serializes daily buckets to CSV — one row per day, header always present
+/// even when there's no data, so an empty export is still a valid file.
+fn daily_trends_to_csv(buckets: &[DailyBucket]) -> String {
+    let mut out = String::from("date,input_tokens,output_tokens,cost_usd,request_count\n");
+    for b in buckets {
+        out.push_str(&format!(
+            "{},{},{},{},{}\n",
+            b.date, b.input_tokens, b.output_tokens, b.cost_usd, b.request_count
+        ));
+    }
+    out
+}
+
+#[command]
+#[specta::specta]
+pub async fn export_trends_csv(
+    path: String,
+    days: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let events = get_session_history(days, state).await?;
+    let csv = daily_trends_to_csv(&bucket_daily_trends(&events));
+    std::fs::write(&path, csv).map_err(err_to_string)
+}
+
+/// Groups events by local calendar day, summing tokens/cost and counting
+/// requests (one row per API call/response, not one per conversation —
+/// see `session_events`' schema comment for why there's no true session
+/// concept to count here).
+fn bucket_daily_trends(events: &[StoredSessionEvent]) -> Vec<DailyBucket> {
     use std::collections::BTreeMap;
     let mut by_day: BTreeMap<String, DailyBucket> = BTreeMap::new();
     for e in events {
@@ -270,12 +304,14 @@ pub async fn get_daily_trends(
                 input_tokens: 0,
                 output_tokens: 0,
                 cost_usd: 0.0,
+                request_count: 0,
             });
         slot.input_tokens += e.input_tokens;
         slot.output_tokens += e.output_tokens;
         slot.cost_usd += e.cost_usd;
+        slot.request_count += 1;
     }
-    Ok(by_day.into_values().collect())
+    by_day.into_values().collect()
 }
 
 #[command]
@@ -1416,6 +1452,61 @@ mod tests {
         let expected_median = sorted[sorted.len() / 2];
         let got_minutes = suggestion.anchor.hour as u32 * 60 + suggestion.anchor.minute as u32;
         assert_eq!(got_minutes, expected_median);
+    }
+
+    #[test]
+    fn daily_trends_csv_has_header_and_one_row_per_bucket() {
+        let buckets = vec![
+            DailyBucket {
+                date: "2026-08-01".into(),
+                input_tokens: 1000,
+                output_tokens: 500,
+                cost_usd: 1.5,
+                request_count: 3,
+            },
+            DailyBucket {
+                date: "2026-08-02".into(),
+                input_tokens: 2000,
+                output_tokens: 0,
+                cost_usd: 0.25,
+                request_count: 1,
+            },
+        ];
+
+        let csv = daily_trends_to_csv(&buckets);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines[0], "date,input_tokens,output_tokens,cost_usd,request_count");
+        assert_eq!(lines[1], "2026-08-01,1000,500,1.5,3");
+        assert_eq!(lines[2], "2026-08-02,2000,0,0.25,1");
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn daily_trends_csv_is_just_the_header_when_empty() {
+        let csv = daily_trends_to_csv(&[]);
+        assert_eq!(csv.trim_end(), "date,input_tokens,output_tokens,cost_usd,request_count");
+    }
+
+    #[test]
+    fn daily_trends_counts_requests_and_sums_cost_per_day() {
+        let day0 = Utc::now();
+        let day1 = day0 - Duration::days(1);
+        let events = vec![
+            test_event(day0),
+            test_event(day0 + Duration::hours(1)),
+            test_event(day1),
+        ];
+        let buckets = bucket_daily_trends(&events);
+
+        let date0 = day0.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        let date1 = day1.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+
+        let bucket0 = buckets.iter().find(|b| b.date == date0).unwrap();
+        assert_eq!(bucket0.request_count, 2);
+        assert_eq!(bucket0.input_tokens, 2);
+
+        let bucket1 = buckets.iter().find(|b| b.date == date1).unwrap();
+        assert_eq!(bucket1.request_count, 1);
     }
 
     fn test_event(ts: chrono::DateTime<Utc>) -> StoredSessionEvent {

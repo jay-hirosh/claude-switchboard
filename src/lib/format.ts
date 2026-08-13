@@ -13,6 +13,13 @@ export function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/** "$0.42/1K tokens" — cost normalized per 1 000 tokens, for cross-model comparison. */
+export function formatCostPerToken(usd: number, tokens: number): string {
+  if (tokens <= 0) return '$0.00/1K tokens';
+  const perThousand = usd / (tokens / 1000);
+  return perThousand < 0.01 ? '<$0.01/1K tokens' : `$${perThousand.toFixed(2)}/1K tokens`;
+}
+
 /** "just now" / "3m ago" / "2h ago" for an ISO timestamp; '' when unparsable. */
 export function formatRelativeTime(iso: string): string {
   const t = new Date(iso).getTime();

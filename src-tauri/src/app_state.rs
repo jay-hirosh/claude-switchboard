@@ -203,6 +203,11 @@ pub struct CachedUsage {
     pub last_error: Option<String>,
     #[serde(default)]
     pub burn_rate: Option<BurnRateProjection>,
+    /// Same projection shape as `burn_rate`, computed against `seven_day`
+    /// instead of `five_hour` — a much longer horizon, so its sample-span
+    /// floor is proportionally higher (see `poll_loop::update_burn_rate`).
+    #[serde(default)]
+    pub seven_day_burn_rate: Option<BurnRateProjection>,
     #[serde(default)]
     pub extra_burn_rate: Option<ExtraBurnRate>,
     pub auth_source: AuthSource,
