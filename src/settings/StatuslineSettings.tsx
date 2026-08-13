@@ -10,7 +10,11 @@ export function StatuslineSettings() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    setState(await ipc.getStatuslineInstallState());
+    try {
+      setState(await ipc.getStatuslineInstallState());
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e));
+    }
   }, []);
 
   useEffect(() => {
@@ -46,8 +50,14 @@ export function StatuslineSettings() {
   const handleUninstall = useCallback(async () => {
     setBusy(true);
     try {
-      await ipc.uninstallStatusline();
-      setNotice(null);
+      const ok = await ipc.uninstallStatusline();
+      if (!ok) {
+        setNotice(
+          "Left your own statusLine edit in place — Switchboard's command is no longer what's in settings.json.",
+        );
+      } else {
+        setNotice(null);
+      }
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e));
     } finally {

@@ -71,7 +71,14 @@ pub async fn run_tick(data_dir: &Path) -> Result<()> {
 /// few minutes longer than strictly necessary after Switchboard quits"
 /// rather than plumbing settings into a process that must stay fast and
 /// simple (Claude Code invokes this on every prompt render).
-const STATUSLINE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+///
+/// The shared-snapshot file is only rewritten on a successful active-slot
+/// poll, so its age tracks `Settings.polling_interval_secs`, which the UI
+/// (`SettingsPanel.tsx`'s `POLL_MAX_SECS`) allows up to 1800s (30 minutes).
+/// 2100s (35 minutes) stays safely past that ceiling with a 300s buffer, so
+/// a user on the longest configurable interval never sees a false
+/// "not running" between polls.
+const STATUSLINE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(2100);
 
 /// Core logic for `run_statusline`, taking the shared-snapshot path
 /// explicitly so it's testable without touching the real `~/.claude/`
@@ -79,7 +86,9 @@ const STATUSLINE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(6
 fn run_statusline_for_path(path: &Path) -> String {
     match crate::poll_loop::read_shared_snapshot(path, STATUSLINE_MAX_AGE, None) {
         Some(snap) => match snap.five_hour {
-            Some(u) => format!("5H {}%", u.utilization.round() as i64),
+            // Clamp before rounding: a corrupt or malformed shared-snapshot
+            // file could otherwise produce a nonsensical percentage.
+            Some(u) => format!("5H {}%", u.utilization.clamp(0.0, 100.0).round() as i64),
             None => "Switchboard: not running".to_string(),
         },
         None => "Switchboard: not running".to_string(),
@@ -92,12 +101,17 @@ fn run_statusline_for_path(path: &Path) -> String {
 /// renders whatever this command prints, so erroring would show nothing
 /// useful rather than the honest "not running" placeholder.
 pub async fn run_statusline() {
-    use std::io::Read as _;
+    use std::io::{Read as _, Write as _};
     let mut discard = String::new();
+    // Blocks until EOF with no timeout — relies on the caller (Claude Code)
+    // closing stdin after writing the session-context JSON. Intentional per
+    // spec; documented here since it's not obvious from the call alone.
     let _ = std::io::stdin().read_to_string(&mut discard);
 
     let path = crate::poll_loop::shared_usage_file_path();
-    println!("{}", run_statusline_for_path(&path));
+    // Never panics even if stdout is closed/invalid — a broken pipe here
+    // should not crash the process.
+    let _ = writeln!(std::io::stdout(), "{}", run_statusline_for_path(&path));
 }
 
 #[cfg(test)]
@@ -175,7 +189,8 @@ mod statusline_tests {
     fn reports_not_running_when_the_snapshot_is_stale() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("statusline-usage.json");
-        let old = (chrono::Utc::now() - chrono::Duration::minutes(30)).timestamp();
+        // 2400s, comfortably past the 2100s STATUSLINE_MAX_AGE threshold.
+        let old = (chrono::Utc::now() - chrono::Duration::minutes(40)).timestamp();
         std::fs::write(
             &p,
             format!(

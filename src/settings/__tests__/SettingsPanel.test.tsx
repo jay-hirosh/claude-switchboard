@@ -43,6 +43,9 @@ vi.mock('../../lib/ipc', () => ({
     osSchedulerIsRegistered: vi.fn().mockResolvedValue(false),
     listAvailableTerminals: vi.fn().mockResolvedValue([]),
     getStatuslineInstallState: vi.fn().mockResolvedValue(null),
+    revokeWarmupConsent: vi.fn().mockResolvedValue(undefined),
+    osSchedulerRegister: vi.fn().mockResolvedValue(undefined),
+    osSchedulerUnregister: vi.fn().mockResolvedValue(undefined),
   },
 }));
 

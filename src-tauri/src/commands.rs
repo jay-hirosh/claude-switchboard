@@ -1714,17 +1714,11 @@ pub async fn install_statusline(
     // would restore the pre-Switchboard value into the file, which the
     // check would then misreport as foreign.
     if !force {
-        let settings = std::fs::read_to_string(&path).unwrap_or_default();
-        let current: serde_json::Value =
-            serde_json::from_str(&settings).unwrap_or(serde_json::json!({}));
-        let current_statusline = current.get("statusLine").cloned();
-        let ours = existing.as_ref().map(|(s, _)| {
-            serde_json::json!({ "type": "command", "command": s.installed_command })
-        });
-        if let Some(foreign) = current_statusline {
-            if Some(&foreign) != ours.as_ref() {
-                return Ok(InstallStatuslineOutcome::NeedsConfirmation { foreign_value: foreign });
-            }
+        let ours = existing.as_ref().map(|(s, _)| s.installed_command.as_str());
+        if let Some(foreign) = crate::statusline_installer::foreign_statusline(&path, ours)
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(InstallStatuslineOutcome::NeedsConfirmation { foreign_value: foreign });
         }
     }
 

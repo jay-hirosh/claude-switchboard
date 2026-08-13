@@ -24,6 +24,22 @@ pub fn apply(path: &Path, command: &str) -> Result<Option<Value>> {
     Ok(prior)
 }
 
+/// Does `path`'s current `statusLine` value belong to something OTHER than
+/// what Switchboard itself is tracking as its own install? Returns the
+/// foreign value if so (the caller uses this to build a confirmation
+/// prompt), or `None` if there's nothing there, or it matches `ours`.
+pub fn foreign_statusline(path: &Path, ours: Option<&str>) -> Result<Option<Value>> {
+    let settings = read_settings(path)?;
+    let current = settings.get("statusLine").cloned();
+    let Some(current) = current else { return Ok(None) };
+    let ours_value = ours.map(|cmd| json!({ "type": "command", "command": cmd }));
+    if Some(&current) == ours_value.as_ref() {
+        Ok(None)
+    } else {
+        Ok(Some(current))
+    }
+}
+
 /// Restore `prior` (or remove the key if `prior` is `None`). Drift check: if
 /// the current `statusLine` no longer equals `written` (the value `apply`
 /// last set), the user or another tool changed it since — leave it alone and
@@ -199,6 +215,44 @@ mod tests {
         assert!(!ok);
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["statusLine"]["command"], "bash hand-edited.sh");
+    }
+
+    #[test]
+    fn foreign_statusline_reports_a_pre_existing_value_we_never_owned() {
+        let d = tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        write(&p, r#"{"statusLine": {"type": "command", "command": "bash x.sh"}}"#);
+        let foreign = foreign_statusline(&p, None).unwrap();
+        assert_eq!(
+            foreign,
+            Some(json!({"type": "command", "command": "bash x.sh"}))
+        );
+    }
+
+    #[test]
+    fn foreign_statusline_returns_none_when_it_matches_ours() {
+        let d = tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        write(
+            &p,
+            r#"{"statusLine": {"type": "command", "command": "/usr/local/bin/switchboard statusline"}}"#,
+        );
+        let foreign =
+            foreign_statusline(&p, Some("/usr/local/bin/switchboard statusline")).unwrap();
+        assert_eq!(foreign, None);
+    }
+
+    #[test]
+    fn foreign_statusline_reports_drift_when_current_no_longer_matches_ours() {
+        let d = tempdir().unwrap();
+        let p = d.path().join("settings.json");
+        write(&p, r#"{"statusLine": {"type": "command", "command": "bash hand-edited.sh"}}"#);
+        let foreign =
+            foreign_statusline(&p, Some("/usr/local/bin/switchboard statusline")).unwrap();
+        assert_eq!(
+            foreign,
+            Some(json!({"type": "command", "command": "bash hand-edited.sh"}))
+        );
     }
 
     #[test]

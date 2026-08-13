@@ -137,4 +137,22 @@ describe('StatuslineSettings', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('settings.json is not writable');
     expect(button).not.toBeDisabled();
   });
+
+  it('shows a drift notice when uninstall is skipped because the file no longer matches what we wrote', async () => {
+    const state: StatuslineInstallState = {
+      installed_command: '/usr/local/bin/switchboard statusline',
+      installed_at: 1_700_000_000,
+    };
+    ipcMock.getStatuslineInstallState.mockResolvedValue(state);
+    ipcMock.uninstallStatusline.mockResolvedValue(false);
+
+    render(<StatuslineSettings />);
+    const button = await screen.findByRole('button', { name: /uninstall/i });
+    fireEvent.click(button);
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      "Left your own statusLine edit in place",
+    );
+    expect(button).not.toBeDisabled();
+  });
 });
