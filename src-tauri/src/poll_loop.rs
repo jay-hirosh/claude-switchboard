@@ -298,6 +298,9 @@ async fn apply_fetch_outcome(
             );
 
             if Some(slot) == active_slot {
+                if let Err(e) = write_shared_snapshot(&shared_usage_file_path(), &snapshot) {
+                    tracing::warn!("write_shared_snapshot failed: {e:#}");
+                }
                 *state.cached_usage.write() = Some(cached.clone());
                 tray::set_level(
                     handle,
@@ -572,7 +575,7 @@ fn placeholder_cached(
 /// the user's statusline daemon (`statusline-daemon.sh`), which already
 /// polls `/api/oauth/usage` for the live Claude Code account on a 60s
 /// cadence. `SWITCHBOARD_SHARED_USAGE_FILE` overrides for testing.
-fn shared_usage_file_path() -> std::path::PathBuf {
+pub(crate) fn shared_usage_file_path() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os("SWITCHBOARD_SHARED_USAGE_FILE") {
         return std::path::PathBuf::from(p);
     }
@@ -629,6 +632,27 @@ pub fn read_shared_snapshot(
     let mut snap: UsageSnapshot = serde_json::from_value(value).ok()?;
     snap.fetched_at = fetched_at;
     Some(snap)
+}
+
+/// Write the active account's snapshot to the shared-usage file, in the
+/// exact format `read_shared_snapshot` parses. `fetched_at` must be a bare
+/// epoch-seconds integer at the top level — `UsageSnapshot`'s own
+/// `fetched_at` field serializes as an RFC3339 string, which the reader's
+/// `.as_i64()` call would reject, so it's stripped and replaced rather than
+/// serialized as-is.
+pub(crate) fn write_shared_snapshot(
+    path: &std::path::Path,
+    snapshot: &UsageSnapshot,
+) -> anyhow::Result<()> {
+    let mut value = serde_json::to_value(snapshot)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("fetched_at".to_string(), serde_json::json!(Utc::now().timestamp()));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, serde_json::to_string(&value)?)?;
+    Ok(())
 }
 
 /// Build per-slot cache entries from the most recent persisted API snapshot
@@ -1179,6 +1203,39 @@ mod tests {
             let dir = tempdir().unwrap();
             let p = write(&dir, &payload(Utc::now().timestamp()));
             assert!(read_shared_snapshot(&p, Duration::from_secs(120), None).is_some());
+        }
+
+        #[test]
+        fn write_shared_snapshot_round_trips_through_read_shared_snapshot() {
+            let dir = tempdir().unwrap();
+            let p = dir.path().join("statusline-usage.json");
+            let snap: UsageSnapshot = serde_json::from_str(
+                r#"{"five_hour": {"utilization": 55.0, "resets_at": "2026-04-24T18:00:00Z"}, "seven_day": null}"#,
+            )
+            .unwrap();
+
+            write_shared_snapshot(&p, &snap).unwrap();
+
+            let read_back = read_shared_snapshot(&p, Duration::from_secs(120), None)
+                .expect("just-written snapshot must be readable back");
+            assert_eq!(read_back.five_hour.unwrap().utilization, 55.0);
+        }
+
+        #[test]
+        fn write_shared_snapshot_stamps_fetched_at_as_an_epoch_integer() {
+            let dir = tempdir().unwrap();
+            let p = dir.path().join("statusline-usage.json");
+            let snap: UsageSnapshot = serde_json::from_str(r#"{"five_hour": null, "seven_day": null}"#).unwrap();
+
+            write_shared_snapshot(&p, &snap).unwrap();
+
+            let raw = std::fs::read_to_string(&p).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert!(
+                v["fetched_at"].is_i64() || v["fetched_at"].is_u64(),
+                "fetched_at must be a bare epoch-seconds integer, got: {:?}",
+                v["fetched_at"]
+            );
         }
     }
 }
