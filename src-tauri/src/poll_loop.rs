@@ -571,10 +571,12 @@ fn placeholder_cached(
     }
 }
 
-/// Location of the shared usage snapshot written by an external poller —
-/// the user's statusline daemon (`statusline-daemon.sh`), which already
-/// polls `/api/oauth/usage` for the live Claude Code account on a 60s
-/// cadence. `SWITCHBOARD_SHARED_USAGE_FILE` overrides for testing.
+/// Location of the shared usage snapshot file. Two writers share this path:
+/// an external poller — the user's statusline daemon (`statusline-daemon.sh`),
+/// which already polls `/api/oauth/usage` for the live Claude Code account on
+/// a 60s cadence — and Switchboard itself (`write_shared_snapshot`), for the
+/// active account whenever its usage is refreshed. `SWITCHBOARD_SHARED_USAGE_FILE`
+/// overrides for testing.
 pub(crate) fn shared_usage_file_path() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os("SWITCHBOARD_SHARED_USAGE_FILE") {
         return std::path::PathBuf::from(p);
@@ -640,13 +642,27 @@ pub fn read_shared_snapshot(
 /// `fetched_at` field serializes as an RFC3339 string, which the reader's
 /// `.as_i64()` call would reject, so it's stripped and replaced rather than
 /// serialized as-is.
+///
+/// The replacement value is `snapshot.fetched_at`, NOT `Utc::now()`: this
+/// function is also called when the active slot's "fetch" was actually a
+/// `read_shared_snapshot` adoption of this very file (the active-slot fast
+/// path in `fetch_and_apply_one`), in which case `snapshot.fetched_at` is
+/// the ORIGINAL write time, carried forward by the reader. Stamping
+/// `Utc::now()` here instead would re-mark that unchanged data as fresh on
+/// every adoption, defeating the reader's own freshness/staleness check and
+/// making a self-referential read-adopt-rewrite loop that never ages out —
+/// which silently starves `force_refresh` of new data when it runs within
+/// one polling interval of the last poll.
 pub(crate) fn write_shared_snapshot(
     path: &std::path::Path,
     snapshot: &UsageSnapshot,
 ) -> anyhow::Result<()> {
     let mut value = serde_json::to_value(snapshot)?;
     if let Some(obj) = value.as_object_mut() {
-        obj.insert("fetched_at".to_string(), serde_json::json!(Utc::now().timestamp()));
+        obj.insert(
+            "fetched_at".to_string(),
+            serde_json::json!(snapshot.fetched_at.timestamp()),
+        );
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -1235,6 +1251,36 @@ mod tests {
                 v["fetched_at"].is_i64() || v["fetched_at"].is_u64(),
                 "fetched_at must be a bare epoch-seconds integer, got: {:?}",
                 v["fetched_at"]
+            );
+        }
+
+        /// The active-slot fast path in `fetch_and_apply_one` can adopt this
+        /// very file via `read_shared_snapshot` instead of doing a real HTTP
+        /// fetch — in which case the resulting `snapshot.fetched_at` is the
+        /// file's ORIGINAL write time, carried forward by the reader, not
+        /// "now". If the write stamped `Utc::now()` instead of preserving
+        /// that timestamp, every adoption would re-mark the same unchanged
+        /// data as brand-new, so the file would never age out — and
+        /// `force_refresh` (which bypasses normal poll spacing) would
+        /// silently keep re-serving stale data forever. The write must
+        /// preserve `snapshot.fetched_at` unchanged.
+        #[test]
+        fn write_shared_snapshot_preserves_an_already_stale_fetched_at() {
+            let dir = tempdir().unwrap();
+            let p = dir.path().join("statusline-usage.json");
+            let mut snap: UsageSnapshot =
+                serde_json::from_str(r#"{"five_hour": null, "seven_day": null}"#).unwrap();
+            let old = Utc::now() - ChronoDuration::minutes(2);
+            snap.fetched_at = old;
+
+            write_shared_snapshot(&p, &snap).unwrap();
+
+            let raw = std::fs::read_to_string(&p).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(
+                v["fetched_at"].as_i64().unwrap(),
+                old.timestamp(),
+                "write must not silently refresh fetched_at to Utc::now()"
             );
         }
     }
