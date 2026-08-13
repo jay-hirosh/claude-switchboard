@@ -1677,6 +1677,87 @@ pub async fn clear_default_provider(
     Ok(skipped)
 }
 
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum InstallStatuslineOutcome {
+    Applied,
+    /// `settings.json` already carries a `statusLine` we do not own. The UI
+    /// must confirm before we overwrite hand-written (or another tool's)
+    /// configuration.
+    NeedsConfirmation { foreign_value: serde_json::Value },
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_statusline_install_state(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<crate::statusline_installer::StatuslineInstallState>, String> {
+    Ok(state
+        .db
+        .get_statusline_install()
+        .map_err(|e| e.to_string())?
+        .map(|(s, _)| s))
+}
+
+#[command]
+#[specta::specta]
+pub async fn install_statusline(
+    force: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<InstallStatuslineOutcome, String> {
+    let path = claude_settings_path()?;
+    let existing = state.db.get_statusline_install().map_err(|e| e.to_string())?;
+
+    // ORDER IS LOAD-BEARING, same reasoning as set_default_provider (spec
+    // §4.1 of the providers feature): the foreign-value check must run
+    // BEFORE clearing any previous Switchboard-owned value. Clearing first
+    // would restore the pre-Switchboard value into the file, which the
+    // check would then misreport as foreign.
+    if !force {
+        let settings = std::fs::read_to_string(&path).unwrap_or_default();
+        let current: serde_json::Value =
+            serde_json::from_str(&settings).unwrap_or(serde_json::json!({}));
+        let current_statusline = current.get("statusLine").cloned();
+        let ours = existing.as_ref().map(|(s, _)| {
+            serde_json::json!({ "type": "command", "command": s.installed_command })
+        });
+        if let Some(foreign) = current_statusline {
+            if Some(&foreign) != ours.as_ref() {
+                return Ok(InstallStatuslineOutcome::NeedsConfirmation { foreign_value: foreign });
+            }
+        }
+    }
+
+    if let Some((prev_state, prev_prior)) = existing {
+        let written = serde_json::json!({ "type": "command", "command": prev_state.installed_command });
+        crate::statusline_installer::clear(&path, &prev_prior, &written).map_err(|e| e.to_string())?;
+    }
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let command = format!("\"{}\" statusline", exe.display());
+    let prior = crate::statusline_installer::apply(&path, &command).map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_statusline_install(&prior, &command, Utc::now().timestamp())
+        .map_err(|e| e.to_string())?;
+    Ok(InstallStatuslineOutcome::Applied)
+}
+
+#[command]
+#[specta::specta]
+pub async fn uninstall_statusline(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
+    let Some((install_state, prior)) = state.db.get_statusline_install().map_err(|e| e.to_string())? else {
+        return Ok(true);
+    };
+    let path = claude_settings_path()?;
+    let written = serde_json::json!({ "type": "command", "command": install_state.installed_command });
+    let ok = crate::statusline_installer::clear(&path, &prior, &written).map_err(|e| e.to_string())?;
+    if ok {
+        state.db.clear_statusline_install().map_err(|e| e.to_string())?;
+    }
+    Ok(ok)
+}
+
 // ---------------------------------------------------------------------------
 // Session browser
 // ---------------------------------------------------------------------------

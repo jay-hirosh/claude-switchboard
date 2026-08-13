@@ -479,6 +479,30 @@ async getWarmupSuggestion() : Promise<Result<WarmupSuggestion | null, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getStatuslineInstallState() : Promise<Result<StatuslineInstallState | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_statusline_install_state") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async installStatusline(force: boolean) : Promise<Result<InstallStatuslineOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("install_statusline", { force }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async uninstallStatusline() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("uninstall_statusline") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -566,6 +590,14 @@ export type ExtraUsage = { is_enabled?: boolean; monthly_limit_cents?: number; u
  * Wall-clock time-of-day in user's local timezone.
  */
 export type HhMm = { hour: number; minute: number }
+export type InstallStatuslineOutcome = { status: "applied" } | 
+/**
+ * `settings.json` already carries a `statusLine` we do not own. The UI
+ * must confirm before we overwrite hand-written (or another tool's)
+ * configuration.
+ */
+{ status: "needs_confirmation"; foreign_value: JsonValue }
+export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 /**
  * Where a launched session appears.
  * 
@@ -764,6 +796,13 @@ notify_session_finished: boolean;
  * this being `true` in the custom `Default` impl below).
  */
 notify_context_warning: boolean }
+/**
+ * What Switchboard wrote as `statusLine`, for the settings UI to display.
+ * The prior value (the undo record) is not part of this — it's an
+ * implementation detail `get_statusline_install` returns alongside it for
+ * `clear`, not something the frontend needs to render.
+ */
+export type StatuslineInstallState = { installed_command: string; installed_at: number }
 /**
  * A `/compact` boundary inside one session transcript.
  */

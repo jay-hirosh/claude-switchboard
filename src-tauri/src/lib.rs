@@ -166,6 +166,9 @@ pub fn run() {
             commands::get_live_sessions,
             commands::get_limit_hit_history,
             commands::get_warmup_suggestion,
+            commands::get_statusline_install_state,
+            commands::install_statusline,
+            commands::uninstall_statusline,
         ]);
 
     #[cfg(debug_assertions)]
@@ -221,6 +224,9 @@ pub fn run() {
             commands::get_live_sessions,
             commands::get_limit_hit_history,
             commands::get_warmup_suggestion,
+            commands::get_statusline_install_state,
+            commands::install_statusline,
+            commands::uninstall_statusline,
         ]);
 
     #[cfg(debug_assertions)]
