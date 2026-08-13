@@ -16,6 +16,7 @@ import {
 } from '@tauri-apps/plugin-autostart';
 import { ipc } from '../lib/ipc';
 import { WarmupSettings } from './WarmupSettings';
+import { StatuslineSettings } from './StatuslineSettings';
 
 const POLL_MIN_SECS = 60;
 const POLL_MAX_SECS = 1800;
@@ -331,6 +332,16 @@ export function SettingsPanel() {
             onRegisterOs={handleRegisterOs}
             onUnregisterOs={handleUnregisterOs}
           />
+        </Card>
+      </section>
+
+      {/* Statusline */}
+      <section className="flex flex-col gap-[var(--space-sm)]">
+        <h2 className="text-[length:var(--text-label)] font-[var(--weight-semibold)] text-[color:var(--color-text-muted)] uppercase tracking-[0.04em] px-[var(--space-2xs)]">
+          Statusline
+        </h2>
+        <Card className="p-[var(--space-md)]">
+          <StatuslineSettings />
         </Card>
       </section>
 
