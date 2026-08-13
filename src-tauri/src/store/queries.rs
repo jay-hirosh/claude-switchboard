@@ -100,6 +100,28 @@ pub struct AccountLimitHits {
     pub top_projects: Vec<ProjectAttribution>,
 }
 
+/// Merge overlapping (or touching) `[start, end]` intervals into the
+/// minimal non-overlapping, sorted-by-start set. Standard sweep: sort by
+/// start, then fold any interval whose start falls at-or-before the running
+/// merged interval's end into that interval, extending its end if needed.
+fn merge_intervals(
+    mut spans: Vec<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
+    spans.sort_by_key(|&(start, _)| start);
+    let mut merged: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some((_, last_end)) if start <= *last_end => {
+                if end > *last_end {
+                    *last_end = end;
+                }
+            }
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
 fn insert_compactions_in_tx(tx: &Transaction<'_>, rows: &[StoredCompaction]) -> Result<usize> {
     if rows.is_empty() {
         return Ok(0);
@@ -322,6 +344,30 @@ impl Db {
         let inserted = insert_events_in_tx(&tx, events)?;
         tx.commit()?;
         Ok(inserted)
+    }
+
+    /// Sum `cost_usd` per project for events in `[from, to]`, aggregated in
+    /// SQL rather than materializing full `StoredSessionEvent` rows — used by
+    /// `limit_hit_stats` where only the per-project total matters, and a
+    /// single hit window's span can cover most of a week.
+    pub fn project_costs_between(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<(String, f64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT project, SUM(cost_usd) FROM session_events
+             WHERE ts BETWEEN ?1 AND ?2 GROUP BY project",
+        )?;
+        let rows = stmt.query_map(params![from.timestamp(), to.timestamp()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     pub fn events_between(
@@ -639,8 +685,15 @@ impl Db {
     /// Aggregate one account's limit-hit history: hit counts per bucket,
     /// an hour-of-day distribution of when hits peaked, and the projects
     /// that consumed each hit window beforehand. Read-only, computed
-    /// entirely from already-stored data — reuses `events_between` rather
-    /// than adding a new session_events query.
+    /// entirely from already-stored data.
+    ///
+    /// A `five_hour` hit window's `[window_start, peak_at]` span is always
+    /// contained within some `seven_day` hit window's span (5 hours falls
+    /// within 7 days), so querying each hit window's span independently
+    /// would double-count every event in the overlap. Instead, the hit
+    /// windows' spans are merged into non-overlapping intervals first, and
+    /// cost is aggregated in SQL once per merged interval via
+    /// `project_costs_between`.
     pub fn limit_hit_stats(
         &self,
         account_id: &str,
@@ -653,8 +706,7 @@ impl Db {
         let mut five_hour_hits = 0u32;
         let mut seven_day_hits = 0u32;
         let mut hourly_distribution = vec![0u32; 24];
-        let mut project_totals: std::collections::HashMap<String, f64> =
-            std::collections::HashMap::new();
+        let mut hit_spans: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();
 
         for peak in &peaks {
             if peak.peak_pct < danger_threshold {
@@ -667,9 +719,14 @@ impl Db {
             }
             let hour = peak.peak_at.with_timezone(&chrono::Local).hour() as usize;
             hourly_distribution[hour] += 1;
+            hit_spans.push((peak.window_start, peak.peak_at));
+        }
 
-            for event in self.events_between(peak.window_start, peak.peak_at)? {
-                *project_totals.entry(event.project).or_insert(0.0) += event.cost_usd;
+        let mut project_totals: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
+        for (start, end) in merge_intervals(hit_spans) {
+            for (project, cost) in self.project_costs_between(start, end)? {
+                *project_totals.entry(project).or_insert(0.0) += cost;
             }
         }
 
@@ -677,7 +734,13 @@ impl Db {
             .into_iter()
             .map(|(project, cost_usd)| ProjectAttribution { project, cost_usd })
             .collect();
-        top_projects.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap());
+        // total_cmp is panic-free on NaN; the project-name tiebreak keeps
+        // ordering deterministic despite project_totals being a HashMap.
+        top_projects.sort_by(|a, b| {
+            b.cost_usd
+                .total_cmp(&a.cost_usd)
+                .then_with(|| a.project.cmp(&b.project))
+        });
         top_projects.truncate(5);
 
         Ok(AccountLimitHits {
@@ -1321,5 +1384,66 @@ mod tests {
         assert_eq!(stats.top_projects.len(), 1, "should have one project (accumulated across windows)");
         assert_eq!(stats.top_projects[0].project, "my-app");
         assert!((stats.top_projects[0].cost_usd - 4.25).abs() < 1e-6, "costs should sum: 2.50 + 1.75 = 4.25");
+    }
+
+    /// Regression for the double-counting bug: a five_hour hit window's span
+    /// is fully nested inside an enclosing seven_day hit window's span (5h
+    /// always falls within 7d). An event sitting in that overlap must be
+    /// counted once in top_projects, not once per enclosing hit window.
+    #[test]
+    fn limit_hit_stats_does_not_double_count_overlapping_windows() {
+        let (_dir, db) = fresh_db();
+
+        // seven_day window: wide span that encloses the five_hour window below.
+        let seven_day_resets = Utc::now() + chrono::Duration::days(2);
+        let seven_day_start = Utc::now() - chrono::Duration::days(5);
+        let seven_day_peak_at = Utc::now() - chrono::Duration::hours(1);
+
+        // five_hour window: narrow span, fully inside [seven_day_start, seven_day_peak_at].
+        let five_hour_resets = Utc::now() + chrono::Duration::hours(2);
+        let five_hour_start = Utc::now() - chrono::Duration::hours(3);
+        let five_hour_peak_at = Utc::now() - chrono::Duration::hours(2);
+
+        db.record_window_peak("acc1", "seven_day", seven_day_resets, seven_day_start, 0.0).unwrap();
+        db.record_window_peak("acc1", "seven_day", seven_day_resets, seven_day_peak_at, 95.0).unwrap();
+        db.record_window_peak("acc1", "five_hour", five_hour_resets, five_hour_start, 0.0).unwrap();
+        db.record_window_peak("acc1", "five_hour", five_hour_resets, five_hour_peak_at, 92.0).unwrap();
+
+        // One event, squarely inside BOTH windows' [window_start, peak_at] spans.
+        db.insert_events(&[StoredSessionEvent {
+            ts: five_hour_start + chrono::Duration::minutes(30),
+            project: "shared-proj".into(),
+            model: "claude-sonnet-4-6".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 5.0,
+            source_file: "/shared.jsonl".into(),
+            source_line: 1,
+            event_id: "evt-shared".into(),
+        }])
+        .unwrap();
+
+        let stats = db
+            .limit_hit_stats(
+                "acc1",
+                "a@example.com",
+                Utc::now() - chrono::Duration::days(6),
+                Utc::now() + chrono::Duration::days(3),
+                90.0,
+            )
+            .unwrap();
+
+        assert_eq!(stats.five_hour_hits, 1);
+        assert_eq!(stats.seven_day_hits, 1);
+        assert_eq!(stats.top_projects.len(), 1);
+        assert_eq!(stats.top_projects[0].project, "shared-proj");
+        assert!(
+            (stats.top_projects[0].cost_usd - 5.0).abs() < 1e-6,
+            "event inside the overlap must be counted once, not once per enclosing hit window (got {})",
+            stats.top_projects[0].cost_usd
+        );
     }
 }

@@ -117,14 +117,14 @@ CREATE TABLE IF NOT EXISTS session_compactions (
 );
 CREATE INDEX IF NOT EXISTS idx_compactions_ts ON session_compactions(ts DESC);
 
--- One row per finished 5H/7D rate-limit window per account, tracking the
--- peak utilization reached and when. `(account_id, bucket, resets_at)` is
--- the window's identity: a poll reporting a new resets_at for a bucket
--- naturally creates a new row via UPSERT (see Db::record_window_peak),
--- so a window "rollover" needs no explicit detection code. Feeds the
--- limit-hit analytics report (F5) — starts empty, builds forward from
--- whenever this ships (api_snapshots' 50-row cap means there's nothing
--- to backfill from).
+-- One row per finished (or in-progress) 5H/7D rate-limit window per
+-- account, tracking the peak utilization reached and when.
+-- `(account_id, bucket, resets_at)` is the window's identity: a poll
+-- reporting a new resets_at for a bucket naturally creates a new row via
+-- UPSERT (see Db::record_window_peak), so a window "rollover" needs no
+-- explicit detection code. Feeds the limit-hit analytics report (F5) —
+-- starts empty, builds forward from whenever this ships (api_snapshots'
+-- 50-row cap means there's nothing to backfill from).
 CREATE TABLE IF NOT EXISTS window_peaks (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id   TEXT NOT NULL,

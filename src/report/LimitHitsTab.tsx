@@ -82,6 +82,9 @@ function AccountLimitHitsCard({ account }: { account: AccountLimitHits }) {
       </div>
       {account.top_projects.length > 0 && (
         <div className="flex flex-col gap-[var(--space-2xs)] px-[var(--space-md)] pb-[var(--space-md)]">
+          <span className="text-[length:var(--text-micro)] font-[var(--weight-medium)] uppercase tracking-[var(--tracking-label)] text-[color:var(--color-text-muted)]">
+            Active projects during these windows
+          </span>
           {account.top_projects.map((p) => (
             <div
               key={p.project}
