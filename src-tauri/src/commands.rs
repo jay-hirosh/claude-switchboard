@@ -139,6 +139,72 @@ pub async fn get_compactions(
 }
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
+pub struct WarmupSuggestion {
+    pub anchor: crate::scheduler::presets::HhMm,
+    pub active_days: u32,
+}
+
+/// Median first-event-of-day local time across every distinct active day in
+/// `events`, or `None` if fewer than `min_active_days` are present — too
+/// small a sample would anchor a suggestion on noise. Multiple events on the
+/// same day only count once, keyed by that day's earliest timestamp.
+fn compute_warmup_suggestion(
+    events: &[StoredSessionEvent],
+    min_active_days: usize,
+) -> Option<WarmupSuggestion> {
+    use chrono::Timelike;
+    use std::collections::BTreeMap;
+
+    let mut first_of_day: BTreeMap<String, chrono::DateTime<Utc>> = BTreeMap::new();
+    for e in events {
+        let local = e.ts.with_timezone(&chrono::Local);
+        let date = local.format("%Y-%m-%d").to_string();
+        first_of_day
+            .entry(date)
+            .and_modify(|existing| {
+                if e.ts < *existing {
+                    *existing = e.ts;
+                }
+            })
+            .or_insert(e.ts);
+    }
+
+    if first_of_day.len() < min_active_days {
+        return None;
+    }
+
+    let mut minutes: Vec<u32> = first_of_day
+        .values()
+        .map(|ts| {
+            let local = ts.with_timezone(&chrono::Local);
+            local.hour() * 60 + local.minute()
+        })
+        .collect();
+    minutes.sort_unstable();
+    let median = minutes[minutes.len() / 2];
+
+    Some(WarmupSuggestion {
+        anchor: crate::scheduler::presets::HhMm::new((median / 60) as u8, (median % 60) as u8),
+        active_days: first_of_day.len() as u32,
+    })
+}
+
+/// Suggests a warm-up anchor time from the trailing 90 days of local
+/// activity: the median time-of-day the user's first session started on an
+/// active day. Returns `None` (not an error) below the 10-active-day floor
+/// — the frontend renders nothing in that case rather than an empty state.
+#[command]
+#[specta::specta]
+pub async fn get_warmup_suggestion(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<WarmupSuggestion>, String> {
+    const MIN_ACTIVE_DAYS: usize = 10;
+    const LOOKBACK_DAYS: u32 = 90;
+    let events = get_session_history(LOOKBACK_DAYS, state).await?;
+    Ok(compute_warmup_suggestion(&events, MIN_ACTIVE_DAYS))
+}
+
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
 pub struct LimitHitReport {
     pub accounts: Vec<crate::store::AccountLimitHits>,
 }
@@ -1303,6 +1369,70 @@ mod tests {
         // popover hangs from the tray; center-fixed math visibly detaches it.
         let (_, y) = compact_target_xy(100.0, 24.0, 360.0, 360.0);
         assert_eq!(y, 24.0);
+    }
+
+    #[test]
+    fn warmup_suggestion_returns_none_below_the_active_day_floor() {
+        // 9 distinct active days, floor is 10 — must not suggest yet.
+        let events: Vec<StoredSessionEvent> = (0..9)
+            .map(|i| test_event(Utc::now() - Duration::days(i)))
+            .collect();
+        assert!(compute_warmup_suggestion(&events, 10).is_none());
+    }
+
+    #[test]
+    fn warmup_suggestion_fires_at_exactly_the_floor() {
+        let events: Vec<StoredSessionEvent> = (0..10)
+            .map(|i| test_event(Utc::now() - Duration::days(i)))
+            .collect();
+        assert!(compute_warmup_suggestion(&events, 10).is_some());
+    }
+
+    #[test]
+    fn warmup_suggestion_takes_only_the_earliest_event_per_day() {
+        // Two active days; each day has a late event and an early event —
+        // the median must be computed from the early ones only.
+        let day0 = Utc::now();
+        let day1 = Utc::now() - Duration::days(1);
+        let events = vec![
+            test_event(day0 + Duration::hours(5)), // late on day0
+            test_event(day0),                      // early on day0
+            test_event(day1 + Duration::hours(5)), // late on day1
+            test_event(day1),                      // early on day1
+        ];
+        let suggestion = compute_warmup_suggestion(&events, 2).unwrap();
+        assert_eq!(suggestion.active_days, 2);
+
+        let expected_minutes: Vec<u32> = [day0, day1]
+            .iter()
+            .map(|d| {
+                let local = d.with_timezone(&chrono::Local);
+                use chrono::Timelike;
+                local.hour() * 60 + local.minute()
+            })
+            .collect();
+        let mut sorted = expected_minutes.clone();
+        sorted.sort_unstable();
+        let expected_median = sorted[sorted.len() / 2];
+        let got_minutes = suggestion.anchor.hour as u32 * 60 + suggestion.anchor.minute as u32;
+        assert_eq!(got_minutes, expected_median);
+    }
+
+    fn test_event(ts: chrono::DateTime<Utc>) -> StoredSessionEvent {
+        StoredSessionEvent {
+            ts,
+            project: "p".into(),
+            model: "m".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 0.0,
+            source_file: "/a.jsonl".into(),
+            source_line: 1,
+            event_id: format!("evt-{}", ts.timestamp_nanos_opt().unwrap()),
+        }
     }
 
     #[test]

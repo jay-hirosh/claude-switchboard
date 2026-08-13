@@ -453,10 +453,28 @@ async getLiveSessions() : Promise<Result<LiveSessionInfo[], string>> {
  * second configured threshold (index 1, the "danger" tier) as the bar for
  * what counts as a limit hit. One `limit_hit_stats` query per managed
  * account, not just the active one.
+ * 
+ * A single account's query failing doesn't abort the whole report: it's
+ * logged and skipped so the other accounts' data still reaches the
+ * frontend (same log-and-continue shape as `reconcile_sqlite_account_mirror`).
  */
 async getLimitHitHistory(days: number) : Promise<Result<LimitHitReport, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_limit_hit_history", { days }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Suggests a warm-up anchor time from the trailing 90 days of local
+ * activity: the median time-of-day the user's first session started on an
+ * active day. Returns `None` (not an error) below the 10-active-day floor
+ * — the frontend renders nothing in that case rather than an empty state.
+ */
+async getWarmupSuggestion() : Promise<Result<WarmupSuggestion | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_warmup_suggestion") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -806,6 +824,7 @@ export type WarmupOutcome =
  * Other / unknown HTTP status.
  */
 { OtherFailure: { status: number } }
+export type WarmupSuggestion = { anchor: HhMm; active_days: number }
 
 /** tauri-specta globals **/
 

@@ -164,6 +164,7 @@ pub fn run() {
             commands::list_resumable_sessions,
             commands::get_live_sessions,
             commands::get_limit_hit_history,
+            commands::get_warmup_suggestion,
         ]);
 
     #[cfg(debug_assertions)]
@@ -218,6 +219,7 @@ pub fn run() {
             commands::list_resumable_sessions,
             commands::get_live_sessions,
             commands::get_limit_hit_history,
+            commands::get_warmup_suggestion,
         ]);
 
     #[cfg(debug_assertions)]
