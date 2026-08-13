@@ -101,4 +101,40 @@ describe('StatuslineSettings', () => {
     });
     confirmSpy.mockRestore();
   });
+
+  it('clicking Uninstall applies directly and reverts to Install', async () => {
+    // Same 2-call accounting as the install-success test: mount fetch (installed),
+    // then the reload() after handleUninstall finishes (no longer installed).
+    ipcMock.getStatuslineInstallState
+      .mockResolvedValueOnce({
+        installed_command: '/usr/local/bin/switchboard statusline',
+        installed_at: 1_700_000_000,
+      })
+      .mockResolvedValueOnce(null);
+    ipcMock.uninstallStatusline.mockResolvedValue(true);
+
+    render(<StatuslineSettings />);
+    fireEvent.click(await screen.findByRole('button', { name: /uninstall/i }));
+
+    await waitFor(() => {
+      expect(ipcMock.uninstallStatusline).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByRole('button', { name: /install/i })).toBeInTheDocument();
+  });
+
+  it('shows an error notice when uninstall fails, and clears the busy state', async () => {
+    const state: StatuslineInstallState = {
+      installed_command: '/usr/local/bin/switchboard statusline',
+      installed_at: 1_700_000_000,
+    };
+    ipcMock.getStatuslineInstallState.mockResolvedValue(state);
+    ipcMock.uninstallStatusline.mockRejectedValue(new Error('settings.json is not writable'));
+
+    render(<StatuslineSettings />);
+    const button = await screen.findByRole('button', { name: /uninstall/i });
+    fireEvent.click(button);
+
+    expect(await screen.findByRole('status')).toHaveTextContent('settings.json is not writable');
+    expect(button).not.toBeDisabled();
+  });
 });
