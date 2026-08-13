@@ -152,6 +152,14 @@ export function AccountRow({
   // Warmup state — fetched once per mount from the DB via get_warmup_state.
   const [warmupEnabled, setWarmupEnabled] = useState(false);
   const [schedule, setSchedule] = useState<Schedule>({ type: 'Off' });
+  // Suggested anchor time, derived from local session history — not scoped
+  // to this account (session_events has no per-account dimension), so every
+  // row fetches and shows the same suggestion. null while loading or when
+  // there isn't enough history yet (the chip simply doesn't render).
+  const [warmupSuggestion, setWarmupSuggestion] = useState<{
+    anchor: { hour: number; minute: number };
+    activeDays: number;
+  } | null>(null);
   const [showConsent, setShowConsent] = useState(false);
   // The warm-up block is collapsed by default to keep account rows
   // scannable — its state stays visible as a one-line summary.
@@ -214,6 +222,14 @@ export function AccountRow({
       // Silently swallow — row still renders without warmup state.
     });
   }, [entry.account_uuid]);
+
+  useEffect(() => {
+    ipc.getWarmupSuggestion().then((s) => {
+      setWarmupSuggestion(s ? { anchor: s.anchor, activeDays: s.active_days } : null);
+    }).catch(() => {
+      // Silently swallow — the suggestion chip is a nice-to-have, not core state.
+    });
+  }, []);
 
   const handleToggle = async (next: boolean) => {
     if (next) {
@@ -560,7 +576,11 @@ export function AccountRow({
             </div>
             {warmupEnabled && (
               <>
-                <ScheduleSelector value={schedule} onChange={handleScheduleChange} />
+                <ScheduleSelector
+                  value={schedule}
+                  onChange={handleScheduleChange}
+                  suggestion={warmupSuggestion}
+                />
                 <div className="flex items-center justify-end gap-[var(--space-xs)]">
                   {warmupMessage && (
                     <span

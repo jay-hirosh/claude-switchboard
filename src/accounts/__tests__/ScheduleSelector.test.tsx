@@ -49,4 +49,54 @@ describe("ScheduleSelector", () => {
       times: [{ hour: 9, minute: 0 }],
     } as Schedule);
   });
+
+  describe("warm-up anchor suggestion", () => {
+    const suggestion = { anchor: { hour: 8, minute: 30 }, activeDays: 14 };
+
+    it("renders nothing extra when no suggestion is provided", () => {
+      render(<ScheduleSelector value={{ type: "Off" }} onChange={() => {}} />);
+      expect(screen.queryByText(/usually start/i)).toBeNull();
+    });
+
+    it("shows the suggestion when schedule is Off", () => {
+      render(
+        <ScheduleSelector value={{ type: "Off" }} onChange={() => {}} suggestion={suggestion} />,
+      );
+      expect(screen.getByText(/usually start around 08:30/i)).toBeInTheDocument();
+    });
+
+    it("shows the suggestion when Every5h's anchor differs from it", () => {
+      render(
+        <ScheduleSelector
+          value={{ type: "Every5h", anchor: { hour: 6, minute: 0 } }}
+          onChange={() => {}}
+          suggestion={suggestion}
+        />,
+      );
+      expect(screen.getByText(/usually start around 08:30/i)).toBeInTheDocument();
+    });
+
+    it("hides the suggestion once Every5h's anchor already matches it", () => {
+      render(
+        <ScheduleSelector
+          value={{ type: "Every5h", anchor: { hour: 8, minute: 30 } }}
+          onChange={() => {}}
+          suggestion={suggestion}
+        />,
+      );
+      expect(screen.queryByText(/usually start/i)).toBeNull();
+    });
+
+    it("clicking Apply sets Every5h with the suggested anchor", () => {
+      const fn = vi.fn();
+      render(
+        <ScheduleSelector value={{ type: "Off" }} onChange={fn} suggestion={suggestion} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+      expect(fn).toHaveBeenCalledWith({
+        type: "Every5h",
+        anchor: { hour: 8, minute: 30 },
+      } as Schedule);
+    });
+  });
 });

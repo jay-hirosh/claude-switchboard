@@ -7,9 +7,18 @@ export type Schedule =
   | { type: "Every5h"; anchor: HhMm }
   | { type: "Custom"; times: HhMm[] };
 
+export interface WarmupSuggestion {
+  anchor: HhMm;
+  activeDays: number;
+}
+
 interface Props {
   value: Schedule;
   onChange: (next: Schedule) => void;
+  /** Median first-activity time observed over recent history. Omit or pass
+   * null when there isn't enough history yet — the suggestion line simply
+   * doesn't render, same as any other absent-data case in this app. */
+  suggestion?: WarmupSuggestion | null;
 }
 
 const fmtHm = (h: HhMm) =>
@@ -24,9 +33,33 @@ const parseHm = (s: string): HhMm | null => {
   return { hour, minute };
 };
 
-export function ScheduleSelector({ value, onChange }: Props) {
+export function ScheduleSelector({ value, onChange, suggestion }: Props) {
+  const showSuggestion =
+    !!suggestion &&
+    !(
+      value.type === "Every5h" &&
+      value.anchor.hour === suggestion.anchor.hour &&
+      value.anchor.minute === suggestion.anchor.minute
+    );
+
   return (
     <div className="space-y-2 text-[12px]">
+      {showSuggestion && suggestion && (
+        <div
+          className="flex items-center gap-2 text-neutral-400"
+          title={`Based on ${suggestion.activeDays} active days`}
+        >
+          <span>You usually start around {fmtHm(suggestion.anchor)} —</span>
+          <button
+            type="button"
+            onClick={() => onChange({ type: "Every5h", anchor: suggestion.anchor })}
+            className="px-2 py-0.5 rounded bg-neutral-800/40 hover:bg-neutral-800/60 text-neutral-300 text-[11px]"
+          >
+            Apply
+          </button>
+        </div>
+      )}
+
       <fieldset className="flex items-center gap-3">
         <label className="flex items-center gap-2">
           <input

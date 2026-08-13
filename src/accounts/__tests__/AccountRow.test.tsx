@@ -5,6 +5,7 @@ import type { AccountListEntry, CachedUsage } from '../../lib/generated/bindings
 const ipcMock = vi.hoisted(() => ({
   getWarmupState: vi.fn().mockResolvedValue({ warmup_enabled: false, schedule: { type: 'Off' } }),
   getWarmupConsentGranted: vi.fn().mockResolvedValue(true),
+  getWarmupSuggestion: vi.fn().mockResolvedValue(null),
   setWarmupEnabled: vi.fn().mockResolvedValue(undefined),
   setAccountSchedule: vi.fn().mockResolvedValue(undefined),
   warmupAccountNow: vi.fn().mockResolvedValue('Success'),
@@ -165,5 +166,35 @@ describe('AccountRow best-available badge', () => {
   it('renders no pill when isBest is omitted', () => {
     render(<AccountRow entry={entry({ is_active: false })} thresholds={[75, 90]} />);
     expect(screen.queryByText('Best available')).toBeNull();
+  });
+});
+
+describe('AccountRow warm-up anchor suggestion', () => {
+  it('passes the fetched suggestion through to ScheduleSelector once warm-up is expanded and enabled', async () => {
+    ipcMock.getWarmupSuggestion.mockResolvedValue({
+      anchor: { hour: 8, minute: 30 },
+      active_days: 14,
+    });
+    render(<AccountRow entry={entry({ is_active: false })} thresholds={[75, 90]} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /warm-up/i }));
+    fireEvent.click(screen.getByRole('switch'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/usually start around 08:30/i)).toBeInTheDocument();
+    });
+  });
+
+  it('shows no suggestion line when there is not enough history', async () => {
+    ipcMock.getWarmupSuggestion.mockResolvedValue(null);
+    render(<AccountRow entry={entry({ is_active: false })} thresholds={[75, 90]} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /warm-up/i }));
+    fireEvent.click(screen.getByRole('switch'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
+    });
+    expect(screen.queryByText(/usually start/i)).toBeNull();
   });
 });
