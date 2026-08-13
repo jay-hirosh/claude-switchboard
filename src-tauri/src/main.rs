@@ -16,6 +16,10 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        claude_switchboard_lib::cli::CliMode::Statusline => {
+            let rt = tokio::runtime::Runtime::new().expect("tokio rt");
+            rt.block_on(claude_switchboard_lib::cli::run_statusline());
+        }
         claude_switchboard_lib::cli::CliMode::Migrate
         | claude_switchboard_lib::cli::CliMode::Gui => {
             claude_switchboard_lib::run();

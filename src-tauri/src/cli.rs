@@ -12,6 +12,7 @@ use std::path::Path;
 pub enum CliMode {
     Tick,
     Migrate,
+    Statusline,
     Gui, // default — start the Tauri runtime as usual
 }
 
@@ -24,6 +25,7 @@ where
         match a.as_ref() {
             "--tick" => return CliMode::Tick,
             "--migrate" => return CliMode::Migrate,
+            "statusline" => return CliMode::Statusline,
             _ => {}
         }
     }
@@ -63,6 +65,41 @@ pub async fn run_tick(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Freshness window for the shared-snapshot file. A headless one-shot
+/// invocation has no `Settings.polling_interval_secs` to read (no DB, no
+/// AppState) — a fixed, generous constant errs toward "shows a number a
+/// few minutes longer than strictly necessary after Switchboard quits"
+/// rather than plumbing settings into a process that must stay fast and
+/// simple (Claude Code invokes this on every prompt render).
+const STATUSLINE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Core logic for `run_statusline`, taking the shared-snapshot path
+/// explicitly so it's testable without touching the real `~/.claude/`
+/// directory. `run_statusline` calls this with the real path.
+fn run_statusline_for_path(path: &Path) -> String {
+    match crate::poll_loop::read_shared_snapshot(path, STATUSLINE_MAX_AGE, None) {
+        Some(snap) => match snap.five_hour {
+            Some(u) => format!("5H {}%", u.utilization.round() as i64),
+            None => "Switchboard: not running".to_string(),
+        },
+        None => "Switchboard: not running".to_string(),
+    }
+}
+
+/// Run `statusline`. Drains stdin (Claude Code pipes session-context JSON
+/// in) without parsing it — out of scope for V1, which only shows 5H%.
+/// Prints exactly one line to stdout and always exits 0: Claude Code
+/// renders whatever this command prints, so erroring would show nothing
+/// useful rather than the honest "not running" placeholder.
+pub async fn run_statusline() {
+    use std::io::Read as _;
+    let mut discard = String::new();
+    let _ = std::io::stdin().read_to_string(&mut discard);
+
+    let path = crate::poll_loop::shared_usage_file_path();
+    println!("{}", run_statusline_for_path(&path));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +131,71 @@ mod tests {
             parse_args(["claude-switchboard", "--unknown", "--tick"]),
             CliMode::Tick,
         );
+    }
+
+    #[test]
+    fn parses_statusline_subcommand() {
+        assert_eq!(
+            parse_args(["claude-switchboard", "statusline"]),
+            CliMode::Statusline,
+        );
+    }
+}
+
+#[cfg(test)]
+mod statusline_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn prints_the_five_hour_percentage_when_the_snapshot_is_fresh() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("statusline-usage.json");
+        let now = chrono::Utc::now().timestamp();
+        std::fs::write(
+            &p,
+            format!(
+                r#"{{"five_hour": {{"utilization": 42.5, "resets_at": null}}, "seven_day": null, "fetched_at": {now}}}"#
+            ),
+        )
+        .unwrap();
+
+        let line = run_statusline_for_path(&p);
+        assert_eq!(line, "5H 43%");
+    }
+
+    #[test]
+    fn reports_not_running_when_the_file_is_missing() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("does-not-exist.json");
+        assert_eq!(run_statusline_for_path(&p), "Switchboard: not running");
+    }
+
+    #[test]
+    fn reports_not_running_when_the_snapshot_is_stale() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("statusline-usage.json");
+        let old = (chrono::Utc::now() - chrono::Duration::minutes(30)).timestamp();
+        std::fs::write(
+            &p,
+            format!(
+                r#"{{"five_hour": {{"utilization": 42.5, "resets_at": null}}, "seven_day": null, "fetched_at": {old}}}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(run_statusline_for_path(&p), "Switchboard: not running");
+    }
+
+    #[test]
+    fn reports_not_running_when_five_hour_is_absent() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("statusline-usage.json");
+        let now = chrono::Utc::now().timestamp();
+        std::fs::write(
+            &p,
+            format!(r#"{{"five_hour": null, "seven_day": null, "fetched_at": {now}}}"#),
+        )
+        .unwrap();
+        assert_eq!(run_statusline_for_path(&p), "Switchboard: not running");
     }
 }
