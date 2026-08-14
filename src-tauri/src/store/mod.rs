@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=11 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=12 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [11_i64],
+            [12_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -185,9 +185,15 @@ impl Db {
                 .context("apply migration 0011")?;
         }
 
+        if current < 12 {
+            tracing::info!("migrating v11 -> v12 (account_intervals for session attribution)");
+            conn.execute_batch(include_str!("migrations/0012_account_intervals.sql"))
+                .context("apply migration 0012")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [11_i64],
+            [12_i64],
         )?;
         Ok(())
     }
@@ -653,7 +659,7 @@ mod tests {
             .conn()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11, "create_fresh_db and migrate() must both stamp 11");
+        assert_eq!(version, 12, "create_fresh_db and migrate() must both stamp 12");
     }
 
     /// 0009 adds the compactions table and, like 0008, clears cursors so the
@@ -774,5 +780,33 @@ mod tests {
             [],
         );
         assert!(dup.is_err(), "duplicate (account_id, bucket, resets_at) must be rejected");
+    }
+
+    #[test]
+    fn migrates_to_v12_with_account_intervals_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).expect("open");
+        let conn = db.conn();
+
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 12);
+
+        conn.execute(
+            "INSERT INTO accounts (id, email, last_seen_at) VALUES ('a1', 'a@x.com', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO account_intervals (account_uuid, started_at, ended_at) VALUES ('a1', 100, NULL)",
+            [],
+        )
+        .expect("account_intervals table exists and accepts a row");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM account_intervals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

@@ -148,3 +148,13 @@ CREATE TABLE IF NOT EXISTS statusline_install (
     installed_command  TEXT NOT NULL,
     installed_at       INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS account_intervals (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_uuid TEXT NOT NULL,
+    started_at   INTEGER NOT NULL,
+    ended_at     INTEGER,
+    FOREIGN KEY (account_uuid) REFERENCES accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_account_intervals_span
+    ON account_intervals(started_at, ended_at);
