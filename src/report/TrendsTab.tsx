@@ -5,12 +5,14 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { IconButton } from '../components/ui/IconButton';
 import { EmptyState } from '../components/ui/EmptyState';
+import { AccountBadge } from '../components/ui/AccountBadge';
 import { formatTokens, formatCost } from '../lib/format';
 import { IconTrends, IconExport } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
 import { MODEL_VARIANT, modelKey, shortName } from './modelDisplay';
+import { colorForAccount } from './accountDisplay';
 import { computePeriodComparison, type PeriodGranularity, type PeriodMetric } from '../lib/periodComparison';
 import { computeMonthPacing } from '../lib/monthPacing';
 import { detectAnomalies } from '../lib/anomalyDetection';
@@ -66,16 +68,19 @@ const TRENDS_FETCH_DAYS = 62;
 
 export function TrendsTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
+  const accounts = useAppStore((s) => s.accounts);
   const { data, error, loading, reload } = useTabData(
     () =>
       Promise.all([
         ipc.getDailyTrends(TRENDS_FETCH_DAYS),
         ipc.getDailyModelBreakdown(30),
-      ]).then(([trends, breakdown]) => ({ trends, breakdown })),
+        ipc.getDailyAccountBreakdown(30),
+      ]).then(([trends, breakdown, accountBreakdown]) => ({ trends, breakdown, accountBreakdown })),
     [version],
   );
   const [range, setRange] = useState<'7d' | '30d'>('30d');
   const [metric, setMetric] = useState<'tokens' | 'cost'>('tokens');
+  const [colorBy, setColorBy] = useState<'model' | 'account'>('model');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [periodGranularity, setPeriodGranularity] = useState<PeriodGranularity>('week');
 
@@ -85,6 +90,7 @@ export function TrendsTab() {
 
   const trends = data?.trends ?? null;
   const breakdown = data?.breakdown ?? null;
+  const accountBreakdown = data?.accountBreakdown ?? null;
 
   const visibleData = useMemo(() => {
     if (!trends) return [];
@@ -105,6 +111,11 @@ export function TrendsTab() {
   const breakdownByDate = useMemo(
     () => new Map((breakdown ?? []).map((b) => [b.date, b])),
     [breakdown],
+  );
+
+  const accountBreakdownByDate = useMemo(
+    () => new Map((accountBreakdown ?? []).map((b) => [b.date, b])),
+    [accountBreakdown],
   );
 
   // Which tiers actually show up in the visible range — an all-Sonnet month
@@ -257,25 +268,47 @@ export function TrendsTab() {
 
       {/* Range + metric selectors */}
       <div className="flex items-center justify-between">
-        <div className="flex gap-[var(--space-2xs)] bg-[var(--color-track)] rounded-[var(--radius-sm)] p-[2px] w-fit">
-          {(['7d', '30d'] as const).map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => setRange(r)}
-              className={[
-                'px-[var(--space-sm)] py-[var(--space-2xs)]',
-                'text-[length:var(--text-label)] font-[var(--weight-medium)]',
-                'rounded-[var(--radius-sm)]',
-                'transition-[background,color] duration-[var(--duration-fast)]',
-                range === r
-                  ? 'bg-[var(--color-bg-card)] text-[color:var(--color-text)]'
-                  : 'text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-secondary)]',
-              ].join(' ')}
-            >
-              {r}
-            </button>
-          ))}
+        <div className="flex items-center gap-[var(--space-sm)]">
+          <div className="flex gap-[var(--space-2xs)] bg-[var(--color-track)] rounded-[var(--radius-sm)] p-[2px] w-fit">
+            {(['7d', '30d'] as const).map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => setRange(r)}
+                className={[
+                  'px-[var(--space-sm)] py-[var(--space-2xs)]',
+                  'text-[length:var(--text-label)] font-[var(--weight-medium)]',
+                  'rounded-[var(--radius-sm)]',
+                  'transition-[background,color] duration-[var(--duration-fast)]',
+                  range === r
+                    ? 'bg-[var(--color-bg-card)] text-[color:var(--color-text)]'
+                    : 'text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-secondary)]',
+                ].join(' ')}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-[var(--space-2xs)] bg-[var(--color-track)] rounded-[var(--radius-sm)] p-[2px] w-fit">
+            {(['model', 'account'] as const).map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setColorBy(c)}
+                className={[
+                  'px-[var(--space-sm)] py-[var(--space-2xs)]',
+                  'text-[length:var(--text-label)] font-[var(--weight-medium)]',
+                  'rounded-[var(--radius-sm)]',
+                  'transition-[background,color] duration-[var(--duration-fast)]',
+                  colorBy === c
+                    ? 'bg-[var(--color-bg-card)] text-[color:var(--color-text)]'
+                    : 'text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-secondary)]',
+                ].join(' ')}
+              >
+                {c === 'model' ? 'Model' : 'Account'}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex items-center gap-[var(--space-sm)]">
           <div className="flex gap-[var(--space-2xs)] bg-[var(--color-track)] rounded-[var(--radius-sm)] p-[2px] w-fit">
@@ -307,9 +340,11 @@ export function TrendsTab() {
         </div>
       </div>
 
-      {/* Model legend — states what each stacked color means before the eye
-          hits the chart. Only tiers present in the visible range are shown. */}
-      {legendKeys.length > 0 && (
+      {/* Model/account legend — states what each stacked color means before
+          the eye hits the chart. Only tiers present in the visible range are
+          shown for the model legend; the account legend lists every known
+          account, matching AccountBadge's coloring elsewhere in the app. */}
+      {colorBy === 'model' && legendKeys.length > 0 && (
         <div className="flex items-center gap-[var(--space-md)] px-[2px]">
           {legendKeys.map((key) => (
             <span key={key} className="flex items-center gap-[var(--space-2xs)]">
@@ -325,6 +360,13 @@ export function TrendsTab() {
           ))}
         </div>
       )}
+      {colorBy === 'account' && accounts.length > 0 && (
+        <div className="flex items-center gap-[var(--space-md)] px-[2px]">
+          {accounts.map((a) => (
+            <AccountBadge key={a.account_uuid} accountUuid={a.account_uuid} accounts={accounts} />
+          ))}
+        </div>
+      )}
 
       {/* Chart */}
       <Card className="p-[var(--space-md)]">
@@ -336,17 +378,32 @@ export function TrendsTab() {
             const isSelected = day.date === selectedDate;
             const label = `${new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}: ${formatTokens(total)} tokens, ${formatCost(day.cost_usd)}`;
 
-            // Split this day's bar into one segment per model tier, sized by
-            // that tier's share of the selected metric — position in the
-            // stack (fixed by MODEL_ORDER) is what "which model" answers.
+            // Split this day's bar into one segment per model tier or account
+            // (per `colorBy`), sized by that segment's share of the selected
+            // metric — for the model tier, position in the stack (fixed by
+            // MODEL_ORDER) is what "which model" answers.
             const dayModels = breakdownByDate.get(day.date)?.models ?? [];
+            const dayAccounts = accountBreakdownByDate.get(day.date)?.accounts ?? [];
             const segmentValues: Record<string, number> = {};
-            for (const m of dayModels) {
-              const key = modelKey(m.model);
-              const v = metric === 'tokens' ? m.input_tokens + m.output_tokens : m.cost_usd;
-              segmentValues[key] = (segmentValues[key] ?? 0) + v;
+            const segmentColors: Record<string, string> = {};
+            let segments: string[];
+            if (colorBy === 'model') {
+              for (const m of dayModels) {
+                const key = modelKey(m.model);
+                const v = metric === 'tokens' ? m.input_tokens + m.output_tokens : m.cost_usd;
+                segmentValues[key] = (segmentValues[key] ?? 0) + v;
+                segmentColors[key] = MODEL_COLORS[key as (typeof MODEL_ORDER)[number]] ?? MODEL_COLORS.default;
+              }
+              segments = MODEL_ORDER.filter((k) => (segmentValues[k] ?? 0) > 0);
+            } else {
+              for (const a of dayAccounts) {
+                const key = a.account_uuid ?? 'unknown';
+                const v = metric === 'tokens' ? a.input_tokens + a.output_tokens : a.cost_usd;
+                segmentValues[key] = (segmentValues[key] ?? 0) + v;
+                segmentColors[key] = colorForAccount(a.account_uuid, accounts);
+              }
+              segments = Object.keys(segmentValues).filter((k) => segmentValues[k] > 0);
             }
-            const segments = MODEL_ORDER.filter((k) => (segmentValues[k] ?? 0) > 0);
 
             const anomaly = anomalies.get(day.date);
             const anomalyRatio = anomaly
@@ -382,7 +439,7 @@ export function TrendsTab() {
                         key={key}
                         data-testid={`day-bar-${day.date}-${key}`}
                         className="w-full"
-                        style={{ flexGrow: segmentValues[key], background: MODEL_COLORS[key] }}
+                        style={{ flexGrow: segmentValues[key], background: segmentColors[key] }}
                       />
                     ))}
                   </div>

@@ -27,6 +27,7 @@ const BREAKDOWN: DailyModelBucket[] = [
 const ipcMock = vi.hoisted(() => ({
   getDailyTrends: vi.fn(),
   getDailyModelBreakdown: vi.fn(),
+  getDailyAccountBreakdown: vi.fn(),
   exportTrendsCsv: vi.fn(),
 }));
 
@@ -37,7 +38,13 @@ vi.mock('@tauri-apps/plugin-dialog', () => dialogMock);
 
 vi.mock('../lib/store', async () => {
   const actual = await vi.importActual<typeof import('../lib/store')>('../lib/store');
-  const state = { sessionDataVersion: 0 };
+  const state = {
+    sessionDataVersion: 0,
+    accounts: [
+      { slot: 0, email: 'work@x.com', account_uuid: 'acc1', org_name: null, org_uuid: null, subscription_type: null, source: 'OAuth', is_active: true, cached_usage: null, last_error: null },
+      { slot: 1, email: 'personal@x.com', account_uuid: 'acc2', org_name: null, org_uuid: null, subscription_type: null, source: 'OAuth', is_active: false, cached_usage: null, last_error: null },
+    ],
+  };
   const useAppStore: any = (sel: any) => sel(state);
   useAppStore.getState = () => state;
   return { ...actual, useAppStore };
@@ -257,5 +264,37 @@ describe('TrendsTab — CSV export', () => {
 
     await waitFor(() => expect(dialogMock.save).toHaveBeenCalled());
     expect(ipcMock.exportTrendsCsv).not.toHaveBeenCalled();
+  });
+});
+
+describe('TrendsTab — color by account', () => {
+  beforeEach(() => {
+    ipcMock.getDailyTrends.mockClear();
+    ipcMock.getDailyModelBreakdown.mockClear();
+    ipcMock.getDailyAccountBreakdown.mockClear();
+  });
+
+  it('colors day bars by account when the Account toggle is selected', async () => {
+    ipcMock.getDailyTrends.mockResolvedValue([
+      { date: '2026-08-01', input_tokens: 100, output_tokens: 20, cost_usd: 1.0, request_count: 3 },
+    ]);
+    ipcMock.getDailyModelBreakdown.mockResolvedValue([]);
+    ipcMock.getDailyAccountBreakdown.mockResolvedValue([
+      {
+        date: '2026-08-01',
+        accounts: [
+          { account_uuid: 'acc1', input_tokens: 80, output_tokens: 15, cost_usd: 0.8 },
+          { account_uuid: 'acc2', input_tokens: 20, output_tokens: 5, cost_usd: 0.2 },
+        ],
+      },
+    ]);
+
+    render(<TrendsTab />);
+    await screen.findByTestId('day-bar-2026-08-01');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }));
+
+    expect(screen.getByTestId('day-bar-2026-08-01-acc1')).toBeInTheDocument();
+    expect(screen.getByTestId('day-bar-2026-08-01-acc2')).toBeInTheDocument();
   });
 });
