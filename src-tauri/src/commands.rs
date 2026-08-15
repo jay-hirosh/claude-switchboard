@@ -29,6 +29,14 @@ pub struct DailyBucket {
     pub request_count: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+pub struct ModelAccountShare {
+    pub account_uuid: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+}
+
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
 pub struct ModelStats {
     pub model: String,
@@ -37,6 +45,10 @@ pub struct ModelStats {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cost_usd: f64,
+    /// Per-account contribution to this model's totals — lets the Models
+    /// tab show which account(s) drove usage of a given model without a
+    /// separate command.
+    pub by_account: Vec<ModelAccountShare>,
 }
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
@@ -314,6 +326,67 @@ fn bucket_daily_trends(events: &[StoredSessionEvent]) -> Vec<DailyBucket> {
     by_day.into_values().collect()
 }
 
+/// Groups events by model, summing tokens/cost and splitting each model's
+/// totals by account. Shared by `get_model_breakdown` (whole window) and
+/// `get_daily_model_breakdown` (once per day).
+fn accumulate_model_stats(events: &[StoredSessionEvent]) -> Vec<ModelStats> {
+    use std::collections::HashMap;
+
+    struct Acc {
+        model: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_creation_tokens: u64,
+        cost_usd: f64,
+        by_account: HashMap<Option<String>, ModelAccountShare>,
+    }
+
+    let mut by_model: HashMap<String, Acc> = HashMap::new();
+    for e in events {
+        let entry = by_model.entry(e.model.clone()).or_insert_with(|| Acc {
+            model: e.model.clone(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: 0.0,
+            by_account: HashMap::new(),
+        });
+        entry.input_tokens += e.input_tokens;
+        entry.output_tokens += e.output_tokens;
+        entry.cache_read_tokens += e.cache_read_tokens;
+        entry.cache_creation_tokens += e.cache_creation_5m_tokens + e.cache_creation_1h_tokens;
+        entry.cost_usd += e.cost_usd;
+
+        let share = entry
+            .by_account
+            .entry(e.account_uuid.clone())
+            .or_insert_with(|| ModelAccountShare {
+                account_uuid: e.account_uuid.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+            });
+        share.input_tokens += e.input_tokens;
+        share.output_tokens += e.output_tokens;
+        share.cost_usd += e.cost_usd;
+    }
+
+    by_model
+        .into_values()
+        .map(|a| ModelStats {
+            model: a.model,
+            input_tokens: a.input_tokens,
+            output_tokens: a.output_tokens,
+            cache_read_tokens: a.cache_read_tokens,
+            cache_creation_tokens: a.cache_creation_tokens,
+            cost_usd: a.cost_usd,
+            by_account: a.by_account.into_values().collect(),
+        })
+        .collect()
+}
+
 #[command]
 #[specta::specta]
 pub async fn get_model_breakdown(
@@ -321,26 +394,7 @@ pub async fn get_model_breakdown(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<ModelStats>, String> {
     let events = get_session_history(days, state).await?;
-    use std::collections::HashMap;
-    let mut by_model: HashMap<String, ModelStats> = HashMap::new();
-    for e in events {
-        let entry = by_model
-            .entry(e.model.clone())
-            .or_insert_with(|| ModelStats {
-                model: e.model.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
-                cost_usd: 0.0,
-            });
-        entry.input_tokens += e.input_tokens;
-        entry.output_tokens += e.output_tokens;
-        entry.cache_read_tokens += e.cache_read_tokens;
-        entry.cache_creation_tokens += e.cache_creation_5m_tokens + e.cache_creation_1h_tokens;
-        entry.cost_usd += e.cost_usd;
-    }
-    Ok(by_model.into_values().collect())
+    Ok(accumulate_model_stats(&events))
 }
 
 #[command]
@@ -350,35 +404,20 @@ pub async fn get_daily_model_breakdown(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<DailyModelBucket>, String> {
     let events = get_session_history(days, state).await?;
-    use std::collections::{BTreeMap, HashMap};
-    let mut by_day: BTreeMap<String, HashMap<String, ModelStats>> = BTreeMap::new();
+    use std::collections::BTreeMap;
+    let mut by_day: BTreeMap<String, Vec<StoredSessionEvent>> = BTreeMap::new();
     for e in events {
         let date = e
             .ts
             .with_timezone(&chrono::Local)
             .format("%Y-%m-%d")
             .to_string();
-        let by_model = by_day.entry(date).or_default();
-        let entry = by_model
-            .entry(e.model.clone())
-            .or_insert_with(|| ModelStats {
-                model: e.model.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
-                cost_usd: 0.0,
-            });
-        entry.input_tokens += e.input_tokens;
-        entry.output_tokens += e.output_tokens;
-        entry.cache_read_tokens += e.cache_read_tokens;
-        entry.cache_creation_tokens += e.cache_creation_5m_tokens + e.cache_creation_1h_tokens;
-        entry.cost_usd += e.cost_usd;
+        by_day.entry(date).or_default().push(e);
     }
     Ok(by_day
         .into_iter()
-        .map(|(date, models)| {
-            let mut models: Vec<ModelStats> = models.into_values().collect();
+        .map(|(date, day_events)| {
+            let mut models = accumulate_model_stats(&day_events);
             models.sort_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd));
             DailyModelBucket { date, models }
         })
@@ -1516,6 +1555,42 @@ mod tests {
 
         let bucket1 = buckets.iter().find(|b| b.date == date1).unwrap();
         assert_eq!(bucket1.request_count, 1);
+    }
+
+    #[test]
+    fn accumulate_model_stats_splits_each_model_by_account() {
+        let mut e1 = test_event(Utc::now());
+        e1.model = "claude-opus-5".into();
+        e1.account_uuid = Some("acc1".into());
+        e1.input_tokens = 10;
+        e1.output_tokens = 5;
+
+        let mut e2 = e1.clone();
+        e2.account_uuid = Some("acc2".into());
+        e2.input_tokens = 3;
+        e2.output_tokens = 1;
+        e2.event_id = "evt-2".into();
+
+        let mut e3 = e1.clone();
+        e3.account_uuid = None; // pre-feature / unattributed history
+        e3.input_tokens = 7;
+        e3.output_tokens = 0;
+        e3.event_id = "evt-3".into();
+
+        let stats = accumulate_model_stats(&[e1, e2, e3]);
+        assert_eq!(stats.len(), 1);
+        let opus = &stats[0];
+        assert_eq!(opus.input_tokens, 20);
+
+        let mut by_account = opus.by_account.clone();
+        by_account.sort_by(|a, b| a.account_uuid.cmp(&b.account_uuid));
+        assert_eq!(by_account.len(), 3);
+        assert_eq!(by_account[0].account_uuid, None);
+        assert_eq!(by_account[0].input_tokens, 7);
+        assert_eq!(by_account[1].account_uuid, Some("acc1".to_string()));
+        assert_eq!(by_account[1].input_tokens, 10);
+        assert_eq!(by_account[2].account_uuid, Some("acc2".to_string()));
+        assert_eq!(by_account[2].input_tokens, 3);
     }
 
     fn test_event(ts: chrono::DateTime<Utc>) -> StoredSessionEvent {
