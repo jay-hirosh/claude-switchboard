@@ -112,6 +112,15 @@ pub struct CacheStats {
     pub hit_ratio: f64,
 }
 
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
+pub struct AccountCacheStats {
+    pub account_uuid: Option<String>,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub estimated_savings_usd: f64,
+    pub hit_ratio: f64,
+}
+
 fn err_to_string<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
@@ -618,6 +627,61 @@ pub async fn get_cache_stats(
         estimated_savings_usd: savings,
         hit_ratio,
     })
+}
+
+/// Sums cache read/creation tokens per account and computes each account's
+/// own hit ratio. Savings (which needs the pricing table) is filled in by
+/// the caller, `get_cache_stats_by_account`, after this returns.
+fn accumulate_cache_stats_by_account(events: &[StoredSessionEvent]) -> Vec<AccountCacheStats> {
+    use std::collections::HashMap;
+    struct Acc {
+        read: u64,
+        created: u64,
+    }
+    let mut by_account: HashMap<Option<String>, Acc> = HashMap::new();
+    for e in events {
+        let entry = by_account
+            .entry(e.account_uuid.clone())
+            .or_insert(Acc { read: 0, created: 0 });
+        entry.read += e.cache_read_tokens;
+        entry.created += e.cache_creation_5m_tokens + e.cache_creation_1h_tokens;
+    }
+    by_account
+        .into_iter()
+        .map(|(account_uuid, acc)| {
+            let total = acc.read + acc.created;
+            let hit_ratio = if total > 0 { acc.read as f64 / total as f64 } else { 0.0 };
+            AccountCacheStats {
+                account_uuid,
+                total_cache_read_tokens: acc.read,
+                total_cache_creation_tokens: acc.created,
+                estimated_savings_usd: 0.0,
+                hit_ratio,
+            }
+        })
+        .collect()
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_cache_stats_by_account(
+    days: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<AccountCacheStats>, String> {
+    let pricing = state.pricing.clone();
+    let events = get_session_history(days, state).await?;
+    let mut stats = accumulate_cache_stats_by_account(&events);
+
+    let mut savings_by_account: std::collections::HashMap<Option<String>, f64> = std::collections::HashMap::new();
+    for e in &events {
+        let savings = pricing.cache_savings_per_mtok(&e.model).unwrap_or(0.0) * (e.cache_read_tokens as f64) / 1_000_000.0;
+        *savings_by_account.entry(e.account_uuid.clone()).or_insert(0.0) += savings;
+    }
+    for s in &mut stats {
+        s.estimated_savings_usd = savings_by_account.get(&s.account_uuid).copied().unwrap_or(0.0);
+    }
+
+    Ok(stats)
 }
 
 #[command]
@@ -1679,6 +1743,32 @@ mod tests {
         assert_eq!(accounts[0].input_tokens, 10);
         assert_eq!(accounts[1].account_uuid, Some("acc2".to_string()));
         assert_eq!(accounts[1].input_tokens, 4);
+    }
+
+    #[test]
+    fn accumulate_cache_stats_by_account_splits_read_and_created_tokens() {
+        let mut e1 = test_event(Utc::now());
+        e1.account_uuid = Some("acc1".into());
+        e1.cache_read_tokens = 100;
+        e1.cache_creation_5m_tokens = 20;
+
+        let mut e2 = test_event(Utc::now());
+        e2.event_id = "evt-2".into();
+        e2.account_uuid = Some("acc2".into());
+        e2.cache_read_tokens = 10;
+        e2.cache_creation_1h_tokens = 5;
+
+        let stats = accumulate_cache_stats_by_account(&[e1, e2]);
+        assert_eq!(stats.len(), 2);
+
+        let acc1 = stats.iter().find(|s| s.account_uuid == Some("acc1".to_string())).unwrap();
+        assert_eq!(acc1.total_cache_read_tokens, 100);
+        assert_eq!(acc1.total_cache_creation_tokens, 20);
+        assert_eq!(acc1.hit_ratio, 100.0 / 120.0);
+
+        let acc2 = stats.iter().find(|s| s.account_uuid == Some("acc2".to_string())).unwrap();
+        assert_eq!(acc2.total_cache_read_tokens, 10);
+        assert_eq!(acc2.total_cache_creation_tokens, 5);
     }
 
     fn test_event(ts: chrono::DateTime<Utc>) -> StoredSessionEvent {
