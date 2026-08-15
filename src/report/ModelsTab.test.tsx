@@ -18,7 +18,13 @@ vi.mock('../lib/ipc', () => ({ ipc: ipcMock }));
 
 vi.mock('../lib/store', async () => {
   const actual = await vi.importActual<typeof import('../lib/store')>('../lib/store');
-  const state = { sessionDataVersion: 0 };
+  const state = {
+    sessionDataVersion: 0,
+    accounts: [
+      { slot: 0, email: 'work@x.com', account_uuid: 'acc1', org_name: null, org_uuid: null, subscription_type: null, source: 'OAuth', is_active: true, cached_usage: null, last_error: null },
+      { slot: 1, email: 'personal@x.com', account_uuid: 'acc2', org_name: null, org_uuid: null, subscription_type: null, source: 'OAuth', is_active: false, cached_usage: null, last_error: null },
+    ],
+  };
   const useAppStore: any = (sel: any) => sel(state);
   useAppStore.getState = () => state;
   return { ...actual, useAppStore };
@@ -60,5 +66,29 @@ describe('ModelsTab — cost-per-1K-tokens', () => {
 
     await screen.findByText('$0.00/1K tokens');
     expect(screen.queryByText(/NaN|Infinity/)).not.toBeInTheDocument();
+  });
+
+  it('shows a per-account split bar under a model that multiple accounts contributed to', async () => {
+    const models: ModelStats[] = [
+      {
+        model: 'claude-sonnet-4-6',
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cost_usd: 1.0,
+        by_account: [
+          { account_uuid: 'acc1', input_tokens: 80, output_tokens: 15, cost_usd: 0.8 },
+          { account_uuid: 'acc2', input_tokens: 20, output_tokens: 5, cost_usd: 0.2 },
+        ],
+      },
+    ];
+    ipcMock.getModelBreakdown.mockResolvedValue(models);
+
+    render(<ModelsTab />);
+
+    await screen.findByText('sonnet 4-6');
+    expect(screen.getByText('work')).toBeInTheDocument();
+    expect(screen.getByText('personal')).toBeInTheDocument();
   });
 });

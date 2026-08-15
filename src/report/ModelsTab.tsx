@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { AccountBadge } from '../components/ui/AccountBadge';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -8,10 +9,12 @@ import { IconChart } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
+import { colorForAccount } from './accountDisplay';
 import { MODEL_VARIANT, modelKey, shortName } from './modelDisplay';
 
 export function ModelsTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
+  const accounts = useAppStore((s) => s.accounts);
   const { data, error, loading, reload } = useTabData(
     () => Promise.all([ipc.getModelBreakdown(30), ipc.getCacheStats(30)]).then(([m, c]) => ({ models: m, cache: c })),
     [version],
@@ -153,6 +156,28 @@ export function ModelsTab() {
                 </div>
               </div>
             </div>
+
+            {seg.by_account.length > 1 && (
+              <div className="flex items-center gap-[var(--space-2xs)] mt-[var(--space-2xs)] pl-[calc(24px+var(--space-sm))]">
+                <div className="flex-1 h-[4px] rounded-[var(--radius-pill)] overflow-hidden flex">
+                  {seg.by_account.map((share) => {
+                    const shareTotal = share.input_tokens + share.output_tokens;
+                    const widthPct = seg.total > 0 ? (shareTotal / seg.total) * 100 : 0;
+                    return (
+                      <div
+                        key={share.account_uuid ?? 'unknown'}
+                        style={{ width: `${widthPct}%`, background: colorForAccount(share.account_uuid, accounts) }}
+                      />
+                    );
+                  })}
+                </div>
+                <div className="flex gap-[4px]">
+                  {seg.by_account.map((share) => (
+                    <AccountBadge key={share.account_uuid ?? 'unknown'} accountUuid={share.account_uuid} accounts={accounts} />
+                  ))}
+                </div>
+              </div>
+            )}
           </Card>
         ))}
       </div>
