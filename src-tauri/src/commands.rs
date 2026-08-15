@@ -1067,6 +1067,15 @@ pub async fn swap_to_account(
     // polling interval.
     *state.active_since.write() = Some(Utc::now());
 
+    // Record the swap in account_intervals so local session data (which
+    // carries no account identity of its own) can later be attributed to
+    // whichever account was live when it happened.
+    if let Ok(Some(target)) = state.accounts.get(slot) {
+        if let Err(e) = state.db.record_account_transition(Some(&target.account_uuid), Utc::now()) {
+            tracing::warn!("failed to record account interval for slot {slot}: {e:#}");
+        }
+    }
+
     // Drop per-slot backoff state. The previous backoff was earned by a
     // different token (the prior active slot's live CC blob, or a stale
     // OAuth refresh token) — a swap rotates which token authenticates each

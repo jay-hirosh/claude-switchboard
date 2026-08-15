@@ -439,6 +439,13 @@ async fn poll_all(
     // was live before the change.
     if prev_active_slot != active_slot {
         *state.active_since.write() = Some(Utc::now());
+
+        let new_account_uuid = active_slot.and_then(|slot| {
+            accounts.iter().find(|a| a.slot == slot).map(|a| a.account_uuid.as_str())
+        });
+        if let Err(e) = state.db.record_account_transition(new_account_uuid, Utc::now()) {
+            tracing::warn!("failed to record account interval: {e:#}");
+        }
     }
 
     // Notify the frontend whenever the active slot transitions. The
