@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
-import type { HeatmapCell, SessionEvent } from '../lib/types';
+import type { DailyAccountBucket, HeatmapCell, SessionEvent } from '../lib/types';
 import { formatTokens } from '../lib/format';
 import { IconHeatmap } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
+import { colorForAccount, labelForAccount } from './accountDisplay';
 
 const CELL_SIZE = 11;
 const CELL_GAP = 3;
@@ -63,9 +64,18 @@ const levelColors: Record<number, string> = {
 
 export function HeatmapTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
+  const accounts = useAppStore((s) => s.accounts);
   const { data: events, error, loading, reload } = useTabData(
     () => ipc.getSessionHistory(180),
     [version],
+  );
+  const { data: accountBuckets } = useTabData(
+    () => ipc.getDailyAccountBreakdown(180),
+    [version],
+  );
+  const accountsByDate = useMemo(
+    () => new Map((accountBuckets ?? []).map((b: DailyAccountBucket) => [b.date, b.accounts])),
+    [accountBuckets],
   );
 
   const data = useMemo(() => (events ? sessionsToHeatmap(events) : []), [events]);
@@ -173,6 +183,7 @@ export function HeatmapTab() {
             return (
               <g key={cell.date}>
                 <rect
+                  data-testid={`heatmap-cell-${cell.date}`}
                   x={x}
                   y={y}
                   width={CELL_SIZE}
@@ -184,6 +195,26 @@ export function HeatmapTab() {
                   onMouseLeave={() => setHovered(null)}
                   className="cursor-pointer transition-opacity"
                 />
+                {(() => {
+                  const dayAccounts = accountsByDate.get(cell.date) ?? [];
+                  if (dayAccounts.length === 0) return null;
+                  const dominant = [...dayAccounts].sort(
+                    (a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens),
+                  )[0];
+                  return (
+                    <rect
+                      x={x - 1}
+                      y={y - 1}
+                      width={CELL_SIZE + 2}
+                      height={CELL_SIZE + 2}
+                      rx={2}
+                      fill="none"
+                      stroke={colorForAccount(dominant.account_uuid, accounts)}
+                      strokeWidth={1}
+                      pointerEvents="none"
+                    />
+                  );
+                })()}
                 {hovered === cell.date && (
                   <g>
                     <rect
@@ -205,6 +236,25 @@ export function HeatmapTab() {
                     >
                       {new Date(cell.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                     </text>
+                    {(() => {
+                      const dayAccounts = accountsByDate.get(cell.date) ?? [];
+                      const total = dayAccounts.reduce((s, a) => s + a.input_tokens + a.output_tokens, 0);
+                      if (total === 0) return null;
+                      const parts = dayAccounts
+                        .map((a) => `${labelForAccount(a.account_uuid, accounts)} ${Math.round(((a.input_tokens + a.output_tokens) / total) * 100)}%`)
+                        .join(' · ');
+                      return (
+                        <text
+                          x={x + CELL_SIZE / 2}
+                          y={y - 16}
+                          textAnchor="middle"
+                          className="mono"
+                          style={{ fontSize: 8, fill: 'var(--color-text-muted)' }}
+                        >
+                          {parts}
+                        </text>
+                      );
+                    })()}
                   </g>
                 )}
               </g>
