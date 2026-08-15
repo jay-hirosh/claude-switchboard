@@ -31,6 +31,14 @@ pub struct StoredSessionEvent {
     /// when both are present in the JSONL line, else "{source_file}:{source_line}"
     /// as a structural fallback for older / pre-requestId schemas.
     pub event_id: String,
+    /// The managed account whose interval this event's `ts` falls inside,
+    /// resolved by `events_between`'s join against `account_intervals`.
+    /// `None` means either the event predates account_intervals tracking, or
+    /// it landed in a gap where no managed account was live. Not a real
+    /// column on `session_events` — only ever populated by query methods
+    /// that explicitly join for it; constructing a `StoredSessionEvent` for
+    /// insertion (e.g. in the JSONL walker) should always set this to `None`.
+    pub account_uuid: Option<String>,
 }
 
 /// A `/compact` boundary inside one session transcript.
@@ -377,10 +385,13 @@ impl Db {
     ) -> Result<Vec<StoredSessionEvent>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT ts, project, model, input_tokens, output_tokens, cache_read_tokens,
-                    cache_creation_5m_tokens, cache_creation_1h_tokens, cost_usd,
-                    source_file, source_line, event_id
-             FROM session_events WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts DESC",
+            "SELECT e.ts, e.project, e.model, e.input_tokens, e.output_tokens, e.cache_read_tokens,
+                    e.cache_creation_5m_tokens, e.cache_creation_1h_tokens, e.cost_usd,
+                    e.source_file, e.source_line, e.event_id, ai.account_uuid
+             FROM session_events e
+             LEFT JOIN account_intervals ai
+               ON e.ts >= ai.started_at AND (ai.ended_at IS NULL OR e.ts < ai.ended_at)
+             WHERE e.ts BETWEEN ?1 AND ?2 ORDER BY e.ts DESC",
         )?;
         let rows = stmt.query_map(params![from.timestamp(), to.timestamp()], |r| {
             Ok(StoredSessionEvent {
@@ -396,6 +407,7 @@ impl Db {
                 source_file: r.get(9)?,
                 source_line: r.get(10)?,
                 event_id: r.get(11)?,
+                account_uuid: r.get(12)?,
             })
         })?;
         let mut out = Vec::new();
@@ -914,6 +926,7 @@ mod tests {
             source_file: "f.jsonl".into(),
             source_line: 1,
             event_id: id.into(),
+            account_uuid: None,
         }
     }
 
@@ -994,6 +1007,7 @@ mod tests {
             source_file: "f.jsonl".into(),
             source_line: 1,
             event_id: "req_1:msg_1".into(),
+            account_uuid: None,
         };
         assert_eq!(db.insert_events(std::slice::from_ref(&e)).unwrap(), 1);
         assert_eq!(
@@ -1023,6 +1037,7 @@ mod tests {
             source_file: "/Users/me/.claude/projects/p/abc.jsonl".into(),
             source_line: line,
             event_id: "req_abc:msg_xyz".into(),
+            account_uuid: None,
         };
         // Same event written at offsets 100, 1000, 2000 — only the first lands.
         assert_eq!(db.insert_events(&[mk(100), mk(1000), mk(2000)]).unwrap(), 1);
@@ -1044,6 +1059,7 @@ mod tests {
             source_file: src.into(),
             source_line: 0,
             event_id: id.into(),
+            account_uuid: None,
         };
         db.insert_events(&[
             mk("proj/abc.jsonl", "e1", 100, 1.0),
@@ -1153,6 +1169,7 @@ mod tests {
             source_file: "f.jsonl".into(),
             source_line: line,
             event_id: format!("ev_{line}"),
+            account_uuid: None,
         };
         db.insert_events(&[mk(old, 1), mk(recent, 2)]).unwrap();
         let cutoff = Utc::now() - chrono::Duration::days(90);
@@ -1173,6 +1190,7 @@ mod tests {
             source_file: source_file.into(),
             source_line,
             event_id: format!("{source_file}:{source_line}"),
+            account_uuid: None,
         }
     }
 
@@ -1323,6 +1341,7 @@ mod tests {
             source_file: "/a.jsonl".into(),
             source_line: 1,
             event_id: "evt-in".into(),
+            account_uuid: None,
         }])
         .unwrap();
         db.insert_events(&[StoredSessionEvent {
@@ -1338,6 +1357,7 @@ mod tests {
             source_file: "/b.jsonl".into(),
             source_line: 1,
             event_id: "evt-out".into(),
+            account_uuid: None,
         }])
         .unwrap();
 
@@ -1399,6 +1419,7 @@ mod tests {
             source_file: "/a.jsonl".into(),
             source_line: 1,
             event_id: "evt-window1".into(),
+            account_uuid: None,
         }])
         .unwrap();
 
@@ -1415,6 +1436,7 @@ mod tests {
             source_file: "/b.jsonl".into(),
             source_line: 1,
             event_id: "evt-window2".into(),
+            account_uuid: None,
         }])
         .unwrap();
 
@@ -1465,6 +1487,7 @@ mod tests {
             source_file: "/shared.jsonl".into(),
             source_line: 1,
             event_id: "evt-shared".into(),
+            account_uuid: None,
         }])
         .unwrap();
 
@@ -1563,5 +1586,54 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM account_intervals WHERE ended_at IS NULL", [], |r| r.get(0))
             .unwrap();
         assert_eq!(open_count, 0, "no managed account live must leave no open interval");
+    }
+
+    #[test]
+    fn events_between_attributes_account_via_interval_join() {
+        let (_dir, db) = fresh_db();
+        db.upsert_account(&StoredAccount { id: "acc2".into(), email: "b@example.com".into(), display_name: None }).unwrap();
+
+        let t_before = Utc::now() - chrono::Duration::hours(3);
+        let t_acc1 = Utc::now() - chrono::Duration::hours(2);
+        let t_acc2 = Utc::now() - chrono::Duration::hours(1);
+
+        // acc1 active from t_acc1 to t_acc2, then acc2 active from t_acc2 onward.
+        db.record_account_transition(Some("acc1"), t_acc1).unwrap();
+        db.record_account_transition(Some("acc2"), t_acc2).unwrap();
+
+        let mk = |ts: chrono::DateTime<Utc>, id: &str| StoredSessionEvent {
+            ts,
+            project: "p".into(),
+            model: "m".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 0.0,
+            source_file: "a.jsonl".into(),
+            source_line: 0,
+            event_id: id.into(),
+            account_uuid: None,
+        };
+        db.insert_events(&[
+            mk(t_before, "before"), // predates any interval
+            mk(t_acc1 + chrono::Duration::minutes(1), "during-acc1"),
+            mk(t_acc2 + chrono::Duration::minutes(1), "during-acc2"),
+        ])
+        .unwrap();
+
+        let events = db
+            .events_between(t_before - chrono::Duration::minutes(1), Utc::now())
+            .unwrap();
+
+        let by_id: std::collections::HashMap<&str, &Option<String>> = events
+            .iter()
+            .map(|e| (e.event_id.as_str(), &e.account_uuid))
+            .collect();
+
+        assert_eq!(by_id.get("before"), Some(&&None), "event before any interval must be unattributed");
+        assert_eq!(by_id.get("during-acc1"), Some(&&Some("acc1".to_string())));
+        assert_eq!(by_id.get("during-acc2"), Some(&&Some("acc2".to_string())));
     }
 }

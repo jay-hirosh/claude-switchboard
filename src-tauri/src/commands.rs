@@ -1532,6 +1532,7 @@ mod tests {
             source_file: "/a.jsonl".into(),
             source_line: 1,
             event_id: format!("evt-{}", ts.timestamp_nanos_opt().unwrap()),
+            account_uuid: None,
         }
     }
 

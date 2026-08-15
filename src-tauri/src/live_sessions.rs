@@ -417,6 +417,7 @@ mod tests {
             source_file: source_file.into(),
             source_line: 0,
             event_id: format!("{source_file}:seed:{tokens}"),
+            account_uuid: None,
         };
         db.ingest_atomic(source_file, &[ev], &[], 1, 100).unwrap();
     }
@@ -449,6 +450,7 @@ mod tests {
             source_file: source_file.into(),
             source_line: line,
             event_id: format!("{source_file}:seed:{line}"),
+            account_uuid: None,
         };
         db.ingest_atomic(source_file, &[ev], &[], 1, 100).unwrap();
     }

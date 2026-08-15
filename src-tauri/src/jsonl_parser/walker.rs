@@ -188,6 +188,7 @@ pub fn ingest_file(
                 source_file: source_file_path.clone(),
                 source_line: line_start,
                 event_id,
+                account_uuid: None,
             });
         } else if let Some(c) = parse_compaction_line(text) {
             // `else if`: a compaction is a `system` line, so it can never also
