@@ -448,6 +448,38 @@ impl Db {
         Ok(out)
     }
 
+    /// Distinct account UUIDs whose interval overlaps at least one event in
+    /// each conversation, keyed the same way as `session_totals` (subagent
+    /// transcripts folded onto their parent's `source_file`). Used by
+    /// `get_repo_breakdown` to badge each repo/project with the account(s)
+    /// that worked in it — a conversation almost always maps to exactly one
+    /// account, but nothing prevents more if it happened to span a swap.
+    pub fn account_uuids_by_source_file(&self) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT e.source_file, ai.account_uuid
+             FROM session_events e
+             LEFT JOIN account_intervals ai
+               ON e.ts >= ai.started_at AND (ai.ended_at IS NULL OR e.ts < ai.ended_at)
+             WHERE ai.account_uuid IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+
+        let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for row in rows {
+            let (source_file, account_uuid) = row?;
+            let key = match source_file.find("/subagents/") {
+                Some(i) => format!("{}.jsonl", &source_file[..i]),
+                None => source_file,
+            };
+            let list = out.entry(key).or_default();
+            if !list.contains(&account_uuid) {
+                list.push(account_uuid);
+            }
+        }
+        Ok(out)
+    }
+
     /// Aggregate tokens/cost for one live session: the parent transcript
     /// plus any subagent transcripts folded under it via the same
     /// `/subagents/` convention `session_totals()` uses for the full-table
@@ -1635,5 +1667,47 @@ mod tests {
         assert_eq!(by_id.get("before"), Some(&&None), "event before any interval must be unattributed");
         assert_eq!(by_id.get("during-acc1"), Some(&&Some("acc1".to_string())));
         assert_eq!(by_id.get("during-acc2"), Some(&&Some("acc2".to_string())));
+    }
+
+    #[test]
+    fn account_uuids_by_source_file_folds_subagents_onto_parent_and_dedupes() {
+        let (_dir, db) = fresh_db();
+        db.upsert_account(&StoredAccount { id: "acc2".into(), email: "b@example.com".into(), display_name: None }).unwrap();
+
+        let t1 = Utc::now() - chrono::Duration::hours(2);
+        let t2 = Utc::now() - chrono::Duration::hours(1);
+        db.record_account_transition(Some("acc1"), t1).unwrap();
+        db.record_account_transition(Some("acc2"), t2).unwrap();
+
+        let mk = |ts: chrono::DateTime<Utc>, src: &str, id: &str| StoredSessionEvent {
+            ts,
+            project: "p".into(),
+            model: "m".into(),
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 0.0,
+            source_file: src.into(),
+            source_line: 0,
+            event_id: id.into(),
+            account_uuid: None,
+        };
+        db.insert_events(&[
+            mk(t1 + chrono::Duration::minutes(1), "proj/abc.jsonl", "e1"),
+            mk(t1 + chrono::Duration::minutes(2), "proj/abc/subagents/agent-x.jsonl", "e2"),
+            mk(t2 + chrono::Duration::minutes(1), "proj/abc.jsonl", "e3"), // same conversation, resumed under acc2
+            mk(t2 + chrono::Duration::minutes(2), "proj/other.jsonl", "e4"),
+        ])
+        .unwrap();
+
+        let map = db.account_uuids_by_source_file().unwrap();
+
+        let mut abc = map.get("proj/abc.jsonl").cloned().unwrap_or_default();
+        abc.sort();
+        assert_eq!(abc, vec!["acc1".to_string(), "acc2".to_string()], "subagent folds onto parent; both accounts recorded, no duplicates");
+        assert_eq!(map.get("proj/other.jsonl"), Some(&vec!["acc2".to_string()]));
+        assert!(!map.contains_key("proj/abc/subagents/agent-x.jsonl"));
     }
 }
