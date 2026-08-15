@@ -36,9 +36,9 @@ describe('ModelsTab — cost-per-1K-tokens', () => {
   it('shows a distinct per-1K rate for each model, independent of usage volume', async () => {
     const models: ModelStats[] = [
       // High volume, low per-token rate.
-      { model: 'claude-sonnet-4-6', input_tokens: 8_000_000, output_tokens: 2_000_000, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 4.0 },
+      { model: 'claude-sonnet-4-6', input_tokens: 8_000_000, output_tokens: 2_000_000, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 4.0, by_account: [] },
       // Low volume, high per-token rate — same total cost as sonnet above.
-      { model: 'claude-opus-4-7', input_tokens: 8_000, output_tokens: 2_000, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 4.0 },
+      { model: 'claude-opus-4-7', input_tokens: 8_000, output_tokens: 2_000, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 4.0, by_account: [] },
     ];
     ipcMock.getModelBreakdown.mockResolvedValue(models);
 
@@ -52,7 +52,7 @@ describe('ModelsTab — cost-per-1K-tokens', () => {
 
   it('does not divide by zero for a model with no recorded tokens', async () => {
     const models: ModelStats[] = [
-      { model: 'claude-haiku-4-5', input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 0 },
+      { model: 'claude-haiku-4-5', input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 0, by_account: [] },
     ];
     ipcMock.getModelBreakdown.mockResolvedValue(models);
 

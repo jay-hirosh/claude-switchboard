@@ -35,6 +35,7 @@ function s(over: Partial<SessionSummary>): SessionSummary {
     total_cost_usd: 1.23,
     permission_mode: null,
     cwd_exists: true,
+    account_uuids: [],
     ...over,
   };
 }

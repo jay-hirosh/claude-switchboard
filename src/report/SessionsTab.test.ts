@@ -20,6 +20,7 @@ function mk(over: Partial<SessionEvent> & { source_file: string; project: string
     cost_usd: 0.1,
     source_line: 0,
     event_id: `id-${idCounter}`,
+    account_uuid: null,
     ...over,
   };
 }
