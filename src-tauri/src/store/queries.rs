@@ -651,6 +651,48 @@ impl Db {
         Ok(())
     }
 
+    /// Closes the currently-open account interval (if its account differs
+    /// from `new_active`) and opens a new one for `new_active` (if `Some`
+    /// and different from what was already open). No-op if `new_active`
+    /// already matches the open interval — both `swap_to_account` and the
+    /// poll loop's active-account reconciliation call this, and the poll
+    /// loop's later observation of an already-recorded in-app swap must not
+    /// create a spurious zero-length interval.
+    pub fn record_account_transition(
+        &self,
+        new_active: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let open: Option<String> = tx
+            .query_row(
+                "SELECT account_uuid FROM account_intervals WHERE ended_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if open.as_deref() == new_active {
+            return Ok(());
+        }
+
+        if open.is_some() {
+            tx.execute(
+                "UPDATE account_intervals SET ended_at = ?1 WHERE ended_at IS NULL",
+                params![at.timestamp()],
+            )?;
+        }
+        if let Some(uuid) = new_active {
+            tx.execute(
+                "INSERT INTO account_intervals (account_uuid, started_at, ended_at) VALUES (?1, ?2, NULL)",
+                params![uuid, at.timestamp()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// All window peaks for one account whose `window_start` falls in
     /// `[from, to]`, oldest first.
     pub fn window_peaks_between(
@@ -1445,5 +1487,81 @@ mod tests {
             "event inside the overlap must be counted once, not once per enclosing hit window (got {})",
             stats.top_projects[0].cost_usd
         );
+    }
+
+    #[test]
+    fn record_account_transition_opens_first_interval() {
+        let (_dir, db) = fresh_db();
+        let t0 = Utc::now();
+        db.record_account_transition(Some("acc1"), t0).unwrap();
+
+        let conn = db.conn();
+        let (account_uuid, ended_at): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT account_uuid, ended_at FROM account_intervals",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(account_uuid, "acc1");
+        assert_eq!(ended_at, None);
+    }
+
+    #[test]
+    fn record_account_transition_closes_then_opens_on_change() {
+        let (_dir, db) = fresh_db();
+        db.upsert_account(&StoredAccount { id: "acc2".into(), email: "b@example.com".into(), display_name: None }).unwrap();
+        let t0 = Utc::now();
+        let t1 = t0 + chrono::Duration::minutes(5);
+
+        db.record_account_transition(Some("acc1"), t0).unwrap();
+        db.record_account_transition(Some("acc2"), t1).unwrap();
+
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT account_uuid, started_at, ended_at FROM account_intervals ORDER BY started_at")
+            .unwrap();
+        let rows: Vec<(String, i64, Option<i64>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("acc1".into(), t0.timestamp(), Some(t1.timestamp())));
+        assert_eq!(rows[1].0, "acc2");
+        assert_eq!(rows[1].2, None);
+    }
+
+    #[test]
+    fn record_account_transition_is_a_noop_when_account_unchanged() {
+        let (_dir, db) = fresh_db();
+        let t0 = Utc::now();
+        let t1 = t0 + chrono::Duration::minutes(1);
+
+        db.record_account_transition(Some("acc1"), t0).unwrap();
+        db.record_account_transition(Some("acc1"), t1).unwrap();
+
+        let conn = db.conn();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM account_intervals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "re-observing the same active account must not create a second interval");
+    }
+
+    #[test]
+    fn record_account_transition_closes_interval_on_none() {
+        let (_dir, db) = fresh_db();
+        let t0 = Utc::now();
+        let t1 = t0 + chrono::Duration::minutes(1);
+
+        db.record_account_transition(Some("acc1"), t0).unwrap();
+        db.record_account_transition(None, t1).unwrap();
+
+        let conn = db.conn();
+        let open_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM account_intervals WHERE ended_at IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(open_count, 0, "no managed account live must leave no open interval");
     }
 }
