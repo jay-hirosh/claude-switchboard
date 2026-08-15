@@ -20,6 +20,8 @@ export const ipc = {
   getProjectBreakdown: (days: number) => commands.getProjectBreakdown(days).then(unwrap),
   getRepoBreakdown: () => commands.getRepoBreakdown().then(unwrap),
   getCacheStats: (days: number) => commands.getCacheStats(days).then(unwrap),
+  getDailyAccountBreakdown: (days: number) => commands.getDailyAccountBreakdown(days).then(unwrap),
+  getCacheStatsByAccount: (days: number) => commands.getCacheStatsByAccount(days).then(unwrap),
 
   startOauthFlow: (longLived: boolean = false) =>
     commands.startOauthFlow(longLived).then(unwrap),

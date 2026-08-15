@@ -97,6 +97,22 @@ async getCacheStats(days: number) : Promise<Result<CacheStats, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getDailyAccountBreakdown(days: number) : Promise<Result<DailyAccountBucket[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_daily_account_breakdown", { days }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getCacheStatsByAccount(days: number) : Promise<Result<AccountCacheStats[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_cache_stats_by_account", { days }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async startOauthFlow(longLived: boolean) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("start_oauth_flow", { longLived }) };
@@ -524,6 +540,7 @@ async uninstallStatusline() : Promise<Result<boolean, string>> {
 
 /** user-defined types **/
 
+export type AccountCacheStats = { account_uuid: string | null; total_cache_read_tokens: number; total_cache_creation_tokens: number; estimated_savings_usd: number; hit_ratio: number }
 /**
  * One managed account's limit-hit history over a report window. `hits`
  * are windows whose peak_pct cleared the caller-supplied danger threshold
@@ -546,6 +563,7 @@ export type AccountListEntry = { slot: number; email: string;
  * table. Pass this as `accountId` to all warmup-related Tauri commands.
  */
 account_uuid: string; org_name: string | null; org_uuid: string | null; subscription_type: string | null; source: AddSource; is_active: boolean; cached_usage: CachedUsage | null; last_error: string | null }
+export type AccountStats = { account_uuid: string | null; input_tokens: number; output_tokens: number; cost_usd: number }
 export type AddSource = "OAuth" | "ImportedFromClaudeCode"
 export type AuthSource = "OAuth" | "ClaudeCode"
 /**
@@ -576,6 +594,7 @@ export type CachedUsage = { snapshot: UsageSnapshot; account_id: string; account
  * floor is proportionally higher (see `poll_loop::update_burn_rate`).
  */
 seven_day_burn_rate?: BurnRateProjection | null; extra_burn_rate?: ExtraBurnRate | null; auth_source: AuthSource }
+export type DailyAccountBucket = { date: string; accounts: AccountStats[] }
 export type DailyBucket = { date: string; input_tokens: number; output_tokens: number; cost_usd: number; request_count: number }
 export type DailyModelBucket = { date: string; models: ModelStats[] }
 /**
@@ -648,7 +667,14 @@ first_seen: number;
  * Unix seconds of the most recent ingest touch.
  */
 last_activity: number }
-export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number }
+export type ModelAccountShare = { account_uuid: string | null; input_tokens: number; output_tokens: number; cost_usd: number }
+export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number; 
+/**
+ * Per-account contribution to this model's totals — lets the Models
+ * tab show which account(s) drove usage of a given model without a
+ * separate command.
+ */
+by_account: ModelAccountShare[] }
 /**
  * Serializable mirror of `Preset` for the frontend.
  */
@@ -691,7 +717,7 @@ export type RefreshScope =
  * One `cwd` within a repository — a monorepo package, or a plain project
  * with no sibling packages, or a git worktree.
  */
-export type RepoProjectStats = { project: string; cwd: string; session_count: number; total_tokens: number; total_cost_usd: number }
+export type RepoProjectStats = { project: string; cwd: string; session_count: number; total_tokens: number; total_cost_usd: number; account_uuids: string[] }
 /**
  * A git repository, which can hold more than one `project`/`cwd` — a
  * monorepo run from several package directories, or the same clone
@@ -699,7 +725,7 @@ export type RepoProjectStats = { project: string; cwd: string; session_count: nu
  * which groups by `cwd` alone and so double-counts a repo worked from two
  * directories.
  */
-export type RepoStats = { repo: string; session_count: number; total_tokens: number; total_cost_usd: number; projects: RepoProjectStats[] }
+export type RepoStats = { repo: string; session_count: number; total_tokens: number; total_cost_usd: number; projects: RepoProjectStats[]; account_uuids: string[] }
 export type RunningClaudeCode = { cli_processes: number; vscode_with_extension: string[] }
 /**
  * Per-account schedule preset.
@@ -748,6 +774,14 @@ total_tokens: number;
  * predates the store).
  */
 total_cost_usd: number; 
+/**
+ * Accounts whose interval overlapped at least one event in this
+ * conversation. Filled in by `list_resumable_sessions` from
+ * `Db::account_uuids_by_source_file`, the same way `total_tokens`/
+ * `total_cost_usd` are filled in from `Db::session_totals` — `parse_session`
+ * reads one transcript in isolation and has no account context of its own.
+ */
+account_uuids: string[]; 
 /**
  * The permission mode in force when the session ended, when it is one
  * `--permission-mode` accepts. Carried through so a resumed session
@@ -839,7 +873,17 @@ export type StoredSessionEvent = { ts: string; project: string; model: string; i
  * when both are present in the JSONL line, else "{source_file}:{source_line}"
  * as a structural fallback for older / pre-requestId schemas.
  */
-event_id: string }
+event_id: string; 
+/**
+ * The managed account whose interval this event's `ts` falls inside,
+ * resolved by `events_between`'s join against `account_intervals`.
+ * `None` means either the event predates account_intervals tracking, or
+ * it landed in a gap where no managed account was live. Not a real
+ * column on `session_events` — only ever populated by query methods
+ * that explicitly join for it; constructing a `StoredSessionEvent` for
+ * insertion (e.g. in the JSONL walker) should always set this to `None`.
+ */
+account_uuid: string | null }
 export type SwapReport = { new_active_slot: number; running: RunningClaudeCode }
 export type Terminal = "ghostty" | "terminal_app" | "iterm_2" | "kitty" | "wez_term" | "windows_terminal" | "power_shell"
 export type UsageSnapshot = { five_hour: Utilization | null; seven_day: Utilization | null; seven_day_sonnet: Utilization | null; seven_day_opus: Utilization | null; extra_usage: ExtraUsage | null; fetched_at?: string }
