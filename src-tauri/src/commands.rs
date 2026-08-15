@@ -57,6 +57,20 @@ pub struct DailyModelBucket {
     pub models: Vec<ModelStats>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+pub struct AccountStats {
+    pub account_uuid: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
+pub struct DailyAccountBucket {
+    pub date: String,
+    pub accounts: Vec<AccountStats>,
+}
+
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
 pub struct ProjectStats {
     pub project: String,
@@ -324,6 +338,47 @@ fn bucket_daily_trends(events: &[StoredSessionEvent]) -> Vec<DailyBucket> {
         slot.request_count += 1;
     }
     by_day.into_values().collect()
+}
+
+/// Groups events by local calendar day, then splits each day's tokens/cost
+/// by account. Mirrors `bucket_daily_trends`'s day-bucketing but adds the
+/// account dimension — backs the Trends tab's "color by account" toggle and
+/// the Heatmap tab's dominant-account indicator.
+fn bucket_daily_account_breakdown(events: &[StoredSessionEvent]) -> Vec<DailyAccountBucket> {
+    use std::collections::{BTreeMap, HashMap};
+    let mut by_day: BTreeMap<String, HashMap<Option<String>, AccountStats>> = BTreeMap::new();
+    for e in events {
+        let date = e.ts.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        let by_account = by_day.entry(date).or_default();
+        let entry = by_account
+            .entry(e.account_uuid.clone())
+            .or_insert_with(|| AccountStats {
+                account_uuid: e.account_uuid.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+            });
+        entry.input_tokens += e.input_tokens;
+        entry.output_tokens += e.output_tokens;
+        entry.cost_usd += e.cost_usd;
+    }
+    by_day
+        .into_iter()
+        .map(|(date, accounts)| DailyAccountBucket {
+            date,
+            accounts: accounts.into_values().collect(),
+        })
+        .collect()
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_daily_account_breakdown(
+    days: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<DailyAccountBucket>, String> {
+    let events = get_session_history(days, state).await?;
+    Ok(bucket_daily_account_breakdown(&events))
 }
 
 /// Groups events by model, summing tokens/cost and splitting each model's
@@ -1591,6 +1646,39 @@ mod tests {
         assert_eq!(by_account[1].input_tokens, 10);
         assert_eq!(by_account[2].account_uuid, Some("acc2".to_string()));
         assert_eq!(by_account[2].input_tokens, 3);
+    }
+
+    #[test]
+    fn bucket_daily_account_breakdown_splits_each_day_by_account() {
+        let day0 = Utc::now();
+        let day1 = Utc::now() - Duration::days(1);
+
+        let mut e1 = test_event(day0);
+        e1.account_uuid = Some("acc1".into());
+        e1.input_tokens = 10;
+
+        let mut e2 = test_event(day0);
+        e2.event_id = "evt-2".into();
+        e2.account_uuid = Some("acc2".into());
+        e2.input_tokens = 4;
+
+        let mut e3 = test_event(day1);
+        e3.event_id = "evt-3".into();
+        e3.account_uuid = Some("acc1".into());
+        e3.input_tokens = 6;
+
+        let buckets = bucket_daily_account_breakdown(&[e1, e2, e3]);
+        assert_eq!(buckets.len(), 2);
+
+        let day0_key = day0.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        let day0_bucket = buckets.iter().find(|b| b.date == day0_key).unwrap();
+        let mut accounts = day0_bucket.accounts.clone();
+        accounts.sort_by(|a, b| a.account_uuid.cmp(&b.account_uuid));
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].account_uuid, Some("acc1".to_string()));
+        assert_eq!(accounts[0].input_tokens, 10);
+        assert_eq!(accounts[1].account_uuid, Some("acc2".to_string()));
+        assert_eq!(accounts[1].input_tokens, 4);
     }
 
     fn test_event(ts: chrono::DateTime<Utc>) -> StoredSessionEvent {
