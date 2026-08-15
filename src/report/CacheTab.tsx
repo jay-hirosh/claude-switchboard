@@ -1,3 +1,4 @@
+import { AccountBadge } from '../components/ui/AccountBadge';
 import { Card } from '../components/ui/Card';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
@@ -6,11 +7,17 @@ import { IconCache } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
+import { colorForAccount } from './accountDisplay';
 
 export function CacheTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
+  const accounts = useAppStore((s) => s.accounts);
   const { data, error, loading, reload } = useTabData(
     () => ipc.getCacheStats(30),
+    [version],
+  );
+  const { data: byAccount } = useTabData(
+    () => ipc.getCacheStatsByAccount(30),
     [version],
   );
 
@@ -45,6 +52,12 @@ export function CacheTab() {
 
   return (
     <div className="flex flex-col gap-[var(--space-lg)]">
+      <div className="flex items-center justify-between px-[var(--space-2xs)]">
+        <span className="text-[length:var(--text-label)] font-[var(--weight-medium)] text-[color:var(--color-text-muted)]">
+          Total
+        </span>
+      </div>
+
       {/* Hero: cache hit rate ring */}
       <div className="flex items-center justify-center py-[var(--space-lg)]">
         <div className="relative">
@@ -133,6 +146,35 @@ export function CacheTab() {
           </div>
         </div>
       </Card>
+
+      {byAccount && byAccount.length > 1 && (
+        <div className="flex flex-col gap-[var(--space-sm)]">
+          <span className="text-[length:var(--text-label)] font-[var(--weight-medium)] text-[color:var(--color-text-muted)]">
+            By account
+          </span>
+          {byAccount.map((a) => {
+            const total = a.total_cache_read_tokens + a.total_cache_creation_tokens;
+            if (total === 0) return null;
+            return (
+              <Card key={a.account_uuid ?? 'unknown'} className="p-[var(--space-sm)] flex items-center gap-[var(--space-sm)]">
+                <AccountBadge accountUuid={a.account_uuid} accounts={accounts} />
+                <div className="flex-1 h-[6px] rounded-[var(--radius-pill)] bg-[var(--color-track)] overflow-hidden">
+                  <div
+                    className="h-full rounded-[var(--radius-pill)]"
+                    style={{ width: `${a.hit_ratio * 100}%`, background: colorForAccount(a.account_uuid, accounts) }}
+                  />
+                </div>
+                <span className="mono text-[length:var(--text-label)] text-[color:var(--color-text-secondary)] tabular-nums min-w-[40px] text-right">
+                  {Math.round(a.hit_ratio * 100)}%
+                </span>
+                <span className="mono text-[length:var(--text-label)] text-[color:var(--color-safe)] tabular-nums min-w-[56px] text-right">
+                  ${a.estimated_savings_usd.toFixed(2)}
+                </span>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
