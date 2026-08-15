@@ -181,6 +181,48 @@ function localDayKeyOf(iso: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+describe('aggregateSessions — account attribution', () => {
+  it('collects every distinct account_uuid seen in a row, including null for unattributed turns', () => {
+    const events: SessionEvent[] = [
+      {
+        ts: '2026-08-01T10:00:00Z',
+        project: 'p',
+        model: 'claude-sonnet-4-6',
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_tokens: 0,
+        cache_creation_5m_tokens: 0,
+        cache_creation_1h_tokens: 0,
+        cost_usd: 0.01,
+        source_file: 'proj/abc.jsonl',
+        source_line: 0,
+        event_id: 'e1',
+        account_uuid: 'acc1',
+      },
+      {
+        ts: '2026-08-01T11:00:00Z',
+        project: 'p',
+        model: 'claude-sonnet-4-6',
+        input_tokens: 3,
+        output_tokens: 1,
+        cache_read_tokens: 0,
+        cache_creation_5m_tokens: 0,
+        cache_creation_1h_tokens: 0,
+        cost_usd: 0.002,
+        source_file: 'proj/abc.jsonl',
+        source_line: 1,
+        event_id: 'e2',
+        account_uuid: null,
+      },
+    ];
+
+    const rows = aggregateSessions(events, null);
+    expect(rows).toHaveLength(1);
+    const uuids = [...rows[0].account_uuids].sort();
+    expect(uuids).toEqual([null, 'acc1'].sort());
+  });
+});
+
 describe('modelLabel', () => {
   it('collapses Anthropic families to their tier name', () => {
     expect(modelLabel('claude-opus-4-7')).toBe('opus');

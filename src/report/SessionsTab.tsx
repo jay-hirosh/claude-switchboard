@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { AccountBadge } from '../components/ui/AccountBadge';
 import { Button } from '../components/ui/Button';
 import { ModelBadge } from '../components/ui/ModelBadge';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -106,6 +107,9 @@ interface AggregatedSession {
   /** Subagent transcripts spawned by this conversation, in chronological
    * order. Empty for sessions that never used the Task/Agent tool. */
   subagents: SubagentSession[];
+  /** Every distinct account this row's turns were attributed to (including
+   * `null` for turns that predate account tracking or landed in a gap). */
+  account_uuids: (string | null)[];
 }
 
 /** Splitting rows by day multiplies their count, so the cap is higher than
@@ -163,6 +167,7 @@ interface ParentAgg {
   breakdown: Breakdown;
   cost_breakdown: Breakdown;
   modelTokens: Map<string, number>;
+  accountUuids: Set<string | null>;
   subs: Map<string, SubAgg>;
 }
 
@@ -218,6 +223,7 @@ export function aggregateSessions(
         breakdown: { ...EMPTY_BREAKDOWN },
         cost_breakdown: { ...EMPTY_BREAKDOWN },
         modelTokens: new Map(),
+        accountUuids: new Set(),
         subs: new Map(),
       };
       parents.set(pkey, p);
@@ -235,6 +241,7 @@ export function aggregateSessions(
     p.total_cost_usd += e.cost_usd;
     if (e.ts > p.latest_ts) p.latest_ts = e.ts;
     p.modelTokens.set(e.model, (p.modelTokens.get(e.model) ?? 0) + e.output_tokens);
+    p.accountUuids.add(e.account_uuid);
 
     // Per-category cost is computed per-turn so the Sonnet 1M-context
     // tier (which switches based on the call's own context size, not the
@@ -308,6 +315,7 @@ export function aggregateSessions(
       breakdown: p.breakdown,
       cost_breakdown: p.cost_breakdown,
       subagents,
+      account_uuids: Array.from(p.accountUuids),
     });
   }
 
@@ -439,6 +447,7 @@ function SubagentRow({ sub }: { sub: SubagentSession }) {
 
 export function SessionsTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
+  const accounts = useAppStore((s) => s.accounts);
   const { data, error, loading, reload } = useTabData(
     () =>
       Promise.all([ipc.getSessionHistory(WINDOW_DAYS), ipc.getCompactions(WINDOW_DAYS)]).then(
@@ -636,6 +645,9 @@ export function SessionsTab() {
                       {headless ? 'headless' : session.project}
                     </span>
                     <ModelBadge model={session.dominant_model} />
+                    {session.account_uuids.map((uuid) => (
+                      <AccountBadge key={uuid ?? 'unknown'} accountUuid={uuid} accounts={accounts} />
+                    ))}
                     {/* Collapsed-row marker: without it the boundary is only
                         discoverable by expanding every row one at a time. */}
                     {compactions.length > 0 && (
