@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { AccountBadge } from '../components/ui/AccountBadge';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -10,6 +11,7 @@ import { useAppStore } from '../lib/store';
 
 export function RepoTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
+  const accounts = useAppStore((s) => s.accounts);
   const { data, error, loading, reload } = useTabData(() => ipc.getRepoBreakdown(), [version]);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -77,6 +79,11 @@ export function RepoTab() {
                     {repo.session_count} session{repo.session_count === 1 ? '' : 's'}
                     {repo.projects.length > 1 ? ` · ${repo.projects.length} projects` : ''}
                   </span>
+                  <div className="flex shrink-0 gap-[var(--space-2xs)]">
+                    {repo.account_uuids.map((uuid) => (
+                      <AccountBadge key={uuid} accountUuid={uuid} accounts={accounts} />
+                    ))}
+                  </div>
                 </div>
                 <div className="flex shrink-0 items-baseline gap-[var(--space-sm)]">
                   <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
