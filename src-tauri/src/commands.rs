@@ -88,6 +88,7 @@ pub struct RepoProjectStats {
     pub session_count: u64,
     pub total_tokens: u64,
     pub total_cost_usd: f64,
+    pub account_uuids: Vec<String>,
 }
 
 /// A git repository, which can hold more than one `project`/`cwd` — a
@@ -102,6 +103,7 @@ pub struct RepoStats {
     pub total_tokens: u64,
     pub total_cost_usd: f64,
     pub projects: Vec<RepoProjectStats>,
+    pub account_uuids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
@@ -537,16 +539,13 @@ fn resolve_repo_name(cwd: &str) -> String {
     leaf(std::path::Path::new(cwd))
 }
 
-#[command]
-#[specta::specta]
-pub async fn get_repo_breakdown(state: State<'_, Arc<AppState>>) -> Result<Vec<RepoStats>, String> {
-    let sessions = list_resumable_sessions(state).await?;
+fn group_repo_stats(sessions: &[SessionSummary]) -> Vec<RepoStats> {
     use std::collections::HashMap;
 
     let mut by_repo: HashMap<String, RepoStats> = HashMap::new();
     let mut by_project: HashMap<(String, String), RepoProjectStats> = HashMap::new();
 
-    for s in &sessions {
+    for s in sessions {
         let repo = resolve_repo_name(&s.cwd);
 
         let repo_entry = by_repo.entry(repo.clone()).or_insert_with(|| RepoStats {
@@ -555,10 +554,16 @@ pub async fn get_repo_breakdown(state: State<'_, Arc<AppState>>) -> Result<Vec<R
             total_tokens: 0,
             total_cost_usd: 0.0,
             projects: Vec::new(),
+            account_uuids: Vec::new(),
         });
         repo_entry.session_count += 1;
         repo_entry.total_tokens += s.total_tokens;
         repo_entry.total_cost_usd += s.total_cost_usd;
+        for uuid in &s.account_uuids {
+            if !repo_entry.account_uuids.contains(uuid) {
+                repo_entry.account_uuids.push(uuid.clone());
+            }
+        }
 
         let proj_entry = by_project
             .entry((repo, s.cwd.clone()))
@@ -568,10 +573,16 @@ pub async fn get_repo_breakdown(state: State<'_, Arc<AppState>>) -> Result<Vec<R
                 session_count: 0,
                 total_tokens: 0,
                 total_cost_usd: 0.0,
+                account_uuids: Vec::new(),
             });
         proj_entry.session_count += 1;
         proj_entry.total_tokens += s.total_tokens;
         proj_entry.total_cost_usd += s.total_cost_usd;
+        for uuid in &s.account_uuids {
+            if !proj_entry.account_uuids.contains(uuid) {
+                proj_entry.account_uuids.push(uuid.clone());
+            }
+        }
     }
 
     for ((repo, _cwd), proj) in by_project {
@@ -582,11 +593,17 @@ pub async fn get_repo_breakdown(state: State<'_, Arc<AppState>>) -> Result<Vec<R
 
     let mut out: Vec<RepoStats> = by_repo.into_values().collect();
     for repo in &mut out {
-        repo.projects
-            .sort_by(|a, b| b.total_cost_usd.total_cmp(&a.total_cost_usd));
+        repo.projects.sort_by(|a, b| b.total_cost_usd.total_cmp(&a.total_cost_usd));
     }
     out.sort_by(|a, b| b.total_cost_usd.total_cmp(&a.total_cost_usd));
-    Ok(out)
+    out
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_repo_breakdown(state: State<'_, Arc<AppState>>) -> Result<Vec<RepoStats>, String> {
+    let sessions = list_resumable_sessions(state).await?;
+    Ok(group_repo_stats(&sessions))
 }
 
 #[command]
@@ -1798,6 +1815,45 @@ mod tests {
         let (x, _) = compact_target_xy(100.0, 24.0, 360.0, 360.0);
         assert_eq!(x, 100.0);
     }
+
+    #[test]
+    fn group_repo_stats_unions_account_uuids_across_a_repos_projects() {
+        let mk = |cwd: &str, accounts: &[&str]| crate::sessions::SessionSummary {
+            session_id: "s".into(),
+            cwd: cwd.into(),
+            project_name: cwd.into(),
+            git_branch: None,
+            title: "t".into(),
+            recap: None,
+            asked: "a".into(),
+            left_off: None,
+            touched_files: vec![],
+            touched_overflow: 0,
+            model: None,
+            peak_context_tokens: None,
+            turns: 1,
+            started_at: "s".into(),
+            ended_at: "e".into(),
+            total_tokens: 10,
+            total_cost_usd: 1.0,
+            account_uuids: accounts.iter().map(|s| s.to_string()).collect(),
+            permission_mode: None,
+            cwd_exists: true,
+        };
+        // Same cwd used twice (as if resumed under a second account) — the
+        // repo/project entry must union rather than overwrite.
+        let sessions = vec![mk("/tmp/no-git-here", &["acc1"]), mk("/tmp/no-git-here", &["acc2"])];
+
+        let repos = group_repo_stats(&sessions);
+        assert_eq!(repos.len(), 1);
+        let mut repo_accounts = repos[0].account_uuids.clone();
+        repo_accounts.sort();
+        assert_eq!(repo_accounts, vec!["acc1".to_string(), "acc2".to_string()]);
+        assert_eq!(repos[0].projects.len(), 1);
+        let mut proj_accounts = repos[0].projects[0].account_uuids.clone();
+        proj_accounts.sort();
+        assert_eq!(proj_accounts, vec!["acc1".to_string(), "acc2".to_string()]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2143,6 +2199,7 @@ pub async fn list_resumable_sessions(
     // One grouped scan of session_events for the whole list — a per-session
     // query would be 200 round-trips to show one column.
     let totals = state.db.session_totals().unwrap_or_default();
+    let account_uuids = state.db.account_uuids_by_source_file().unwrap_or_default();
 
     let mut rows: Vec<SessionSummary> = Vec::new();
     for f in &files {
@@ -2150,13 +2207,15 @@ pub async fn list_resumable_sessions(
             // `session_events.source_file` is stored relative to the projects
             // root (P1-7, so the value is not machine-specific), so the
             // lookup key has to be built the same way.
-            if let Some((tokens, cost)) = f
-                .strip_prefix(&root)
-                .ok()
-                .and_then(|rel| totals.get(rel.to_string_lossy().as_ref()))
-            {
-                s.total_tokens = *tokens;
-                s.total_cost_usd = *cost;
+            if let Ok(rel) = f.strip_prefix(&root) {
+                let rel_str = rel.to_string_lossy();
+                if let Some((tokens, cost)) = totals.get(rel_str.as_ref()) {
+                    s.total_tokens = *tokens;
+                    s.total_cost_usd = *cost;
+                }
+                if let Some(uuids) = account_uuids.get(rel_str.as_ref()) {
+                    s.account_uuids = uuids.clone();
+                }
             }
             rows.push(s);
             if rows.len() >= MAX_SESSIONS {

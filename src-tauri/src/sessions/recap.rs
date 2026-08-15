@@ -89,6 +89,12 @@ pub struct SessionSummary {
     /// ingested usage (a transcript with no assistant turns, or one that
     /// predates the store).
     pub total_cost_usd: f64,
+    /// Accounts whose interval overlapped at least one event in this
+    /// conversation. Filled in by `list_resumable_sessions` from
+    /// `Db::account_uuids_by_source_file`, the same way `total_tokens`/
+    /// `total_cost_usd` are filled in from `Db::session_totals` — `parse_session`
+    /// reads one transcript in isolation and has no account context of its own.
+    pub account_uuids: Vec<String>,
     /// The permission mode in force when the session ended, when it is one
     /// `--permission-mode` accepts. Carried through so a resumed session
     /// behaves the way the one it continues did — a session run under
@@ -353,6 +359,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         // Filled in by the caller from the event store — see the field docs.
         total_tokens: 0,
         total_cost_usd: 0.0,
+        account_uuids: Vec::new(),
     })
 }
 
