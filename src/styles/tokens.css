@@ -80,6 +80,15 @@
   --color-model-haiku: oklch(86% 0.040 70);
   --color-model-haiku-text: var(--color-text);
 
+  /* Account identity — hues distinct from the model/status palette (warm
+   * terracotta family + teal) so a colored dot never doubles as "which
+   * model" and "which account" in the same view. Cycles for a 5th+
+   * account rather than growing unboundedly. */
+  --color-account-1: oklch(52% 0.14 300);
+  --color-account-2: oklch(52% 0.14 250);
+  --color-account-3: oklch(52% 0.13 140);
+  --color-account-4: oklch(58% 0.16 350);
+
   /* Utility */
   --color-track: oklch(40% 0.015 65 / 0.10);
   --color-overlay: oklch(20% 0.010 60 / 0.35);
@@ -235,6 +244,11 @@ body[data-theme="dark"] {
   --color-model-sonnet-text: oklch(20% 0.012 65);
   --color-model-haiku: oklch(48% 0.045 70);
   --color-model-haiku-text: var(--color-text);
+
+  --color-account-1: oklch(78% 0.13 300);
+  --color-account-2: oklch(74% 0.13 250);
+  --color-account-3: oklch(76% 0.12 140);
+  --color-account-4: oklch(78% 0.14 350);
 
   --color-track: oklch(95% 0.020 65 / 0.18);
   --color-overlay: oklch(10% 0.010 65 / 0.55);
