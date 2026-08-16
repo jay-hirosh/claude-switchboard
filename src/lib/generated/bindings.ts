@@ -717,7 +717,14 @@ export type RefreshScope =
  * One `cwd` within a repository — a monorepo package, or a plain project
  * with no sibling packages, or a git worktree.
  */
-export type RepoProjectStats = { project: string; cwd: string; session_count: number; total_tokens: number; total_cost_usd: number; account_uuids: string[] }
+export type RepoProjectStats = { project: string; cwd: string; session_count: number; total_tokens: number; total_cost_usd: number; 
+/**
+ * Accounts that worked in this `cwd`. `None` is the "Unknown" bucket —
+ * sessions (or parts of them) that predate account-interval tracking.
+ * Kept rather than filtered so a mostly-unattributed project doesn't
+ * render as if it belonged entirely to whichever account touched it once.
+ */
+account_uuids: (string | null)[] }
 /**
  * A git repository, which can hold more than one `project`/`cwd` — a
  * monorepo run from several package directories, or the same clone
@@ -725,7 +732,11 @@ export type RepoProjectStats = { project: string; cwd: string; session_count: nu
  * which groups by `cwd` alone and so double-counts a repo worked from two
  * directories.
  */
-export type RepoStats = { repo: string; session_count: number; total_tokens: number; total_cost_usd: number; projects: RepoProjectStats[]; account_uuids: string[] }
+export type RepoStats = { repo: string; session_count: number; total_tokens: number; total_cost_usd: number; projects: RepoProjectStats[]; 
+/**
+ * Union of every project's `account_uuids`, `None` (Unknown) included.
+ */
+account_uuids: (string | null)[] }
 export type RunningClaudeCode = { cli_processes: number; vscode_with_extension: string[] }
 /**
  * Per-account schedule preset.
@@ -775,13 +786,19 @@ total_tokens: number;
  */
 total_cost_usd: number; 
 /**
- * Accounts whose interval overlapped at least one event in this
+ * Accounts whose interval covered at least one event in this
  * conversation. Filled in by `list_resumable_sessions` from
  * `Db::account_uuids_by_source_file`, the same way `total_tokens`/
  * `total_cost_usd` are filled in from `Db::session_totals` — `parse_session`
  * reads one transcript in isolation and has no account context of its own.
+ * 
+ * A `None` element means part (or all) of the conversation is not
+ * attributable to any managed account — pre-feature history, or a gap
+ * where none was live. It is carried through rather than dropped so the
+ * UI can render an explicit "Unknown" badge instead of implying the
+ * attributed accounts are the whole story.
  */
-account_uuids: string[]; 
+account_uuids: (string | null)[]; 
 /**
  * The permission mode in force when the session ended, when it is one
  * `--permission-mode` accepts. Carried through so a resumed session
@@ -876,7 +893,7 @@ export type StoredSessionEvent = { ts: string; project: string; model: string; i
 event_id: string; 
 /**
  * The managed account whose interval this event's `ts` falls inside,
- * resolved by `events_between`'s join against `account_intervals`.
+ * resolved by `events_between`'s subquery against `account_intervals`.
  * `None` means either the event predates account_intervals tracking, or
  * it landed in a gap where no managed account was live. Not a real
  * column on `session_events` — only ever populated by query methods

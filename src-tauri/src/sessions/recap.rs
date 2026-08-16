@@ -89,12 +89,18 @@ pub struct SessionSummary {
     /// ingested usage (a transcript with no assistant turns, or one that
     /// predates the store).
     pub total_cost_usd: f64,
-    /// Accounts whose interval overlapped at least one event in this
+    /// Accounts whose interval covered at least one event in this
     /// conversation. Filled in by `list_resumable_sessions` from
     /// `Db::account_uuids_by_source_file`, the same way `total_tokens`/
     /// `total_cost_usd` are filled in from `Db::session_totals` — `parse_session`
     /// reads one transcript in isolation and has no account context of its own.
-    pub account_uuids: Vec<String>,
+    ///
+    /// A `None` element means part (or all) of the conversation is not
+    /// attributable to any managed account — pre-feature history, or a gap
+    /// where none was live. It is carried through rather than dropped so the
+    /// UI can render an explicit "Unknown" badge instead of implying the
+    /// attributed accounts are the whole story.
+    pub account_uuids: Vec<Option<String>>,
     /// The permission mode in force when the session ended, when it is one
     /// `--permission-mode` accepts. Carried through so a resumed session
     /// behaves the way the one it continues did — a session run under

@@ -88,7 +88,11 @@ pub struct RepoProjectStats {
     pub session_count: u64,
     pub total_tokens: u64,
     pub total_cost_usd: f64,
-    pub account_uuids: Vec<String>,
+    /// Accounts that worked in this `cwd`. `None` is the "Unknown" bucket —
+    /// sessions (or parts of them) that predate account-interval tracking.
+    /// Kept rather than filtered so a mostly-unattributed project doesn't
+    /// render as if it belonged entirely to whichever account touched it once.
+    pub account_uuids: Vec<Option<String>>,
 }
 
 /// A git repository, which can hold more than one `project`/`cwd` — a
@@ -103,7 +107,8 @@ pub struct RepoStats {
     pub total_tokens: u64,
     pub total_cost_usd: f64,
     pub projects: Vec<RepoProjectStats>,
-    pub account_uuids: Vec<String>,
+    /// Union of every project's `account_uuids`, `None` (Unknown) included.
+    pub account_uuids: Vec<Option<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
@@ -375,9 +380,19 @@ fn bucket_daily_account_breakdown(events: &[StoredSessionEvent]) -> Vec<DailyAcc
     }
     by_day
         .into_iter()
-        .map(|(date, accounts)| DailyAccountBucket {
-            date,
-            accounts: accounts.into_values().collect(),
+        .map(|(date, accounts)| {
+            // `HashMap` iteration order is reseeded per map, so an unsorted
+            // collect would reshuffle the Trends tab's day-bar stacking (and
+            // the Heatmap tooltip's split) on every refetch. Cost-descending
+            // matches `get_daily_model_breakdown`'s convention; the uuid is a
+            // tiebreaker so equal-cost accounts still land in a stable order.
+            let mut accounts: Vec<AccountStats> = accounts.into_values().collect();
+            accounts.sort_by(|a, b| {
+                b.cost_usd
+                    .total_cmp(&a.cost_usd)
+                    .then(a.account_uuid.cmp(&b.account_uuid))
+            });
+            DailyAccountBucket { date, accounts }
         })
         .collect()
 }
@@ -441,14 +456,25 @@ fn accumulate_model_stats(events: &[StoredSessionEvent]) -> Vec<ModelStats> {
 
     by_model
         .into_values()
-        .map(|a| ModelStats {
-            model: a.model,
-            input_tokens: a.input_tokens,
-            output_tokens: a.output_tokens,
-            cache_read_tokens: a.cache_read_tokens,
-            cache_creation_tokens: a.cache_creation_tokens,
-            cost_usd: a.cost_usd,
-            by_account: a.by_account.into_values().collect(),
+        .map(|a| {
+            // Stable order for the Models tab's split-bar segments — see the
+            // note in `bucket_daily_account_breakdown` on why an unsorted
+            // `HashMap` collect visibly reshuffles between refetches.
+            let mut by_account: Vec<ModelAccountShare> = a.by_account.into_values().collect();
+            by_account.sort_by(|x, y| {
+                y.cost_usd
+                    .total_cmp(&x.cost_usd)
+                    .then(x.account_uuid.cmp(&y.account_uuid))
+            });
+            ModelStats {
+                model: a.model,
+                input_tokens: a.input_tokens,
+                output_tokens: a.output_tokens,
+                cache_read_tokens: a.cache_read_tokens,
+                cache_creation_tokens: a.cache_creation_tokens,
+                cost_usd: a.cost_usd,
+                by_account,
+            }
         })
         .collect()
 }
@@ -663,7 +689,7 @@ fn accumulate_cache_stats_by_account(events: &[StoredSessionEvent]) -> Vec<Accou
         entry.read += e.cache_read_tokens;
         entry.created += e.cache_creation_5m_tokens + e.cache_creation_1h_tokens;
     }
-    by_account
+    let mut out: Vec<AccountCacheStats> = by_account
         .into_iter()
         .map(|(account_uuid, acc)| {
             let total = acc.read + acc.created;
@@ -676,7 +702,17 @@ fn accumulate_cache_stats_by_account(events: &[StoredSessionEvent]) -> Vec<Accou
                 hit_ratio,
             }
         })
-        .collect()
+        .collect();
+    // Stable order for the Cache tab's per-account cards. There is no cost
+    // field here (savings is filled in by the caller, after this returns), so
+    // cache-read tokens stand in for "biggest first", with the uuid as the
+    // tiebreaker.
+    out.sort_by(|a, b| {
+        b.total_cache_read_tokens
+            .cmp(&a.total_cache_read_tokens)
+            .then(a.account_uuid.cmp(&b.account_uuid))
+    });
+    out
 }
 
 #[command]
@@ -1818,7 +1854,7 @@ mod tests {
 
     #[test]
     fn group_repo_stats_unions_account_uuids_across_a_repos_projects() {
-        let mk = |cwd: &str, accounts: &[&str]| crate::sessions::SessionSummary {
+        let mk = |cwd: &str, accounts: &[Option<&str>]| crate::sessions::SessionSummary {
             session_id: "s".into(),
             cwd: cwd.into(),
             project_name: cwd.into(),
@@ -1836,23 +1872,41 @@ mod tests {
             ended_at: "e".into(),
             total_tokens: 10,
             total_cost_usd: 1.0,
-            account_uuids: accounts.iter().map(|s| s.to_string()).collect(),
+            account_uuids: accounts.iter().map(|s| s.map(|s| s.to_string())).collect(),
             permission_mode: None,
             cwd_exists: true,
         };
         // Same cwd used twice (as if resumed under a second account) — the
         // repo/project entry must union rather than overwrite.
-        let sessions = vec![mk("/tmp/no-git-here", &["acc1"]), mk("/tmp/no-git-here", &["acc2"])];
+        let sessions = vec![
+            mk("/tmp/no-git-here", &[Some("acc1")]),
+            mk("/tmp/no-git-here", &[Some("acc2")]),
+        ];
 
         let repos = group_repo_stats(&sessions);
         assert_eq!(repos.len(), 1);
         let mut repo_accounts = repos[0].account_uuids.clone();
         repo_accounts.sort();
-        assert_eq!(repo_accounts, vec!["acc1".to_string(), "acc2".to_string()]);
+        assert_eq!(repo_accounts, vec![Some("acc1".to_string()), Some("acc2".to_string())]);
         assert_eq!(repos[0].projects.len(), 1);
         let mut proj_accounts = repos[0].projects[0].account_uuids.clone();
         proj_accounts.sort();
-        assert_eq!(proj_accounts, vec!["acc1".to_string(), "acc2".to_string()]);
+        assert_eq!(proj_accounts, vec![Some("acc1".to_string()), Some("acc2".to_string())]);
+
+        // An unattributed session contributes a `None` (Unknown) entry that
+        // must survive the union alongside the real accounts — the Repo tab
+        // renders it as an explicit Unknown badge rather than dropping it.
+        let sessions = vec![
+            mk("/tmp/no-git-here", &[Some("acc1")]),
+            mk("/tmp/no-git-here", &[None]),
+        ];
+        let repos = group_repo_stats(&sessions);
+        let mut repo_accounts = repos[0].account_uuids.clone();
+        repo_accounts.sort();
+        assert_eq!(repo_accounts, vec![None, Some("acc1".to_string())]);
+        let mut proj_accounts = repos[0].projects[0].account_uuids.clone();
+        proj_accounts.sort();
+        assert_eq!(proj_accounts, vec![None, Some("acc1".to_string())]);
     }
 }
 

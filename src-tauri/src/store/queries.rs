@@ -32,7 +32,7 @@ pub struct StoredSessionEvent {
     /// as a structural fallback for older / pre-requestId schemas.
     pub event_id: String,
     /// The managed account whose interval this event's `ts` falls inside,
-    /// resolved by `events_between`'s join against `account_intervals`.
+    /// resolved by `events_between`'s subquery against `account_intervals`.
     /// `None` means either the event predates account_intervals tracking, or
     /// it landed in a gap where no managed account was live. Not a real
     /// column on `session_events` — only ever populated by query methods
@@ -385,12 +385,29 @@ impl Db {
     ) -> Result<Vec<StoredSessionEvent>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
+            // The account lookup is a correlated scalar subquery, not a
+            // LEFT JOIN. Two reasons, both load-bearing:
+            //   * Correctness: a join emits one row per matching interval, so
+            //     any overlap in `account_intervals` would silently duplicate
+            //     the event and double-count its tokens/cost everywhere
+            //     downstream. `LIMIT 1` makes that structurally impossible —
+            //     and `ORDER BY started_at DESC` picks the most-recently-opened
+            //     matching interval, i.e. the newer swap wins.
+            //   * Performance: this is an ORDER BY + LIMIT over a range on
+            //     `idx_account_intervals_span(started_at, ended_at)`, so it
+            //     costs a bounded index seek per event rather than a scan of
+            //     every interval per event (which grew quadratically as both
+            //     tables grew with the app's age).
+            // Semantics are unchanged for well-formed intervals: same
+            // half-open `[started_at, ended_at)` window, NULL when no interval
+            // covers the event.
             "SELECT e.ts, e.project, e.model, e.input_tokens, e.output_tokens, e.cache_read_tokens,
                     e.cache_creation_5m_tokens, e.cache_creation_1h_tokens, e.cost_usd,
-                    e.source_file, e.source_line, e.event_id, ai.account_uuid
+                    e.source_file, e.source_line, e.event_id,
+                    (SELECT ai.account_uuid FROM account_intervals ai
+                      WHERE ai.started_at <= e.ts AND (ai.ended_at IS NULL OR e.ts < ai.ended_at)
+                      ORDER BY ai.started_at DESC LIMIT 1) AS account_uuid
              FROM session_events e
-             LEFT JOIN account_intervals ai
-               ON e.ts >= ai.started_at AND (ai.ended_at IS NULL OR e.ts < ai.ended_at)
              WHERE e.ts BETWEEN ?1 AND ?2 ORDER BY e.ts DESC",
         )?;
         let rows = stmt.query_map(params![from.timestamp(), to.timestamp()], |r| {
@@ -448,24 +465,41 @@ impl Db {
         Ok(out)
     }
 
-    /// Distinct account UUIDs whose interval overlaps at least one event in
-    /// each conversation, keyed the same way as `session_totals` (subagent
+    /// Distinct accounts whose interval covers at least one event in each
+    /// conversation, keyed the same way as `session_totals` (subagent
     /// transcripts folded onto their parent's `source_file`). Used by
     /// `get_repo_breakdown` to badge each repo/project with the account(s)
     /// that worked in it — a conversation almost always maps to exactly one
     /// account, but nothing prevents more if it happened to span a swap.
-    pub fn account_uuids_by_source_file(&self) -> Result<std::collections::HashMap<String, Vec<String>>> {
+    ///
+    /// A `None` element means "some of this conversation's events are not
+    /// attributable to any managed account" — pre-feature history, or a gap
+    /// where no managed account was live. It is deliberately kept rather than
+    /// filtered out: dropping it made a repo whose sessions are 90%
+    /// unattributed render as if it were 100% one account, which is worse
+    /// than showing an explicit "Unknown". Every other surface in this
+    /// feature renders `None` as a muted Unknown badge; this matches.
+    pub fn account_uuids_by_source_file(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<Option<String>>>> {
         let conn = self.conn();
+        // Correlated scalar subquery rather than a LEFT JOIN, for the same
+        // correctness (at most one row per event, so overlapping intervals
+        // can't duplicate) and performance (bounded index seek on
+        // `idx_account_intervals_span` instead of a per-event interval scan)
+        // reasons documented on `events_between`.
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT e.source_file, ai.account_uuid
-             FROM session_events e
-             LEFT JOIN account_intervals ai
-               ON e.ts >= ai.started_at AND (ai.ended_at IS NULL OR e.ts < ai.ended_at)
-             WHERE ai.account_uuid IS NOT NULL",
+            "SELECT DISTINCT e.source_file,
+                    (SELECT ai.account_uuid FROM account_intervals ai
+                      WHERE ai.started_at <= e.ts AND (ai.ended_at IS NULL OR e.ts < ai.ended_at)
+                      ORDER BY ai.started_at DESC LIMIT 1) AS account_uuid
+             FROM session_events e",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let rows =
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
 
-        let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut out: std::collections::HashMap<String, Vec<Option<String>>> =
+            std::collections::HashMap::new();
         for row in rows {
             let (source_file, account_uuid) = row?;
             let key = match source_file.find("/subagents/") {
@@ -702,6 +736,15 @@ impl Db {
     /// poll loop's active-account reconciliation call this, and the poll
     /// loop's later observation of an already-recorded in-app swap must not
     /// create a spurious zero-length interval.
+    ///
+    /// `at` is captured by the caller *before* this method takes the DB lock,
+    /// so two racing callers (an in-app `swap_to_account` and the poll loop's
+    /// reconciliation of the same swap) can arrive with out-of-order
+    /// timestamps. The recorded timestamp is therefore clamped forward to the
+    /// currently-open interval's `started_at`, which keeps intervals
+    /// monotonically ordered and non-overlapping (worst case a zero-length
+    /// interval) instead of letting a late-but-earlier caller open an interval
+    /// that starts before the one it closes.
     pub fn record_account_transition(
         &self,
         new_active: Option<&str>,
@@ -709,28 +752,33 @@ impl Db {
     ) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let open: Option<String> = tx
+        let open: Option<(String, i64)> = tx
             .query_row(
-                "SELECT account_uuid FROM account_intervals WHERE ended_at IS NULL",
+                "SELECT account_uuid, started_at FROM account_intervals WHERE ended_at IS NULL",
                 [],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
 
-        if open.as_deref() == new_active {
+        if open.as_ref().map(|(uuid, _)| uuid.as_str()) == new_active {
             return Ok(());
         }
+
+        let ts = match open.as_ref() {
+            Some((_, started_at)) => at.timestamp().max(*started_at),
+            None => at.timestamp(),
+        };
 
         if open.is_some() {
             tx.execute(
                 "UPDATE account_intervals SET ended_at = ?1 WHERE ended_at IS NULL",
-                params![at.timestamp()],
+                params![ts],
             )?;
         }
         if let Some(uuid) = new_active {
             tx.execute(
                 "INSERT INTO account_intervals (account_uuid, started_at, ended_at) VALUES (?1, ?2, NULL)",
-                params![uuid, at.timestamp()],
+                params![uuid, ts],
             )?;
         }
         tx.commit()?;
@@ -1669,6 +1717,72 @@ mod tests {
         assert_eq!(by_id.get("during-acc2"), Some(&&Some("acc2".to_string())));
     }
 
+    /// Pins the half-open `[started_at, ended_at)` contract at the exact
+    /// boundary instants, which is where an off-by-one in the attribution
+    /// subquery would show up: an event at a boundary must belong to the
+    /// interval that *starts* there, never to the one that just ended.
+    #[test]
+    fn events_between_attributes_boundary_timestamps_half_open() {
+        let (_dir, db) = fresh_db();
+        db.upsert_account(&StoredAccount { id: "acc2".into(), email: "b@example.com".into(), display_name: None }).unwrap();
+
+        let t_acc1 = Utc::now() - chrono::Duration::hours(2);
+        let t_acc2 = Utc::now() - chrono::Duration::hours(1);
+
+        // acc1 spans [t_acc1, t_acc2); acc2 spans [t_acc2, ∞).
+        db.record_account_transition(Some("acc1"), t_acc1).unwrap();
+        db.record_account_transition(Some("acc2"), t_acc2).unwrap();
+
+        let mk = |ts: chrono::DateTime<Utc>, id: &str| StoredSessionEvent {
+            ts,
+            project: "p".into(),
+            model: "m".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 0.0,
+            source_file: "a.jsonl".into(),
+            source_line: 0,
+            event_id: id.into(),
+            account_uuid: None,
+        };
+        db.insert_events(&[
+            // Exactly at acc1's started_at.
+            mk(t_acc1, "at-start-acc1"),
+            // Exactly at acc1's ended_at, which is also acc2's started_at.
+            mk(t_acc2, "at-boundary"),
+        ])
+        .unwrap();
+
+        let events = db
+            .events_between(t_acc1 - chrono::Duration::minutes(1), Utc::now())
+            .unwrap();
+        let by_id: std::collections::HashMap<&str, &Option<String>> = events
+            .iter()
+            .map(|e| (e.event_id.as_str(), &e.account_uuid))
+            .collect();
+
+        assert_eq!(
+            by_id.get("at-start-acc1"),
+            Some(&&Some("acc1".to_string())),
+            "an event exactly at started_at belongs to that interval (inclusive lower bound)"
+        );
+        assert_eq!(
+            by_id.get("at-boundary"),
+            Some(&&Some("acc2".to_string())),
+            "an event exactly at ended_at belongs to the NEXT interval, not the one that just closed (exclusive upper bound)"
+        );
+        // And the boundary event must appear exactly once — a join form would
+        // emit one row per matching interval if intervals ever overlapped.
+        assert_eq!(
+            events.iter().filter(|e| e.event_id == "at-boundary").count(),
+            1,
+            "each event must yield exactly one row regardless of interval layout"
+        );
+    }
+
     #[test]
     fn account_uuids_by_source_file_folds_subagents_onto_parent_and_dedupes() {
         let (_dir, db) = fresh_db();
@@ -1706,8 +1820,106 @@ mod tests {
 
         let mut abc = map.get("proj/abc.jsonl").cloned().unwrap_or_default();
         abc.sort();
-        assert_eq!(abc, vec!["acc1".to_string(), "acc2".to_string()], "subagent folds onto parent; both accounts recorded, no duplicates");
-        assert_eq!(map.get("proj/other.jsonl"), Some(&vec!["acc2".to_string()]));
+        assert_eq!(
+            abc,
+            vec![Some("acc1".to_string()), Some("acc2".to_string())],
+            "subagent folds onto parent; both accounts recorded, no duplicates"
+        );
+        assert_eq!(map.get("proj/other.jsonl"), Some(&vec![Some("acc2".to_string())]));
         assert!(!map.contains_key("proj/abc/subagents/agent-x.jsonl"));
+    }
+
+    /// Events no interval covers must survive as a `None` entry rather than
+    /// being filtered out — the Repo tab renders that as an "Unknown" badge,
+    /// and dropping it made a mostly-unattributed repo look 100% attributed
+    /// to whichever account happened to touch it once.
+    #[test]
+    fn account_uuids_by_source_file_keeps_unattributed_events_as_none() {
+        let (_dir, db) = fresh_db();
+
+        let t_pre = Utc::now() - chrono::Duration::hours(3);
+        let t_acc1 = Utc::now() - chrono::Duration::hours(1);
+        db.record_account_transition(Some("acc1"), t_acc1).unwrap();
+
+        let mk = |ts: chrono::DateTime<Utc>, src: &str, id: &str| StoredSessionEvent {
+            ts,
+            project: "p".into(),
+            model: "m".into(),
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 0.0,
+            source_file: src.into(),
+            source_line: 0,
+            event_id: id.into(),
+            account_uuid: None,
+        };
+        db.insert_events(&[
+            // Entirely pre-feature conversation: nothing attributable at all.
+            mk(t_pre, "proj/old.jsonl", "e1"),
+            // Conversation that straddles the start of interval tracking.
+            mk(t_pre + chrono::Duration::minutes(1), "proj/mixed.jsonl", "e2"),
+            mk(t_acc1 + chrono::Duration::minutes(1), "proj/mixed.jsonl", "e3"),
+        ])
+        .unwrap();
+
+        let map = db.account_uuids_by_source_file().unwrap();
+
+        assert_eq!(
+            map.get("proj/old.jsonl"),
+            Some(&vec![None]),
+            "a conversation with no attributable events must still appear, as Unknown"
+        );
+
+        let mut mixed = map.get("proj/mixed.jsonl").cloned().unwrap_or_default();
+        mixed.sort();
+        assert_eq!(
+            mixed,
+            vec![None, Some("acc1".to_string())],
+            "a partly-attributed conversation keeps both the account and the Unknown bucket"
+        );
+    }
+
+    /// A caller that reaches the DB *after* another caller but with an
+    /// *earlier* timestamp (both capture `at` before taking the lock) must not
+    /// be able to open an interval that starts before the one it closes.
+    #[test]
+    fn record_account_transition_clamps_out_of_order_timestamps() {
+        let (_dir, db) = fresh_db();
+        db.upsert_account(&StoredAccount { id: "acc2".into(), email: "b@example.com".into(), display_name: None }).unwrap();
+
+        let t_late = Utc::now();
+        let t_early = t_late - chrono::Duration::minutes(5);
+
+        db.record_account_transition(Some("acc1"), t_late).unwrap();
+        // Racing caller arrives second but carries the earlier timestamp.
+        db.record_account_transition(Some("acc2"), t_early).unwrap();
+
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT account_uuid, started_at, ended_at FROM account_intervals ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, i64, Option<i64>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "acc1");
+        assert_eq!(
+            rows[0].2,
+            Some(t_late.timestamp()),
+            "the earlier timestamp is clamped forward, so acc1's interval never ends before it began"
+        );
+        assert_eq!(rows[1].0, "acc2");
+        assert_eq!(
+            rows[1].1,
+            t_late.timestamp(),
+            "acc2's interval starts where acc1's ended — no overlap"
+        );
+        assert!(rows[1].1 >= rows[0].1, "intervals stay monotonically ordered by started_at");
     }
 }

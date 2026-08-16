@@ -81,7 +81,7 @@ export function RepoTab() {
                   </span>
                   <div className="flex shrink-0 gap-[var(--space-2xs)]">
                     {repo.account_uuids.map((uuid) => (
-                      <AccountBadge key={uuid} accountUuid={uuid} accounts={accounts} />
+                      <AccountBadge key={uuid ?? 'unknown'} accountUuid={uuid} accounts={accounts} />
                     ))}
                   </div>
                 </div>
@@ -111,9 +111,16 @@ export function RepoTab() {
                     className="flex items-center justify-between gap-[var(--space-sm)] px-[var(--space-md)] py-[var(--space-sm)] pl-[calc(var(--space-md)+21px)]"
                   >
                     <div className="flex min-w-0 flex-col">
-                      <span className="truncate text-[length:var(--text-label)] text-[color:var(--color-text-secondary)]">
-                        {p.project}
-                      </span>
+                      <div className="flex min-w-0 items-center gap-[var(--space-sm)]">
+                        <span className="truncate text-[length:var(--text-label)] text-[color:var(--color-text-secondary)]">
+                          {p.project}
+                        </span>
+                        <div className="flex shrink-0 gap-[var(--space-2xs)]">
+                          {p.account_uuids.map((uuid) => (
+                            <AccountBadge key={uuid ?? 'unknown'} accountUuid={uuid} accounts={accounts} />
+                          ))}
+                        </div>
+                      </div>
                       <span className="truncate text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
                         {p.cwd}
                       </span>
