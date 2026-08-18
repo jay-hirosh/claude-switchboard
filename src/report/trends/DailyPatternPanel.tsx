@@ -2,14 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { EmptyState } from '../../components/ui/EmptyState';
-import { formatCost, formatTokens } from '../../lib/format';
+import { formatTokens } from '../../lib/format';
 import { IconTimer } from '../../lib/icons';
 import { ipc } from '../../lib/ipc';
 import { useTabData } from '../../lib/useTabData';
 import { useAppStore } from '../../lib/store';
 import { HourlyStrip } from './HourlyStrip';
 import type { AccountListEntry, HhMm, Schedule } from '../../lib/generated/bindings';
-import type { HourCell, HourTotal, PlannedWindow, WarmupPlan } from '../../lib/types';
+import type { HourCell, WarmupPlan } from '../../lib/types';
 
 const LOOKBACK_OPTIONS = ['today', 7, 14, 30, 90] as const;
 type Lookback = (typeof LOOKBACK_OPTIONS)[number];
