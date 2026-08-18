@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { IconButton } from '../components/ui/IconButton';
 import { SessionsTab, WINDOW_DAYS } from './SessionsTab';
+import { TodayTab } from './TodayTab';
 import { ModelsTab } from './ModelsTab';
 import { TrendsTab } from './TrendsTab';
 import { RepoTab } from './RepoTab';
@@ -19,6 +20,7 @@ import { ProvidersTab } from '../providers/ProvidersTab';
 import { SessionsBrowserTab } from '../sessions/SessionsBrowserTab';
 
 const TAB_CONFIG = [
+  { id: 'today', label: 'Today' },
   { id: 'repo', label: 'Repository' },
   { id: 'browse', label: 'Sessions' },
   { id: 'cost', label: 'Cost' },
@@ -36,6 +38,7 @@ const TAB_CONFIG = [
  *  it included them. Keep these in step with the `ipc.get*(n)` call in each
  *  tab; `undefined` means the tab has no time window of its own. */
 const TAB_WINDOW_DAYS: Record<string, number | undefined> = {
+  today: undefined,
   repo: undefined,
   browse: undefined,
   cost: WINDOW_DAYS,
@@ -51,6 +54,7 @@ const TAB_WINDOW_DAYS: Record<string, number | undefined> = {
 };
 
 const TAB_COMPONENTS: Record<string, React.FC> = {
+  today: TodayTab,
   repo: RepoTab,
   browse: SessionsBrowserTab,
   cost: SessionsTab,
@@ -63,11 +67,11 @@ const TAB_COMPONENTS: Record<string, React.FC> = {
 };
 
 export function ExpandedReport() {
-  const [activeTab, setActiveTab] = useState<string>('browse');
+  const [activeTab, setActiveTab] = useState<string>('today');
   const [refreshing, setRefreshing] = useState(false);
   const [tabKey, setTabKey] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const prevTabRef = useRef<string>('browse');
+  const prevTabRef = useRef<string>('today');
   const stale = useAppStore((s) => s.stale);
   const toggleViewMode = useAppStore((s) => s.toggleViewMode);
 
@@ -117,7 +121,11 @@ export function ExpandedReport() {
               </span>
               <span className="text-[length:var(--text-label)] tracking-[var(--tracking-label)] uppercase text-[color:var(--color-text-muted)]">
                 · {stale ? 'Stale' : 'Live'}
-                {TAB_WINDOW_DAYS[activeTab] ? ` · last ${TAB_WINDOW_DAYS[activeTab]} days` : ''}
+                {TAB_WINDOW_DAYS[activeTab]
+                  ? ` · last ${TAB_WINDOW_DAYS[activeTab]} days`
+                  : activeTab === 'today'
+                    ? ' · Today'
+                    : ''}
               </span>
             </div>
             <div className="flex items-center gap-[2px]">
