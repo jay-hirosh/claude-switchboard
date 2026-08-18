@@ -6,12 +6,12 @@ import { AccountBadge } from '../components/ui/AccountBadge';
 import { ModelBadge } from '../components/ui/ModelBadge';
 import { Badge } from '../components/ui/Badge';
 import { formatCost, formatTokens } from '../lib/format';
-import { IconTrends } from '../lib/icons';
+import { IconTrends, GitBranch } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
 import { localDayKey } from '../lib/dayKey';
-import type { DailyPatternReport } from '../lib/types';
+import type { DailyPatternReport, RepoStats, CacheStats } from '../lib/types';
 import type { AccountListEntry } from '../lib/generated/bindings';
 import { aggregateSessions, isHeadlessProject, formatClock, type AggregatedSession } from './SessionsTab';
 import { MODEL_VARIANT, modelKey, shortName } from './modelDisplay';
@@ -53,10 +53,12 @@ export function TodayTab() {
   const accounts = useAppStore((s) => s.accounts);
   const { data, error, loading, reload } = useTabData(
     () =>
-      Promise.all([ipc.getSessionHistory(1), ipc.getTodayPattern()]).then(([events, pattern]) => ({
-        events,
-        pattern,
-      })),
+      Promise.all([
+        ipc.getSessionHistory(1),
+        ipc.getTodayPattern(),
+        ipc.getTodayRepoBreakdown(),
+        ipc.getTodayCacheStats(),
+      ]).then(([events, pattern, repos, cache]) => ({ events, pattern, repos, cache })),
     [version],
   );
 
@@ -100,6 +102,8 @@ export function TodayTab() {
       <HourlySection pattern={data.pattern} />
       <SessionsSection sessions={sessions} accounts={accounts} />
       <ModelSection stats={modelStats} />
+      <RepoSection repos={data.repos} accounts={accounts} />
+      <CacheSection cache={data.cache} />
     </div>
   );
 }
@@ -244,6 +248,96 @@ function ModelSection({ stats }: { stats: TodayModelStat[] }) {
             </div>
           );
         })}
+      </Card>
+    </div>
+  );
+}
+
+function RepoSection({ repos, accounts }: { repos: RepoStats[]; accounts: AccountListEntry[] }) {
+  if (repos.length === 0) return null;
+  const maxCost = Math.max(...repos.map((r) => r.total_cost_usd), 1);
+  return (
+    <div className="flex flex-col gap-[var(--space-sm)]">
+      <span className="text-[length:var(--text-label)] font-[var(--weight-medium)] text-[color:var(--color-text-muted)] px-[var(--space-2xs)]">
+        By repo today
+      </span>
+      {repos.map((repo) => {
+        const widthPct = (repo.total_cost_usd / maxCost) * 100;
+        return (
+          <Card key={repo.repo} className="p-[var(--space-md)] flex flex-col gap-[var(--space-sm)]">
+            <div className="flex items-center justify-between gap-[var(--space-sm)]">
+              <div className="flex min-w-0 items-center gap-[var(--space-sm)]">
+                <GitBranch size={13} className="shrink-0 text-[color:var(--color-text-muted)]" />
+                <span className="truncate text-[length:var(--text-body)] font-[var(--weight-medium)] text-[color:var(--color-text)]">
+                  {repo.repo}
+                </span>
+                <span className="shrink-0 text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">
+                  {repo.session_count} session{repo.session_count === 1 ? '' : 's'}
+                </span>
+                <div className="flex shrink-0 gap-[var(--space-2xs)]">
+                  {repo.account_uuids.map((uuid) => (
+                    <AccountBadge key={uuid ?? 'unknown'} accountUuid={uuid} accounts={accounts} />
+                  ))}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-baseline gap-[var(--space-sm)]">
+                <span className="mono text-[length:var(--text-micro)] text-[color:var(--color-text-muted)] tabular-nums">
+                  {formatTokens(repo.total_tokens)} tokens
+                </span>
+                <span className="mono text-[length:var(--text-label)] font-[var(--weight-semibold)] text-[color:var(--color-text)] tabular-nums">
+                  {formatCost(repo.total_cost_usd)}
+                </span>
+              </div>
+            </div>
+            <div className="flex h-[6px] rounded-[var(--radius-pill)] bg-[var(--color-track)] overflow-hidden">
+              <div
+                className="h-full rounded-[var(--radius-pill)] bg-[var(--color-accent)]"
+                style={{ width: `${widthPct}%` }}
+              />
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function CacheSection({ cache }: { cache: CacheStats }) {
+  const totalCacheTokens = cache.total_cache_read_tokens + cache.total_cache_creation_tokens;
+  if (totalCacheTokens === 0) return null;
+  const hitRatePct = cache.hit_ratio * 100;
+  return (
+    <div className="flex flex-col gap-[var(--space-sm)]">
+      <span className="text-[length:var(--text-label)] font-[var(--weight-medium)] text-[color:var(--color-text-muted)] px-[var(--space-2xs)]">
+        Cache today
+      </span>
+      <Card className="p-[var(--space-md)] flex items-center gap-[var(--space-md)]">
+        <div className="flex flex-col">
+          <span className="mono text-[length:var(--text-title)] font-[var(--weight-semibold)] text-[color:var(--color-accent)]">
+            {Math.round(hitRatePct)}%
+          </span>
+          <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">hit rate</span>
+        </div>
+        <div className="flex-1 grid grid-cols-3 gap-[var(--space-sm)]">
+          <div className="flex flex-col gap-[2px]">
+            <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">Reads</span>
+            <span className="mono text-[length:var(--text-label)] text-[color:var(--color-text)]">
+              {formatTokens(cache.total_cache_read_tokens)}
+            </span>
+          </div>
+          <div className="flex flex-col gap-[2px]">
+            <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">Writes</span>
+            <span className="mono text-[length:var(--text-label)] text-[color:var(--color-text)]">
+              {formatTokens(cache.total_cache_creation_tokens)}
+            </span>
+          </div>
+          <div className="flex flex-col gap-[2px]">
+            <span className="text-[length:var(--text-micro)] text-[color:var(--color-text-muted)]">Savings</span>
+            <span className="mono text-[length:var(--text-label)] text-[color:var(--color-safe)]">
+              ${cache.estimated_savings_usd.toFixed(2)}
+            </span>
+          </div>
+        </div>
       </Card>
     </div>
   );

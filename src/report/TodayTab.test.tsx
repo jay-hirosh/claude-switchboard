@@ -104,4 +104,42 @@ describe('TodayTab', () => {
     expect(screen.getByText('opus')).toBeInTheDocument();
     expect(screen.getByText('sonnet')).toBeInTheDocument();
   });
+
+  it('renders a repo card from getTodayRepoBreakdown', async () => {
+    const todayIso = new Date().toISOString();
+    ipcMock.getSessionHistory.mockResolvedValue([
+      ev({ ts: todayIso, source_file: 'proj/a.jsonl', cost_usd: 1.0 }),
+    ]);
+    ipcMock.getTodayRepoBreakdown.mockResolvedValue([
+      {
+        repo: 'claude-switchboard',
+        session_count: 1,
+        total_tokens: 150,
+        total_cost_usd: 1.0,
+        projects: [],
+        account_uuids: [null],
+      },
+    ]);
+
+    render(<TodayTab />);
+
+    expect(await screen.findByText('claude-switchboard')).toBeInTheDocument();
+  });
+
+  it('renders cache stats from getTodayCacheStats', async () => {
+    const todayIso = new Date().toISOString();
+    ipcMock.getSessionHistory.mockResolvedValue([
+      ev({ ts: todayIso, source_file: 'proj/a.jsonl', cost_usd: 1.0 }),
+    ]);
+    ipcMock.getTodayCacheStats.mockResolvedValue({
+      total_cache_read_tokens: 900,
+      total_cache_creation_tokens: 100,
+      estimated_savings_usd: 2.5,
+      hit_ratio: 0.9,
+    });
+
+    render(<TodayTab />);
+
+    expect(await screen.findByText('90%')).toBeInTheDocument();
+  });
 });
