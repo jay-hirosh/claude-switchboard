@@ -10,11 +10,15 @@ export type {
   DailyAccountBucket,
   DailyBucket,
   DailyModelBucket,
+  DailyPatternReport,
   ExtraBurnRate,
   ExtraUsage,
+  HourCell,
+  HourTotal,
   LiveSessionInfo,
   ModelAccountShare,
   ModelStats,
+  PlannedWindow,
   PricingEntry,
   PricingTier,
   ProjectStats,
@@ -23,6 +27,7 @@ export type {
   Settings,
   UsageSnapshot,
   Utilization,
+  WarmupPlan,
 } from './generated/bindings';
 
 // StoredSessionEvent is the Rust name. Re-export as SessionEvent for

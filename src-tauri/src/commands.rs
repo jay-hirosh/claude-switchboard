@@ -301,6 +301,31 @@ pub async fn get_daily_trends(
     Ok(bucket_daily_trends(&events))
 }
 
+/// Hour-of-day usage profile plus a warm-up anchor recommendation, over the
+/// trailing `days` of local activity. See `pattern::compute_daily_pattern`.
+#[command]
+#[specta::specta]
+pub async fn get_daily_pattern(
+    days: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::pattern::DailyPatternReport, String> {
+    let events = get_session_history(days, state).await?;
+    Ok(crate::pattern::compute_daily_pattern(&events, days))
+}
+
+/// Same shape as `get_daily_pattern`, scoped to local-midnight-to-now
+/// instead of a rolling day window — the "Today" lookback option.
+#[command]
+#[specta::specta]
+pub async fn get_today_pattern(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::pattern::DailyPatternReport, String> {
+    let to = Utc::now();
+    let from = crate::pattern::local_midnight_utc(to);
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    Ok(crate::pattern::compute_daily_pattern(&events, 1))
+}
+
 /// Serializes daily buckets to CSV — one row per day, header always present
 /// even when there's no data, so an empty export is still a valid file.
 fn daily_trends_to_csv(buckets: &[DailyBucket]) -> String {

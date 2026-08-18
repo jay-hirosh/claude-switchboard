@@ -49,6 +49,30 @@ async getDailyTrends(days: number) : Promise<Result<DailyBucket[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Hour-of-day usage profile plus a warm-up anchor recommendation, over the
+ * trailing `days` of local activity. See `pattern::compute_daily_pattern`.
+ */
+async getDailyPattern(days: number) : Promise<Result<DailyPatternReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_daily_pattern", { days }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Same shape as `get_daily_pattern`, scoped to local-midnight-to-now
+ * instead of a rolling day window — the "Today" lookback option.
+ */
+async getTodayPattern() : Promise<Result<DailyPatternReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_today_pattern") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async exportTrendsCsv(path: string, days: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("export_trends_csv", { path, days }) };
@@ -611,6 +635,21 @@ seven_day_burn_rate?: BurnRateProjection | null; extra_burn_rate?: ExtraBurnRate
 export type DailyAccountBucket = { date: string; accounts: AccountStats[] }
 export type DailyBucket = { date: string; input_tokens: number; output_tokens: number; cost_usd: number; request_count: number }
 export type DailyModelBucket = { date: string; models: ModelStats[] }
+export type DailyPatternReport = {
+/**
+ * Always exactly 168 entries (7 * 24), zeros included, ordered
+ * weekday-major then hour-minor — no gap-filling needed client-side.
+ */
+cells: HourCell[];
+/**
+ * Always exactly 24 entries.
+ */
+hourly_totals: HourTotal[]; active_days: number; lookback_days: number;
+/**
+ * `None` below `MIN_ACTIVE_DAYS_FOR_PLAN` — too small a sample to
+ * anchor a recommendation on.
+ */
+plan: WarmupPlan | null }
 /**
  * What Switchboard wrote into `~/.claude/settings.json`, and what each key
  * held beforehand (`None` = the key was absent). This is both the manifest
@@ -637,7 +676,13 @@ export type ExtraUsage = { is_enabled?: boolean; monthly_limit_cents?: number; u
  * Wall-clock time-of-day in user's local timezone.
  */
 export type HhMm = { hour: number; minute: number }
-export type InstallStatuslineOutcome = { status: "applied" } | 
+export type HourCell = {
+/**
+ * 0 = Monday .. 6 = Sunday, matching `HeatmapTab`'s Monday-first grid.
+ */
+weekday: number; hour: number; tokens: number; cost_usd: number; request_count: number }
+export type HourTotal = { hour: number; tokens: number; cost_usd: number; request_count: number }
+export type InstallStatuslineOutcome = { status: "applied" } |
 /**
  * `settings.json` already carries a `statusLine` we do not own. The UI
  * must confirm before we overwrite hand-written (or another tool's)
@@ -682,17 +727,22 @@ first_seen: number;
  */
 last_activity: number }
 export type ModelAccountShare = { account_uuid: string | null; input_tokens: number; output_tokens: number; cost_usd: number }
-export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number; 
+export type ModelStats = { model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; cost_usd: number;
 /**
  * Per-account contribution to this model's totals — lets the Models
  * tab show which account(s) drove usage of a given model without a
  * separate command.
  */
 by_account: ModelAccountShare[] }
+export type PlannedWindow = { start: HhMm; end: HhMm;
+/**
+ * Share (0..1) of the day's total tokens this window carries.
+ */
+share: number }
 /**
  * Serializable mirror of `Preset` for the frontend.
  */
-export type PresetInfo = { id: string; name: string; base_url: string; website: string; env: Partial<{ [key in string]: string }> }
+export type PresetInfo ={ id: string; name: string; base_url: string; website: string; env: Partial<{ [key in string]: string }> }
 export type PricingEntry = { prefix: string; input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_5m_per_mtok: number; cache_1h_per_mtok: number; 
 /**
  * Optional 1M-context tier (Sonnet 4 only at time of writing). When
@@ -952,6 +1002,12 @@ export type WarmupOutcome =
  * Other / unknown HTTP status.
  */
 { OtherFailure: { status: number } }
+export type WarmupPlan = { anchor: HhMm; recommended_peak_share: number;
+/**
+ * Peak window share with no warm-up at all — windows started purely by
+ * the user's own first request in each gap. The honest baseline.
+ */
+baseline_peak_share: number; windows: PlannedWindow[] }
 export type WarmupSuggestion = { anchor: HhMm; active_days: number }
 
 /** tauri-specta globals **/

@@ -2,6 +2,11 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { DailyBucket, DailyModelBucket } from '../lib/types';
 
+// This suite exercises UsageTrends directly (the former TrendsTab body,
+// moved to report/trends/ when Trends grew a "Daily pattern" sub-tab —
+// see DailyPatternPanel.test.tsx). TrendsTab itself is now just the
+// sub-tab shell around UsageTrends and DailyPatternPanel.
+
 const TRENDS: DailyBucket[] = [
   { date: '2026-07-24', input_tokens: 8_000_000, output_tokens: 4_400_000, cost_usd: 4.82, request_count: 12 },
   { date: '2026-07-25', input_tokens: 2_000_000, output_tokens: 1_000_000, cost_usd: 1.1, request_count: 5 },
@@ -50,9 +55,9 @@ vi.mock('../lib/store', async () => {
   return { ...actual, useAppStore };
 });
 
-import { TrendsTab } from './TrendsTab';
+import { UsageTrends } from './trends/UsageTrends';
 
-describe('TrendsTab — day breakdown panel', () => {
+describe('UsageTrends — day breakdown panel', () => {
   beforeEach(() => {
     ipcMock.getDailyTrends.mockClear();
     ipcMock.getDailyModelBreakdown.mockClear();
@@ -61,7 +66,7 @@ describe('TrendsTab — day breakdown panel', () => {
   });
 
   it('reveals the per-model breakdown for a day on click, sorted by cost descending', async () => {
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     const bar = await screen.findByRole('button', { name: /Jul 24/i });
     fireEvent.click(bar);
 
@@ -76,7 +81,7 @@ describe('TrendsTab — day breakdown panel', () => {
   });
 
   it('collapses the panel when the same bar is clicked again', async () => {
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     const bar = await screen.findByRole('button', { name: /Jul 24/i });
     fireEvent.click(bar);
     await screen.findByTestId('day-breakdown-panel');
@@ -86,7 +91,7 @@ describe('TrendsTab — day breakdown panel', () => {
   });
 
   it('switches the panel to a different day when a different bar is clicked', async () => {
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     const bar24 = await screen.findByRole('button', { name: /Jul 24/i });
     fireEvent.click(bar24);
     let panel = await screen.findByTestId('day-breakdown-panel');
@@ -105,7 +110,7 @@ describe('TrendsTab — day breakdown panel', () => {
   });
 
   it('clears the selection when the range toggle changes', async () => {
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     const bar = await screen.findByRole('button', { name: /Jul 24/i });
     fireEvent.click(bar);
     await screen.findByTestId('day-breakdown-panel');
@@ -115,7 +120,7 @@ describe('TrendsTab — day breakdown panel', () => {
   });
 });
 
-describe('TrendsTab — period comparison strip', () => {
+describe('UsageTrends — period comparison strip', () => {
   // "now" = 2026-08-14 (Fri). Current week: Aug 8–14. Prior week: Aug 1–7.
   // Current month: Aug 1–14. Prior month: all of July.
   const PERIOD_TRENDS: DailyBucket[] = [
@@ -138,13 +143,13 @@ describe('TrendsTab — period comparison strip', () => {
   });
 
   it('shows week-over-week deltas by default', async () => {
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     // Cost: current week (Aug 8–14) = 2, prior week (Aug 1–7) = 1 → doubled.
     await screen.findByText('▲ +100%');
   });
 
   it('switches to month-over-month deltas when Month is clicked', async () => {
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     await screen.findByText('▲ +100%');
 
     fireEvent.click(screen.getByRole('button', { name: 'Month' }));
@@ -158,13 +163,13 @@ describe('TrendsTab — period comparison strip', () => {
       { date: '2026-08-14', input_tokens: 1000, output_tokens: 0, cost_usd: 2, request_count: 1 },
     ]);
 
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     const newLabels = await screen.findAllByText('new');
     expect(newLabels).toHaveLength(3); // cost, tokens, requests all lack prior data
   });
 });
 
-describe('TrendsTab — monthly cost pacing', () => {
+describe('UsageTrends — monthly cost pacing', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     // Aug 10, 2026 — 10th day of a 31-day month.
@@ -184,14 +189,14 @@ describe('TrendsTab — monthly cost pacing', () => {
       { date: '2026-08-10', input_tokens: 0, output_tokens: 0, cost_usd: 30, request_count: 1 },
     ]);
 
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     // spent so far: 20 + 30 = 50. rate = 50/10 = 5/day; projected = 5 * 31 = 155.
     await screen.findByText('$50.00 this month');
     await screen.findByText('→ ~$155 this month');
   });
 });
 
-describe('TrendsTab — anomaly flagging', () => {
+describe('UsageTrends — anomaly flagging', () => {
   beforeEach(() => {
     ipcMock.getDailyTrends.mockClear();
     ipcMock.getDailyModelBreakdown.mockClear();
@@ -209,7 +214,7 @@ describe('TrendsTab — anomaly flagging', () => {
     const spike = { date: '2026-07-27', input_tokens: 1000, output_tokens: 0, cost_usd: 4, request_count: 1 };
     ipcMock.getDailyTrends.mockResolvedValue([...baseline, spike]);
 
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     const dot = await screen.findByTestId('day-anomaly-2026-07-27');
     expect(dot).toBeInTheDocument();
     // No dot on a normal baseline day.
@@ -227,13 +232,13 @@ describe('TrendsTab — anomaly flagging', () => {
     }));
     ipcMock.getDailyTrends.mockResolvedValue(steady);
 
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     await screen.findByTestId(`day-bar-${steady[0].date}`);
     expect(screen.queryByText(/your recent average/)).not.toBeInTheDocument();
   });
 });
 
-describe('TrendsTab — CSV export', () => {
+describe('UsageTrends — CSV export', () => {
   beforeEach(() => {
     ipcMock.getDailyTrends.mockClear();
     ipcMock.getDailyModelBreakdown.mockClear();
@@ -245,7 +250,7 @@ describe('TrendsTab — CSV export', () => {
 
   it('exports to the chosen path when the user picks one', async () => {
     dialogMock.save.mockResolvedValue('/Users/me/switchboard-trends.csv');
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     await screen.findByRole('button', { name: /Jul 24/i });
 
     fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
@@ -257,7 +262,7 @@ describe('TrendsTab — CSV export', () => {
 
   it('does not export when the user cancels the save dialog', async () => {
     dialogMock.save.mockResolvedValue(null);
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     await screen.findByRole('button', { name: /Jul 24/i });
 
     fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
@@ -267,7 +272,7 @@ describe('TrendsTab — CSV export', () => {
   });
 });
 
-describe('TrendsTab — color by account', () => {
+describe('UsageTrends — color by account', () => {
   beforeEach(() => {
     ipcMock.getDailyTrends.mockClear();
     ipcMock.getDailyModelBreakdown.mockClear();
@@ -289,7 +294,7 @@ describe('TrendsTab — color by account', () => {
       },
     ]);
 
-    render(<TrendsTab />);
+    render(<UsageTrends />);
     await screen.findByTestId('day-bar-2026-08-01');
 
     fireEvent.click(screen.getByRole('button', { name: 'Account' }));

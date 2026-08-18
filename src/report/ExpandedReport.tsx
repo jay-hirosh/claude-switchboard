@@ -40,7 +40,10 @@ const TAB_WINDOW_DAYS: Record<string, number | undefined> = {
   browse: undefined,
   cost: WINDOW_DAYS,
   models: 30,
-  trends: 30,
+  // Trends now has two sub-tabs on different windows (Usage's own 7d/30d
+  // toggle, Daily pattern's 7-90d lookback) — no single number is right for
+  // the header caption, so each sub-panel labels its own range inline.
+  trends: undefined,
   limits: 30,
   heatmap: 180,
   cache: 30,

@@ -8,6 +8,7 @@ pub mod live_sessions;
 pub mod logging;
 pub mod migration;
 pub mod notifier;
+mod pattern;
 mod poll_loop;
 mod process_detection;
 pub mod providers;
@@ -122,6 +123,8 @@ pub fn run() {
             commands::get_session_history,
             commands::get_compactions,
             commands::get_daily_trends,
+            commands::get_daily_pattern,
+            commands::get_today_pattern,
             commands::export_trends_csv,
             commands::get_model_breakdown,
             commands::get_daily_model_breakdown,
@@ -183,6 +186,8 @@ pub fn run() {
             commands::get_session_history,
             commands::get_compactions,
             commands::get_daily_trends,
+            commands::get_daily_pattern,
+            commands::get_today_pattern,
             commands::export_trends_csv,
             commands::get_model_breakdown,
             commands::get_daily_model_breakdown,
