@@ -697,6 +697,44 @@ pub async fn get_cache_stats(
     })
 }
 
+/// Same math as `get_cache_stats`, scoped to today's local calendar day
+/// (`local_midnight_utc`..now) instead of a rolling `days`-day window — the
+/// Today tab's cache card.
+#[command]
+#[specta::specta]
+pub async fn get_today_cache_stats(state: State<'_, Arc<AppState>>) -> Result<CacheStats, String> {
+    let pricing = state.pricing.clone();
+    let to = Utc::now();
+    let from = crate::pattern::local_midnight_utc(to);
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let mut read = 0u64;
+    let mut created = 0u64;
+    for e in &events {
+        read += e.cache_read_tokens;
+        created += e.cache_creation_5m_tokens + e.cache_creation_1h_tokens;
+    }
+    let total = read + created;
+    let hit_ratio = if total > 0 {
+        (read as f64) / (total as f64)
+    } else {
+        0.0
+    };
+    let savings: f64 = events
+        .iter()
+        .map(|e| {
+            pricing.cache_savings_per_mtok(&e.model).unwrap_or(0.0)
+                * (e.cache_read_tokens as f64)
+                / 1_000_000.0
+        })
+        .sum();
+    Ok(CacheStats {
+        total_cache_read_tokens: read,
+        total_cache_creation_tokens: created,
+        estimated_savings_usd: savings,
+        hit_ratio,
+    })
+}
+
 /// Sums cache read/creation tokens per account and computes each account's
 /// own hit ratio. Savings (which needs the pricing table) is filled in by
 /// the caller, `get_cache_stats_by_account`, after this returns.
