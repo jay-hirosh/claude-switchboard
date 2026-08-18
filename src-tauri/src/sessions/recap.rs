@@ -113,6 +113,13 @@ pub struct SessionSummary {
     /// Surfaced so the button can be disabled with a reason rather than
     /// opening a terminal that immediately fails.
     pub cwd_exists: bool,
+    /// This transcript's path relative to the Claude projects root — the
+    /// same string `session_events.source_file` stores. Not parsed from the
+    /// transcript: filled in by `list_resumable_sessions` from the `rel_str`
+    /// it already computes to look up `total_tokens`/`account_uuids`. Lets
+    /// `get_today_repo_breakdown` join today's per-conversation event totals
+    /// (which have no `cwd`) back to the `cwd` this struct carries.
+    pub source_file: String,
 }
 
 /// Mirrors upstream `sanitizePath` (`sessionStoragePortable.ts:311`):
@@ -366,6 +373,7 @@ pub fn parse_session(path: &Path) -> Option<SessionSummary> {
         total_tokens: 0,
         total_cost_usd: 0.0,
         account_uuids: Vec::new(),
+        source_file: String::new(),
     })
 }
 

@@ -590,13 +590,38 @@ fn resolve_repo_name(cwd: &str) -> String {
     leaf(std::path::Path::new(cwd))
 }
 
-fn group_repo_stats(sessions: &[SessionSummary]) -> Vec<RepoStats> {
+/// Per-conversation inputs to `group_repo_stats` — the fields both the
+/// all-time call site (`SessionSummary`, via `list_resumable_sessions`) and
+/// the today-only call site (today's events joined against `SessionSummary`
+/// for `cwd` — see `build_today_repo_inputs`) can supply, so the by-repo/
+/// by-project grouping logic has exactly one implementation.
+struct RepoStatsInput {
+    cwd: String,
+    project_name: String,
+    total_tokens: u64,
+    total_cost_usd: f64,
+    account_uuids: Vec<Option<String>>,
+}
+
+impl From<&SessionSummary> for RepoStatsInput {
+    fn from(s: &SessionSummary) -> Self {
+        RepoStatsInput {
+            cwd: s.cwd.clone(),
+            project_name: s.project_name.clone(),
+            total_tokens: s.total_tokens,
+            total_cost_usd: s.total_cost_usd,
+            account_uuids: s.account_uuids.clone(),
+        }
+    }
+}
+
+fn group_repo_stats(inputs: &[RepoStatsInput]) -> Vec<RepoStats> {
     use std::collections::HashMap;
 
     let mut by_repo: HashMap<String, RepoStats> = HashMap::new();
     let mut by_project: HashMap<(String, String), RepoProjectStats> = HashMap::new();
 
-    for s in sessions {
+    for s in inputs {
         let repo = resolve_repo_name(&s.cwd);
 
         let repo_entry = by_repo.entry(repo.clone()).or_insert_with(|| RepoStats {
@@ -654,7 +679,97 @@ fn group_repo_stats(sessions: &[SessionSummary]) -> Vec<RepoStats> {
 #[specta::specta]
 pub async fn get_repo_breakdown(state: State<'_, Arc<AppState>>) -> Result<Vec<RepoStats>, String> {
     let sessions = list_resumable_sessions(state).await?;
-    Ok(group_repo_stats(&sessions))
+    let inputs: Vec<RepoStatsInput> = sessions.iter().map(RepoStatsInput::from).collect();
+    Ok(group_repo_stats(&inputs))
+}
+
+/// One conversation's today-only totals, folded from `events_between` —
+/// subagent transcripts collapsed onto their parent via `parent_source_file`.
+struct TodayFold {
+    /// Any event's own `project` field for this conversation — carried only
+    /// as the fallback identity in `build_today_repo_inputs` if no matching
+    /// `SessionSummary` is found; every event sharing a parent source file
+    /// has the same value, so the first one seen is as good as any.
+    project: String,
+    tokens: u64,
+    cost_usd: f64,
+    account_uuids: Vec<Option<String>>,
+}
+
+/// Sums today's tokens/cost per conversation, subagent transcripts folded
+/// onto their parent via the same rule `session_totals` uses lifetime.
+fn fold_today_events_by_parent(
+    events: &[StoredSessionEvent],
+) -> std::collections::HashMap<String, TodayFold> {
+    use std::collections::HashMap;
+    let mut out: HashMap<String, TodayFold> = HashMap::new();
+    for e in events {
+        let key = crate::store::parent_source_file(&e.source_file);
+        let slot = out.entry(key).or_insert_with(|| TodayFold {
+            project: e.project.clone(),
+            tokens: 0,
+            cost_usd: 0.0,
+            account_uuids: Vec::new(),
+        });
+        slot.tokens += e.input_tokens + e.output_tokens;
+        slot.cost_usd += e.cost_usd;
+        if !slot.account_uuids.contains(&e.account_uuid) {
+            slot.account_uuids.push(e.account_uuid.clone());
+        }
+    }
+    out
+}
+
+/// Joins today's per-conversation totals to each conversation's `cwd`/
+/// `project_name` via `sessions`, keyed by `SessionSummary.source_file`. A
+/// fold entry with no matching summary — unreachable in practice, since
+/// `discover_session_files` orders newest-mtime-first and today's files are
+/// the most recent on disk, but not structurally impossible — falls back to
+/// its raw event `project` string as both `cwd` and `project_name` (its own
+/// single-project "repo") rather than dropping today's spend.
+fn build_today_repo_inputs(
+    folds: std::collections::HashMap<String, TodayFold>,
+    sessions: &[SessionSummary],
+) -> Vec<RepoStatsInput> {
+    use std::collections::HashMap;
+    let by_source_file: HashMap<&str, &SessionSummary> =
+        sessions.iter().map(|s| (s.source_file.as_str(), s)).collect();
+
+    folds
+        .into_iter()
+        .map(|(source_file, fold)| match by_source_file.get(source_file.as_str()) {
+            Some(s) => RepoStatsInput {
+                cwd: s.cwd.clone(),
+                project_name: s.project_name.clone(),
+                total_tokens: fold.tokens,
+                total_cost_usd: fold.cost_usd,
+                account_uuids: fold.account_uuids,
+            },
+            None => RepoStatsInput {
+                cwd: fold.project.clone(),
+                project_name: fold.project,
+                total_tokens: fold.tokens,
+                total_cost_usd: fold.cost_usd,
+                account_uuids: fold.account_uuids,
+            },
+        })
+        .collect()
+}
+
+/// Same repo/project grouping as `get_repo_breakdown`, scoped to today's
+/// local calendar day instead of all time.
+#[command]
+#[specta::specta]
+pub async fn get_today_repo_breakdown(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<RepoStats>, String> {
+    let to = Utc::now();
+    let from = crate::pattern::local_midnight_utc(to);
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let folds = fold_today_events_by_parent(&events);
+    let sessions = list_resumable_sessions(state).await?;
+    let inputs = build_today_repo_inputs(folds, &sessions);
+    Ok(group_repo_stats(&inputs))
 }
 
 #[command]
@@ -1917,36 +2032,21 @@ mod tests {
 
     #[test]
     fn group_repo_stats_unions_account_uuids_across_a_repos_projects() {
-        let mk = |cwd: &str, accounts: &[Option<&str>]| crate::sessions::SessionSummary {
-            session_id: "s".into(),
+        let mk = |cwd: &str, accounts: &[Option<&str>]| RepoStatsInput {
             cwd: cwd.into(),
             project_name: cwd.into(),
-            git_branch: None,
-            title: "t".into(),
-            recap: None,
-            asked: "a".into(),
-            left_off: None,
-            touched_files: vec![],
-            touched_overflow: 0,
-            model: None,
-            peak_context_tokens: None,
-            turns: 1,
-            started_at: "s".into(),
-            ended_at: "e".into(),
             total_tokens: 10,
             total_cost_usd: 1.0,
             account_uuids: accounts.iter().map(|s| s.map(|s| s.to_string())).collect(),
-            permission_mode: None,
-            cwd_exists: true,
         };
         // Same cwd used twice (as if resumed under a second account) — the
         // repo/project entry must union rather than overwrite.
-        let sessions = vec![
+        let inputs = vec![
             mk("/tmp/no-git-here", &[Some("acc1")]),
             mk("/tmp/no-git-here", &[Some("acc2")]),
         ];
 
-        let repos = group_repo_stats(&sessions);
+        let repos = group_repo_stats(&inputs);
         assert_eq!(repos.len(), 1);
         let mut repo_accounts = repos[0].account_uuids.clone();
         repo_accounts.sort();
@@ -1959,17 +2059,128 @@ mod tests {
         // An unattributed session contributes a `None` (Unknown) entry that
         // must survive the union alongside the real accounts — the Repo tab
         // renders it as an explicit Unknown badge rather than dropping it.
-        let sessions = vec![
+        let inputs = vec![
             mk("/tmp/no-git-here", &[Some("acc1")]),
             mk("/tmp/no-git-here", &[None]),
         ];
-        let repos = group_repo_stats(&sessions);
+        let repos = group_repo_stats(&inputs);
         let mut repo_accounts = repos[0].account_uuids.clone();
         repo_accounts.sort();
         assert_eq!(repo_accounts, vec![None, Some("acc1".to_string())]);
         let mut proj_accounts = repos[0].projects[0].account_uuids.clone();
         proj_accounts.sort();
         assert_eq!(proj_accounts, vec![None, Some("acc1".to_string())]);
+    }
+
+    fn today_test_event(source_file: &str, project: &str, tokens: u64, cost: f64, account_uuid: Option<&str>) -> StoredSessionEvent {
+        StoredSessionEvent {
+            ts: Utc::now(),
+            project: project.into(),
+            model: "claude-sonnet-5".into(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: cost,
+            source_file: source_file.into(),
+            source_line: 0,
+            event_id: format!("evt-{source_file}-{tokens}"),
+            account_uuid: account_uuid.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn fold_today_events_by_parent_sums_and_folds_subagents() {
+        let events = vec![
+            today_test_event("proj/abc.jsonl", "p", 10, 1.0, Some("acc1")),
+            today_test_event("proj/abc/subagents/agent-aaa.jsonl", "p", 30, 0.5, Some("acc1")),
+            today_test_event("proj/abc/subagents/agent-bbb.jsonl", "p", 20, 0.25, None),
+            today_test_event("proj/other.jsonl", "p2", 7, 0.1, Some("acc2")),
+        ];
+
+        let folds = fold_today_events_by_parent(&events);
+        assert_eq!(folds.len(), 2);
+
+        let abc = folds.get("proj/abc.jsonl").unwrap();
+        assert_eq!(abc.tokens, 60, "both subagents must roll up into the parent");
+        assert_eq!(abc.cost_usd, 1.75);
+        let mut abc_accounts = abc.account_uuids.clone();
+        abc_accounts.sort();
+        assert_eq!(abc_accounts, vec![None, Some("acc1".to_string())]);
+
+        let other = folds.get("proj/other.jsonl").unwrap();
+        assert_eq!(other.tokens, 7);
+        assert_eq!(other.account_uuids, vec![Some("acc2".to_string())]);
+    }
+
+    #[test]
+    fn build_today_repo_inputs_uses_the_matching_summarys_cwd() {
+        let mut folds = std::collections::HashMap::new();
+        folds.insert(
+            "proj/abc.jsonl".to_string(),
+            TodayFold {
+                project: "p".into(),
+                tokens: 60,
+                cost_usd: 1.75,
+                account_uuids: vec![Some("acc1".to_string())],
+            },
+        );
+        let sessions = vec![test_session_summary("proj/abc.jsonl", "/repo/checkout", "checkout")];
+
+        let inputs = build_today_repo_inputs(folds, &sessions);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].cwd, "/repo/checkout");
+        assert_eq!(inputs[0].project_name, "checkout");
+        assert_eq!(inputs[0].total_tokens, 60);
+        assert_eq!(inputs[0].total_cost_usd, 1.75);
+    }
+
+    #[test]
+    fn build_today_repo_inputs_falls_back_to_the_event_project_when_no_summary_matches() {
+        let mut folds = std::collections::HashMap::new();
+        folds.insert(
+            "proj/unmatched.jsonl".to_string(),
+            TodayFold {
+                project: "orphan-project".into(),
+                tokens: 5,
+                cost_usd: 0.1,
+                account_uuids: vec![None],
+            },
+        );
+
+        // No SessionSummary at all — the fold entry must still produce a row.
+        let inputs = build_today_repo_inputs(folds, &[]);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].cwd, "orphan-project");
+        assert_eq!(inputs[0].project_name, "orphan-project");
+        assert_eq!(inputs[0].total_tokens, 5);
+    }
+
+    fn test_session_summary(source_file: &str, cwd: &str, project_name: &str) -> crate::sessions::SessionSummary {
+        crate::sessions::SessionSummary {
+            session_id: "s".into(),
+            cwd: cwd.into(),
+            project_name: project_name.into(),
+            git_branch: None,
+            title: "t".into(),
+            recap: None,
+            asked: "a".into(),
+            left_off: None,
+            touched_files: vec![],
+            touched_overflow: 0,
+            model: None,
+            peak_context_tokens: None,
+            turns: 1,
+            started_at: "s".into(),
+            ended_at: "e".into(),
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+            account_uuids: vec![],
+            permission_mode: None,
+            cwd_exists: true,
+            source_file: source_file.into(),
+        }
     }
 }
 
@@ -2340,6 +2551,7 @@ pub async fn list_resumable_sessions(
             // lookup key has to be built the same way.
             if let Ok(rel) = f.strip_prefix(&root) {
                 let rel_str = rel.to_string_lossy();
+                s.source_file = rel_str.to_string();
                 if let Some((tokens, cost)) = totals.get(rel_str.as_ref()) {
                     s.total_tokens = *tokens;
                     s.total_cost_usd = *cost;
