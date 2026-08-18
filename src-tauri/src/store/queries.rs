@@ -189,7 +189,7 @@ fn insert_events_in_tx(tx: &Transaction<'_>, events: &[StoredSessionEvent]) -> R
 /// conversation) and `commands::fold_today_events_by_parent` (today only) so
 /// the two can never drift into different subagent-folding rules.
 pub fn parent_source_file(source_file: &str) -> String {
-    match source_file.find("/subagents/") {
+    match source_file.find("/subagents/").or_else(|| source_file.find("\\subagents\\")) {
         Some(i) => format!("{}.jsonl", &source_file[..i]),
         None => source_file.to_string(),
     }
@@ -510,10 +510,7 @@ impl Db {
             std::collections::HashMap::new();
         for row in rows {
             let (source_file, account_uuid) = row?;
-            let key = match source_file.find("/subagents/") {
-                Some(i) => format!("{}.jsonl", &source_file[..i]),
-                None => source_file,
-            };
+            let key = parent_source_file(&source_file);
             let list = out.entry(key).or_default();
             if !list.contains(&account_uuid) {
                 list.push(account_uuid);
@@ -1181,6 +1178,14 @@ mod tests {
     #[test]
     fn parent_source_file_leaves_a_top_level_conversation_unchanged() {
         assert_eq!(parent_source_file("proj/abc.jsonl"), "proj/abc.jsonl");
+    }
+
+    #[test]
+    fn parent_source_file_folds_a_backslash_subagent_path_onto_its_parent() {
+        assert_eq!(
+            parent_source_file(r"proj\abc\subagents\agent-aaa.jsonl"),
+            r"proj\abc.jsonl"
+        );
     }
 
     #[test]

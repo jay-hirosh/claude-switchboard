@@ -103,6 +103,7 @@ describe('TodayTab', () => {
     await screen.findByTestId('today-cost');
     expect(screen.getByText('opus')).toBeInTheDocument();
     expect(screen.getByText('sonnet')).toBeInTheDocument();
+    expect(screen.getByTestId('today-cost')).toHaveTextContent('$1.20');
   });
 
   it('renders a repo card from getTodayRepoBreakdown', async () => {

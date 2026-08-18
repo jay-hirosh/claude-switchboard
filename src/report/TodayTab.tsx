@@ -54,7 +54,7 @@ export function TodayTab() {
   const { data, error, loading, reload } = useTabData(
     () =>
       Promise.all([
-        ipc.getSessionHistory(1),
+        ipc.getSessionHistory(2),
         ipc.getTodayPattern(),
         ipc.getTodayRepoBreakdown(),
         ipc.getTodayCacheStats(),
@@ -101,8 +101,8 @@ export function TodayTab() {
       <HeadlineRow cost={totalCost} tokens={totalTokens} sessionCount={sessions.length} />
       <HourlySection pattern={data.pattern} />
       <SessionsSection sessions={sessions} accounts={accounts} />
-      <ModelSection stats={modelStats} />
       <RepoSection repos={data.repos} accounts={accounts} />
+      <ModelSection stats={modelStats} />
       <CacheSection cache={data.cache} />
     </div>
   );
@@ -255,7 +255,7 @@ function ModelSection({ stats }: { stats: TodayModelStat[] }) {
 
 function RepoSection({ repos, accounts }: { repos: RepoStats[]; accounts: AccountListEntry[] }) {
   if (repos.length === 0) return null;
-  const maxCost = Math.max(...repos.map((r) => r.total_cost_usd), 1);
+  const maxCost = Math.max(...repos.map((r) => r.total_cost_usd));
   return (
     <div className="flex flex-col gap-[var(--space-sm)]">
       <span className="text-[length:var(--text-label)] font-[var(--weight-medium)] text-[color:var(--color-text-muted)] px-[var(--space-2xs)]">
