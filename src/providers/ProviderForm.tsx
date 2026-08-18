@@ -41,6 +41,12 @@ export function ProviderForm({ providerId, providerKind = null, onClose, onSaved
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [revealToken, setRevealToken] = useState(false);
+  // Suggestions for the Model / Quick model fields when the Ollama preset is
+  // active — the local model list, not a closed set of choices. Kept as a
+  // <datalist> rather than a <select> so a value that came from an existing
+  // provider (or one not pulled yet) is never silently replaced.
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
 
   useEffect(() => {
     void ipc.listProviderPresets().then(setPresets);
@@ -60,8 +66,19 @@ export function ProviderForm({ providerId, providerKind = null, onClose, onSaved
       setExtraArgs(p.extra_args.join(' '));
       setEnv(p.env as Record<string, string>);
       setPresetId(p.preset_id ?? '');
+      if (p.preset_id === 'ollama' && p.base_url) void loadOllamaModels(p.base_url);
     });
   }, [providerId]);
+
+  async function loadOllamaModels(url: string) {
+    setOllamaError(null);
+    try {
+      setOllamaModels(await ipc.listOllamaModels(url));
+    } catch (e) {
+      setOllamaModels([]);
+      setOllamaError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   function applyPreset(id: string) {
     setPresetId(id);
@@ -72,6 +89,7 @@ export function ProviderForm({ providerId, providerKind = null, onClose, onSaved
     setEnv(p.env as Record<string, string>);
     setModel(p.env['ANTHROPIC_MODEL'] ?? '');
     setQuickModel(p.env['ANTHROPIC_SMALL_FAST_MODEL'] ?? '');
+    if (id === 'ollama') void loadOllamaModels(p.base_url);
   }
 
   // The official provider's credentials, endpoint and model all come from the
@@ -231,6 +249,7 @@ export function ProviderForm({ providerId, providerKind = null, onClose, onSaved
                 className={`${inputClass} mono`}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
+                list={presetId === 'ollama' ? 'ollama-model-list' : undefined}
               />
             </label>
             <label className="flex min-w-0 flex-1 flex-col gap-[var(--space-2xs)]">
@@ -241,9 +260,23 @@ export function ProviderForm({ providerId, providerKind = null, onClose, onSaved
                 value={quickModel}
                 onChange={(e) => setQuickModel(e.target.value)}
                 placeholder="same as Model"
+                list={presetId === 'ollama' ? 'ollama-model-list' : undefined}
               />
             </label>
           </div>
+          {presetId === 'ollama' && (
+            <datalist id="ollama-model-list">
+              {ollamaModels.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          )}
+          {presetId === 'ollama' && ollamaError && (
+            <span className={hintClass}>
+              Couldn't reach Ollama at <code className="mono">{baseUrl}</code> to list installed
+              models — enter a model name manually (see <code className="mono">ollama list</code>).
+            </span>
+          )}
           <span className={hintClass}>
             The quick model runs background work — titles, summaries, file
             classification. Leave it blank to let the provider decide. Both fields also

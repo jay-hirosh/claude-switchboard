@@ -14,9 +14,22 @@ const ipcMock = vi.hoisted(() => ({
         CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
       },
     },
+    {
+      id: 'ollama',
+      name: 'Ollama (local)',
+      base_url: 'http://localhost:11434',
+      website: 'https://ollama.com/library',
+      env: {
+        ANTHROPIC_AUTH_TOKEN: 'ollama',
+        ANTHROPIC_MODEL: 'llama3.2',
+        ANTHROPIC_SMALL_FAST_MODEL: 'llama3.2',
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: '32768',
+      },
+    },
   ]),
   listProviders: vi.fn().mockResolvedValue([]),
   upsertProvider: vi.fn().mockResolvedValue(undefined),
+  listOllamaModels: vi.fn().mockResolvedValue(['gpt-oss:20b', 'llama3.2:latest']),
 }));
 vi.mock('../../lib/ipc', () => ({ ipc: ipcMock }));
 
@@ -210,6 +223,72 @@ describe('ProviderForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/https/i));
     expect(ipcMock.upsertProvider).not.toHaveBeenCalled();
+  });
+
+  describe('Ollama model discovery', () => {
+    it('offers installed models as suggestions once the local server responds', async () => {
+      render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+      await waitFor(() => expect(screen.getByRole('option', { name: /Ollama/ })).toBeTruthy());
+      fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'ollama' } });
+
+      await waitFor(() => expect(ipcMock.listOllamaModels).toHaveBeenCalledWith('http://localhost:11434'));
+      await waitFor(() => {
+        const options = Array.from(document.querySelectorAll('#ollama-model-list option')).map(
+          (o) => (o as HTMLOptionElement).value,
+        );
+        expect(options).toEqual(['gpt-oss:20b', 'llama3.2:latest']);
+      });
+
+      // Still a plain, typable text input — not a closed dropdown.
+      const modelField = screen.getByLabelText(/^model/i) as HTMLInputElement;
+      fireEvent.change(modelField, { target: { value: 'not-yet-pulled' } });
+      expect(modelField.value).toBe('not-yet-pulled');
+    });
+
+    it('falls back to a plain field with a hint when Ollama is unreachable', async () => {
+      ipcMock.listOllamaModels.mockRejectedValueOnce(new Error('connection refused'));
+      render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+      await waitFor(() => expect(screen.getByRole('option', { name: /Ollama/ })).toBeTruthy());
+      fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'ollama' } });
+
+      await waitFor(() =>
+        expect(screen.getByText(/couldn.t reach ollama/i)).toBeTruthy(),
+      );
+      const modelField = screen.getByLabelText(/^model/i) as HTMLInputElement;
+      fireEvent.change(modelField, { target: { value: 'llama3.2' } });
+      expect(modelField.value).toBe('llama3.2');
+    });
+
+    it('does not offer Ollama suggestions for other presets', async () => {
+      render(<ProviderForm providerId={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+      await waitFor(() => expect(screen.getByRole('option', { name: /GLM/ })).toBeTruthy());
+      fireEvent.change(screen.getByLabelText(/preset/i), { target: { value: 'glm' } });
+      await waitFor(() =>
+        expect((screen.getByLabelText(/^model/i) as HTMLInputElement).value).toBe('glm-5.2'),
+      );
+      expect(ipcMock.listOllamaModels).not.toHaveBeenCalled();
+      expect(document.querySelector('#ollama-model-list')).toBeNull();
+    });
+
+    it('loads suggestions when opening an existing Ollama provider for edit', async () => {
+      ipcMock.listProviders.mockResolvedValue([
+        {
+          id: 'p-ollama',
+          name: 'Ollama (local)',
+          kind: 'third_party',
+          base_url: 'http://localhost:11500',
+          auth_token: 'ollama',
+          env: { ANTHROPIC_MODEL: 'llama3.2' },
+          extra_args: [],
+          preset_id: 'ollama',
+          sort_index: 1,
+        },
+      ]);
+      render(<ProviderForm providerId="p-ollama" onClose={vi.fn()} onSaved={vi.fn()} />);
+      await waitFor(() =>
+        expect(ipcMock.listOllamaModels).toHaveBeenCalledWith('http://localhost:11500'),
+      );
+    });
   });
 
   describe('the official provider', () => {

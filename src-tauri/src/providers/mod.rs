@@ -10,6 +10,7 @@
 pub mod default_env;
 pub mod launcher;
 pub mod model;
+pub mod ollama;
 pub mod presets;
 pub mod store;
 

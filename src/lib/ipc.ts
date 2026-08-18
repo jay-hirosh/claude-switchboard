@@ -65,6 +65,7 @@ export const ipc = {
     commands.upsertProvider(p).then(unwrap),
   deleteProvider: (id: string) => commands.deleteProvider(id).then(unwrap),
   listProviderPresets: () => commands.listProviderPresets().then(unwrap),
+  listOllamaModels: (baseUrl: string) => commands.listOllamaModels(baseUrl).then(unwrap),
   listAvailableTerminals: () => commands.listAvailableTerminals().then(unwrap),
   launchProviderSession: (
     providerId: string,

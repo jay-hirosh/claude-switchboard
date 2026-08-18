@@ -376,6 +376,20 @@ async listProviderPresets() : Promise<Result<PresetInfo[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Model names installed on a local Ollama server, for the suggestion
+ * dropdown in the provider form. `base_url` is the provider's own base URL,
+ * not a separate setting — the form passes whatever is currently typed
+ * there so a non-default host or port still resolves.
+ */
+async listOllamaModels(baseUrl: string) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_ollama_models", { baseUrl }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async listAvailableTerminals() : Promise<Result<Terminal[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_available_terminals") };

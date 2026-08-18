@@ -1916,6 +1916,7 @@ mod tests {
 
 use crate::providers::launcher::{self, LaunchSpec, LaunchSurface, Terminal};
 use crate::providers::model::Provider;
+use crate::providers::ollama;
 use crate::providers::presets::{self, PresetInfo};
 use crate::providers::{default_env, DefaultProviderState};
 use std::path::PathBuf;
@@ -1980,6 +1981,19 @@ pub async fn delete_provider(id: String, state: State<'_, Arc<AppState>>) -> Res
 #[specta::specta]
 pub async fn list_provider_presets() -> Result<Vec<PresetInfo>, String> {
     Ok(presets::all_info())
+}
+
+/// Model names installed on a local Ollama server, for the suggestion
+/// dropdown in the provider form. `base_url` is the provider's own base URL,
+/// not a separate setting — the form passes whatever is currently typed
+/// there so a non-default host or port still resolves.
+#[command]
+#[specta::specta]
+pub async fn list_ollama_models(
+    base_url: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<String>, String> {
+    ollama::fetch_models(&state.http_client, &base_url).await
 }
 
 #[command]

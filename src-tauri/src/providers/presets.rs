@@ -110,6 +110,42 @@ static PRESETS: &[Preset] = &[
             ("API_TIMEOUT_MS", "3000000"),
         ],
     },
+    Preset {
+        id: "ollama",
+        name: "Ollama (local)",
+        // Ollama 0.32+ serves the Anthropic Messages API natively at
+        // /v1/messages — no proxy needed. http is correct here: this is a
+        // loopback endpoint, not a credential-bearing remote API.
+        base_url: "http://localhost:11434",
+        website: "https://ollama.com/library",
+        env: &[
+            // Ollama never checks this value, but Claude Code itself refuses
+            // to start without *some* auth source configured — it exits with
+            // "Not logged in" rather than reaching the endpoint at all. The
+            // placeholder exists purely to satisfy that check.
+            ("ANTHROPIC_AUTH_TOKEN", "ollama"),
+            // No single model name is safe to assume — it's whatever the
+            // user has pulled. This is a starting point to edit in the Model
+            // field, not a guess at what's installed.
+            ("ANTHROPIC_MODEL", "llama3.2"),
+            ("ANTHROPIC_SMALL_FAST_MODEL", "llama3.2"),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "llama3.2"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "llama3.2"),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "llama3.2"),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "llama3.2"),
+            // 32K is a tested floor, not a round-number guess: Claude Code's
+            // own system prompt plus tool schemas already exceeds 8K tokens,
+            // so a smaller value fails on the very first message with
+            // "Prompt is too long" before Ollama is even involved. Ollama's
+            // runtime context window defaults to far less than a model's
+            // trained max (2K-4K unless num_ctx/OLLAMA_CONTEXT_LENGTH raises
+            // it) — raise this to match whatever the local server actually
+            // keeps, or responses get silently truncated instead of erroring.
+            ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "32768"),
+            ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "32768"),
+            ("API_TIMEOUT_MS", "3000000"),
+        ],
+    },
 ];
 
 pub fn all() -> &'static [Preset] {
@@ -218,11 +254,15 @@ mod tests {
     #[test]
     fn base_urls_are_https_and_have_no_trailing_slash() {
         for p in all() {
-            assert!(
-                p.base_url.starts_with("https://"),
-                "{} base_url must be https",
-                p.id
-            );
+            // Ollama is the one deliberate exception: it targets a loopback
+            // address, not a remote credentialed API.
+            if p.id != "ollama" {
+                assert!(
+                    p.base_url.starts_with("https://"),
+                    "{} base_url must be https",
+                    p.id
+                );
+            }
             assert!(
                 !p.base_url.ends_with('/'),
                 "{} base_url must not end in a slash",
