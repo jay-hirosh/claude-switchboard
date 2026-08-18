@@ -21,7 +21,9 @@ export const ipc = {
   getDailyModelBreakdown: (days: number) => commands.getDailyModelBreakdown(days).then(unwrap),
   getProjectBreakdown: (days: number) => commands.getProjectBreakdown(days).then(unwrap),
   getRepoBreakdown: () => commands.getRepoBreakdown().then(unwrap),
+  getTodayRepoBreakdown: () => commands.getTodayRepoBreakdown().then(unwrap),
   getCacheStats: (days: number) => commands.getCacheStats(days).then(unwrap),
+  getTodayCacheStats: () => commands.getTodayCacheStats().then(unwrap),
   getDailyAccountBreakdown: (days: number) => commands.getDailyAccountBreakdown(days).then(unwrap),
   getCacheStatsByAccount: (days: number) => commands.getCacheStatsByAccount(days).then(unwrap),
 
