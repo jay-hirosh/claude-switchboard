@@ -26,7 +26,7 @@ export function isHeadlessProject(project: string): boolean {
   return !project || project === '-';
 }
 
-function formatClock(iso: string): string {
+export function formatClock(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
@@ -52,7 +52,7 @@ interface SubagentSession {
   dominant_model: string;
 }
 
-interface AggregatedSession {
+export interface AggregatedSession {
   id: string;
   project: string;
   /** Local calendar day (`YYYY-MM-DD`) this row's turns happened on. A row
