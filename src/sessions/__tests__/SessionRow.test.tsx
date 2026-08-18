@@ -25,6 +25,7 @@ function session(over: Partial<SessionSummary> = {}): SessionSummary {
     permission_mode: null,
     cwd_exists: true,
     account_uuids: [],
+    source_file: '/Users/me/.claude/projects/claude-switchboard/029a3e04-fa36.jsonl',
     ...over,
   };
 }

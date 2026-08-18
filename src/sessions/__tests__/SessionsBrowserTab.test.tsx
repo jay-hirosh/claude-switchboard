@@ -36,6 +36,7 @@ function s(over: Partial<SessionSummary>): SessionSummary {
     permission_mode: null,
     cwd_exists: true,
     account_uuids: [],
+    source_file: '/Users/me/.claude/projects/alpha/id-1.jsonl',
     ...over,
   };
 }
