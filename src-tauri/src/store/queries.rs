@@ -184,6 +184,17 @@ fn insert_events_in_tx(tx: &Transaction<'_>, events: &[StoredSessionEvent]) -> R
     Ok(inserted)
 }
 
+/// Subagent transcripts (`<sessionId>/subagents/agent-*.jsonl`) fold onto
+/// their parent's `.jsonl` path. Shared by `session_totals` (lifetime, every
+/// conversation) and `commands::fold_today_events_by_parent` (today only) so
+/// the two can never drift into different subagent-folding rules.
+pub fn parent_source_file(source_file: &str) -> String {
+    match source_file.find("/subagents/") {
+        Some(i) => format!("{}.jsonl", &source_file[..i]),
+        None => source_file.to_string(),
+    }
+}
+
 impl Db {
     pub fn upsert_account(&self, acc: &StoredAccount) -> Result<()> {
         let now = Utc::now().timestamp();
@@ -454,10 +465,7 @@ impl Db {
             std::collections::HashMap::new();
         for row in rows {
             let (source_file, tokens, cost) = row?;
-            let key = match source_file.find("/subagents/") {
-                Some(i) => format!("{}.jsonl", &source_file[..i]),
-                None => source_file,
-            };
+            let key = parent_source_file(&source_file);
             let slot = out.entry(key).or_insert((0, 0.0));
             slot.0 += tokens.max(0) as u64;
             slot.1 += cost;
@@ -1160,6 +1168,19 @@ mod tests {
             !totals.contains_key("proj/abc/subagents/agent-aaa.jsonl"),
             "a subagent is not a session and must not appear as its own key"
         );
+    }
+
+    #[test]
+    fn parent_source_file_folds_a_subagent_path_onto_its_parent() {
+        assert_eq!(
+            parent_source_file("proj/abc/subagents/agent-aaa.jsonl"),
+            "proj/abc.jsonl"
+        );
+    }
+
+    #[test]
+    fn parent_source_file_leaves_a_top_level_conversation_unchanged() {
+        assert_eq!(parent_source_file("proj/abc.jsonl"), "proj/abc.jsonl");
     }
 
     #[test]
