@@ -1,4 +1,4 @@
-use crate::tray_icon;
+use crate::tray_icon::{self, IconStyle};
 use chrono::{DateTime, Utc};
 use tauri::image::Image;
 use tauri::AppHandle;
@@ -16,10 +16,11 @@ pub fn set_level(
     five_hour_resets_at: Option<DateTime<Utc>>,
     seven_day_resets_at: Option<DateTime<Utc>>,
     paused: bool,
+    icon_style: IconStyle,
 ) {
     let Some(tray) = app.tray_by_id("main") else { return };
 
-    let bytes = tray_icon::render(five_hour, seven_day, paused);
+    let bytes = tray_icon::render(five_hour, seven_day, paused, icon_style);
     match Image::from_bytes(&bytes) {
         Ok(img) => { let _ = tray.set_icon(Some(img)); }
         Err(e) => tracing::warn!("tray icon decode failed, keeping previous icon: {e}"),

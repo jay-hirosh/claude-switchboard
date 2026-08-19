@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, MotionConfig } from 'framer-motion';
 import { CompactPopover } from './popover/CompactPopover';
 import { ExpandedReport } from './report/ExpandedReport';
 import { AuthPanel } from './settings/AuthPanel';
 import { useAppStore } from './lib/store';
 import { useThemeStore, resolveTheme, type ResolvedTheme } from './lib/theme';
+import { useAppearanceStore } from './lib/appearance';
 import { attachUpdateListeners } from './lib/updateEvents';
+import { windowsAnimatedSize } from './lib/windowSizing';
 import './styles/globals.css';
 import './styles/tokens.css';
 
@@ -13,6 +15,7 @@ export function App() {
   const init = useAppStore((s) => s.init);
   const accounts = useAppStore((s) => s.accounts);
   const viewMode = useAppStore((s) => s.viewMode);
+  const isFullscreen = useAppStore((s) => s.isFullscreen);
   const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
@@ -26,6 +29,9 @@ export function App() {
   }, []);
 
   const themePreference = useThemeStore((s) => s.themePreference);
+  const accentColor = useAppearanceStore((s) => s.accentColor);
+  const density = useAppearanceStore((s) => s.density);
+  const reduceMotion = useAppearanceStore((s) => s.reduceMotion);
 
   useEffect(() => {
     const mql = window.matchMedia('(prefers-color-scheme: dark)');
@@ -41,6 +47,14 @@ export function App() {
   }, [themePreference]);
 
   useEffect(() => {
+    document.body.dataset.accent = accentColor;
+  }, [accentColor]);
+
+  useEffect(() => {
+    document.body.dataset.density = density;
+  }, [density]);
+
+  useEffect(() => {
     document.body.dataset.viewMode = viewMode;
     // The Windows corner radius lives in globals.css, not here: it has to be
     // 0 so the webview paints every pixel of the client area, and the OS does
@@ -50,6 +64,16 @@ export function App() {
     }
     return () => { delete document.body.dataset.viewMode; };
   }, [viewMode]);
+
+  useEffect(() => {
+    // A fullscreen window has no visible corner to round — #root's CSS
+    // radius would otherwise clip triangular gaps into the screen edges.
+    if (isFullscreen) {
+      document.body.dataset.fullscreen = 'true';
+    } else {
+      delete document.body.dataset.fullscreen;
+    }
+  }, [isFullscreen]);
 
   if (!initialized) {
     return (
@@ -67,7 +91,11 @@ export function App() {
   // LoadingShell forever because state.snapshot() returns None until
   // active_slot resolves to a managed slot.
   if (accounts.length === 0) {
-    return <AuthPanel />;
+    return (
+      <MotionConfig reducedMotion={reduceMotion ? 'always' : 'user'}>
+        <AuthPanel />
+      </MotionConfig>
+    );
   }
 
   const isWin = navigator.userAgent.includes('Windows');
@@ -101,14 +129,11 @@ export function App() {
   );
 
   return (
-    <>
+    <MotionConfig reducedMotion={reduceMotion ? 'always' : 'user'}>
       {isWin ? (
         <motion.div
           initial={false}
-          animate={{
-            width: viewMode === 'expanded' ? 960 : 360,
-            height: viewMode === 'expanded' ? 640 : 380,
-          }}
+          animate={windowsAnimatedSize(viewMode, isFullscreen)}
           transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
           style={{ overflow: 'hidden', margin: 'auto' }}
           className="win-animated-container"
@@ -118,6 +143,6 @@ export function App() {
       ) : (
         content
       )}
-    </>
+    </MotionConfig>
   );
 }

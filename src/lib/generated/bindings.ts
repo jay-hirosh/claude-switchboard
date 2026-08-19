@@ -202,6 +202,21 @@ async resizeWindow(mode: string, extraHeight: number) : Promise<Result<null, str
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Flips native OS fullscreen on the "popover" window (only meaningful in
+ * expanded mode — the frontend gates the trigger surfaces to that state)
+ * and returns the resulting state. The frontend also re-queries
+ * `isFullscreen()` on resize, since the OS can exit fullscreen on its own
+ * (Mission Control, etc.) without going through this command.
+ */
+async toggleFullscreen() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("toggle_fullscreen") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async forceRefresh(scope: RefreshScope) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("force_refresh", { scope }) };
@@ -707,6 +722,24 @@ export type HourCell = {
  */
 weekday: number; hour: number; tokens: number; cost_usd: number; request_count: number }
 export type HourTotal = { hour: number; tokens: number; cost_usd: number; request_count: number }
+/**
+ * User-selectable tray icon layout. `Dual` is the original design (both
+ * buckets, always drawn); `Primary` and `Minimal` trade off detail for a
+ * smaller/quieter icon.
+ */
+export type IconStyle = 
+/**
+ * Both buckets, one pie/ring each. The original design.
+ */
+"dual" | 
+/**
+ * A single pie/ring for whichever bucket (5h or 7d) is more urgent.
+ */
+"primary" | 
+/**
+ * A plain status-colored dot — no digits, smallest visual footprint.
+ */
+"minimal"
 export type InstallStatuslineOutcome = { status: "applied" } | 
 /**
  * `settings.json` already carries a `statusLine` we do not own. The UI
@@ -958,7 +991,13 @@ notify_session_finished: boolean;
  * `notify_session_finished` (container-level `#[serde(default)]` +
  * this being `true` in the custom `Default` impl below).
  */
-notify_context_warning: boolean }
+notify_context_warning: boolean; 
+/**
+ * Tray icon layout. No field-level `#[serde(default = "...")]` needed —
+ * same mechanism as `notify_session_finished` (container-level
+ * `#[serde(default)]` + `IconStyle`'s own `#[default]` variant).
+ */
+icon_style: IconStyle }
 /**
  * What Switchboard wrote as `statusLine`, for the settings UI to display.
  * The prior value (the undo record) is not part of this — it's an

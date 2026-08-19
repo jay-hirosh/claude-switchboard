@@ -5,9 +5,10 @@ import { Slider } from '../components/ui/Slider';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Select } from '../components/ui/Select';
-import type { Terminal } from '../lib/generated/bindings';
+import type { IconStyle, Terminal } from '../lib/generated/bindings';
 import { useAppStore } from '../lib/store';
 import { useThemeStore, type ThemePreference } from '../lib/theme';
+import { useAppearanceStore, type AccentColor } from '../lib/appearance';
 import type { Settings } from '../lib/types';
 import {
   enable as enableAutostart,
@@ -34,6 +35,30 @@ const TERMINAL_LABELS: Record<Terminal, string> = {
   power_shell: 'PowerShell',
 };
 
+/// Curated accent swatches. Colors here are the light-theme values from
+/// tokens.css's `body[data-accent="..."]` blocks — an approximation for
+/// preview purposes; the actual rendered accent also has a dark-theme
+/// variant the swatch doesn't reflect. Ordered as a warm-to-cool sweep
+/// ending in the neutral graphite option.
+const ACCENT_OPTIONS: { value: AccentColor; label: string; swatch: string }[] = [
+  { value: 'terracotta', label: 'Terracotta', swatch: 'oklch(56% 0.155 38)' },
+  { value: 'gold', label: 'Gold', swatch: 'oklch(60% 0.135 85)' },
+  { value: 'sage', label: 'Sage', swatch: 'oklch(50% 0.10 145)' },
+  { value: 'teal', label: 'Teal', swatch: 'oklch(48% 0.135 180)' },
+  { value: 'sky', label: 'Sky', swatch: 'oklch(54% 0.13 225)' },
+  { value: 'indigo', label: 'Indigo', swatch: 'oklch(52% 0.16 258)' },
+  { value: 'violet', label: 'Violet', swatch: 'oklch(54% 0.16 288)' },
+  { value: 'plum', label: 'Plum', swatch: 'oklch(50% 0.15 316)' },
+  { value: 'berry', label: 'Berry', swatch: 'oklch(48% 0.15 345)' },
+  { value: 'graphite', label: 'Graphite', swatch: 'oklch(38% 0.012 65)' },
+];
+
+const ICON_STYLE_OPTIONS: { value: IconStyle; label: string }[] = [
+  { value: 'dual', label: 'Dual — both buckets' },
+  { value: 'primary', label: 'Primary — the more urgent bucket' },
+  { value: 'minimal', label: 'Minimal — status dot only' },
+];
+
 export function SettingsPanel() {
   const settings = useAppStore((s) => s.settings);
   const setSettings = useAppStore((s) => s.setSettings);
@@ -41,6 +66,12 @@ export function SettingsPanel() {
   const accounts = useAppStore((s) => s.accounts);
   const themePreference = useThemeStore((s) => s.themePreference);
   const setThemePreference = useThemeStore((s) => s.setThemePreference);
+  const accentColor = useAppearanceStore((s) => s.accentColor);
+  const setAccentColor = useAppearanceStore((s) => s.setAccentColor);
+  const density = useAppearanceStore((s) => s.density);
+  const setDensity = useAppearanceStore((s) => s.setDensity);
+  const reduceMotion = useAppearanceStore((s) => s.reduceMotion);
+  const setReduceMotion = useAppearanceStore((s) => s.setReduceMotion);
   const [local, setLocal] = useState<Settings | null>(() => settings);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -155,6 +186,53 @@ export function SettingsPanel() {
               </span>
             </label>
           ))}
+        </Card>
+        <Card className="p-[var(--space-md)] flex flex-col gap-[var(--space-md)]">
+          <div className="flex flex-col gap-[var(--space-xs)]">
+            <span className="text-[length:var(--text-label)] font-[var(--weight-medium)] text-[color:var(--color-text-secondary)]">
+              Accent color
+            </span>
+            <div className="flex flex-wrap gap-[var(--space-sm)]">
+              {ACCENT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  aria-pressed={accentColor === opt.value}
+                  aria-label={opt.label}
+                  title={opt.label}
+                  onClick={() => setAccentColor(opt.value)}
+                  className={[
+                    'w-[22px] h-[22px] rounded-full shrink-0 cursor-pointer',
+                    'transition-[box-shadow,transform] duration-[var(--duration-fast)] hover:scale-110',
+                    accentColor === opt.value
+                      ? 'shadow-[0_0_0_2px_var(--color-bg-card),0_0_0_4px_var(--color-text-secondary)]'
+                      : 'shadow-[0_0_0_1px_var(--color-border)] hover:shadow-[0_0_0_1px_var(--color-border-hover)]',
+                  ].join(' ')}
+                  style={{ background: opt.swatch }}
+                />
+              ))}
+            </div>
+          </div>
+          <Toggle
+            label="Compact density"
+            description="Tighter spacing throughout the popover and report window."
+            checked={density === 'compact'}
+            onChange={(e) => setDensity(e.target.checked ? 'compact' : 'comfortable')}
+          />
+          <Toggle
+            label="Reduce motion"
+            description="Turn off spring animations app-wide."
+            checked={reduceMotion}
+            onChange={(e) => setReduceMotion(e.target.checked)}
+          />
+        </Card>
+        <Card className="p-[var(--space-md)]">
+          <Select
+            label="Menu bar icon style"
+            value={local.icon_style}
+            onChange={(e) => update('icon_style', e.target.value as Settings['icon_style'])}
+            options={ICON_STYLE_OPTIONS}
+          />
         </Card>
       </section>
 

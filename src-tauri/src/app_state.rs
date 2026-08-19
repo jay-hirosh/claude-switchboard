@@ -62,6 +62,10 @@ pub struct Settings {
     /// `notify_session_finished` (container-level `#[serde(default)]` +
     /// this being `true` in the custom `Default` impl below).
     pub notify_context_warning: bool,
+    /// Tray icon layout. No field-level `#[serde(default = "...")]` needed —
+    /// same mechanism as `notify_session_finished` (container-level
+    /// `#[serde(default)]` + `IconStyle`'s own `#[default]` variant).
+    pub icon_style: crate::tray_icon::IconStyle,
 }
 
 impl Default for Settings {
@@ -78,6 +82,7 @@ impl Default for Settings {
             terminal: None,
             notify_session_finished: true,
             notify_context_warning: true,
+            icon_style: crate::tray_icon::IconStyle::Dual,
         }
     }
 }
@@ -163,6 +168,25 @@ mod settings_tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.terminal, Some(crate::providers::launcher::Terminal::Iterm2));
+    }
+
+    #[test]
+    fn settings_without_icon_style_field_defaults_to_dual() {
+        // Same legacy-shaped fixture as the sibling back-compat tests above —
+        // missing `icon_style` entirely, as any settings blob written before
+        // this field existed would be.
+        let json = r#"{
+            "polling_interval_secs": 300,
+            "stagger_gap_secs": 30,
+            "thresholds": [75, 90],
+            "payg_threshold": 85,
+            "theme": "system",
+            "launch_at_login": false,
+            "crash_reports": false,
+            "preferred_auth_source": null
+        }"#;
+        let s: Settings = serde_json::from_str(json).expect("legacy settings must still parse");
+        assert_eq!(s.icon_style, crate::tray_icon::IconStyle::Dual);
     }
 }
 

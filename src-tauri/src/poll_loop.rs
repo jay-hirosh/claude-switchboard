@@ -325,6 +325,7 @@ async fn apply_fetch_outcome(
                     snapshot.five_hour.as_ref().and_then(|u| u.resets_at),
                     snapshot.seven_day.as_ref().and_then(|u| u.resets_at),
                     false,
+                    state.settings.read().icon_style,
                 );
                 let (thresholds, payg_threshold) = {
                     let s = state.settings.read();

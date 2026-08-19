@@ -25,6 +25,10 @@ interface AppStore {
   sessionDataVersion: number;
   liveSessions: LiveSessionInfo[];
   viewMode: 'compact' | 'expanded';
+  /** Native OS fullscreen state of the expanded window. Re-synced from
+   *  resize events (see setFullscreen) since the OS can exit fullscreen
+   *  on its own, without going through toggleFullscreen(). */
+  isFullscreen: boolean;
   /** Bumped on every popover_shown so views can re-assert size/state. */
   shownTick: number;
   pendingSwapReport: SwapReport | null;
@@ -40,6 +44,8 @@ interface AppStore {
     kind: 'requiresSetup' | 'stale' | 'dbReset' | 'unmanagedActive',
   ) => void;
   toggleViewMode: () => void;
+  toggleFullscreen: () => Promise<void>;
+  setFullscreen: (fullscreen: boolean) => void;
   setPendingSwapReport: (report: SwapReport) => void;
   consumeSwapReport: () => void;
   pushModal: (id: string) => void;
@@ -61,6 +67,7 @@ export const useAppStore = create<AppStore>((set, _get) => ({
   sessionDataVersion: 0,
   liveSessions: [],
   viewMode: 'compact',
+  isFullscreen: false,
   shownTick: 0,
   pendingSwapReport: null,
   modalStack: [],
@@ -157,7 +164,7 @@ export const useAppStore = create<AppStore>((set, _get) => ({
           console.error('[watcher_error]', e.payload);
           break;
         case 'popover_hidden':
-          set({ viewMode: 'compact' });
+          set({ viewMode: 'compact', isFullscreen: false });
           ipc.resizeWindow('compact').catch(() => {});
           break;
         case 'popover_shown':
@@ -241,6 +248,15 @@ export const useAppStore = create<AppStore>((set, _get) => ({
     const next = _get().viewMode === 'compact' ? 'expanded' : 'compact';
     set({ viewMode: next });
     ipc.resizeWindow(next).catch(() => {});
+  },
+
+  async toggleFullscreen() {
+    const next = await ipc.toggleFullscreen();
+    set({ isFullscreen: next });
+  },
+
+  setFullscreen(fullscreen) {
+    set({ isFullscreen: fullscreen });
   },
 
   setPendingSwapReport(report) {

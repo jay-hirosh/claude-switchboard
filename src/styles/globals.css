@@ -78,6 +78,12 @@ body[data-view-mode="expanded"] #root {
   background: var(--color-bg-base);
 }
 
+body[data-fullscreen="true"] #root {
+  /* A true fullscreen window has no visible corner — clipping one here would
+   * cut transparent triangles into the screen edges instead. */
+  border-radius: 0;
+}
+
 /* ─── Windows ───
  *
  * Every pixel of the client area MUST be painted, because an unpainted one is

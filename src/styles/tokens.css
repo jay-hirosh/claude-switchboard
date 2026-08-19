@@ -197,6 +197,94 @@
   --text-hero-unit: 24px;
 }
 
+/* Accent color overrides — data-accent is set from the appearance store
+ * (src/lib/appearance.ts), same attribute-swap mechanism as data-theme.
+ * Terracotta needs no block here: it's already the default token value
+ * above. Dark-theme variants live below the dark theme block, combined
+ * with [data-theme="dark"] for higher specificity — otherwise the dark
+ * block's own --color-accent (later in the cascade, equal specificity)
+ * would win over these. */
+body[data-accent="gold"] {
+  --color-accent: oklch(60% 0.135 85);
+  --color-accent-dim: oklch(60% 0.135 85 / 0.10);
+  --color-accent-muted: oklch(60% 0.135 85 / 0.24);
+  --color-border-focus: oklch(60% 0.135 85 / 0.55);
+}
+
+body[data-accent="sage"] {
+  --color-accent: oklch(50% 0.10 145);
+  --color-accent-dim: oklch(50% 0.10 145 / 0.10);
+  --color-accent-muted: oklch(50% 0.10 145 / 0.24);
+  --color-border-focus: oklch(50% 0.10 145 / 0.55);
+}
+
+body[data-accent="teal"] {
+  --color-accent: oklch(48% 0.135 180);
+  --color-accent-dim: oklch(48% 0.135 180 / 0.10);
+  --color-accent-muted: oklch(48% 0.135 180 / 0.24);
+  --color-border-focus: oklch(48% 0.135 180 / 0.55);
+}
+
+body[data-accent="sky"] {
+  --color-accent: oklch(54% 0.13 225);
+  --color-accent-dim: oklch(54% 0.13 225 / 0.10);
+  --color-accent-muted: oklch(54% 0.13 225 / 0.24);
+  --color-border-focus: oklch(54% 0.13 225 / 0.55);
+}
+
+body[data-accent="indigo"] {
+  --color-accent: oklch(52% 0.16 258);
+  --color-accent-dim: oklch(52% 0.16 258 / 0.10);
+  --color-accent-muted: oklch(52% 0.16 258 / 0.24);
+  --color-border-focus: oklch(52% 0.16 258 / 0.55);
+}
+
+body[data-accent="violet"] {
+  --color-accent: oklch(54% 0.16 288);
+  --color-accent-dim: oklch(54% 0.16 288 / 0.10);
+  --color-accent-muted: oklch(54% 0.16 288 / 0.24);
+  --color-border-focus: oklch(54% 0.16 288 / 0.55);
+}
+
+body[data-accent="plum"] {
+  --color-accent: oklch(50% 0.15 316);
+  --color-accent-dim: oklch(50% 0.15 316 / 0.10);
+  --color-accent-muted: oklch(50% 0.15 316 / 0.24);
+  --color-border-focus: oklch(50% 0.15 316 / 0.55);
+}
+
+body[data-accent="berry"] {
+  --color-accent: oklch(48% 0.15 345);
+  --color-accent-dim: oklch(48% 0.15 345 / 0.10);
+  --color-accent-muted: oklch(48% 0.15 345 / 0.24);
+  --color-border-focus: oklch(48% 0.15 345 / 0.55);
+}
+
+body[data-accent="graphite"] {
+  --color-accent: oklch(38% 0.012 65);
+  --color-accent-dim: oklch(38% 0.012 65 / 0.10);
+  --color-accent-muted: oklch(38% 0.012 65 / 0.24);
+  --color-border-focus: oklch(38% 0.012 65 / 0.55);
+}
+
+/* Density override — data-density is set from the appearance store, same
+ * attribute-swap mechanism. Comfortable needs no block — it's the default
+ * token values above. The --space-* aliases (defined against --spacing-*
+ * below in :root) pick up these values automatically since custom
+ * properties resolve at used-value time, not at definition time. */
+body[data-density="compact"] {
+  --spacing-2xs: 2px;
+  --spacing-xs: 3px;
+  --spacing-sm: 6px;
+  --spacing-md: 9px;
+  --spacing-lg: 12px;
+  --spacing-xl: 15px;
+  --spacing-2xl: 18px;
+  --spacing-3xl: 24px;
+  --spacing-4xl: 36px;
+  --spacing-pop: 14px;
+}
+
 /* Dark theme overrides — same tokens, dark values. Tailwind v4's generated
  * utilities resolve through these custom properties at runtime, so flipping
  * data-theme on <body> repaints the whole app. */
@@ -254,6 +342,72 @@ body[data-theme="dark"] {
   --color-overlay: oklch(10% 0.010 65 / 0.55);
 }
 
+/* Dark-theme accent variants — combined selector for higher specificity
+ * than the plain [data-theme="dark"] block above (see comment near the
+ * light-mode accent overrides). */
+body[data-theme="dark"][data-accent="gold"] {
+  --color-accent: oklch(80% 0.125 85);
+  --color-accent-dim: oklch(80% 0.125 85 / 0.14);
+  --color-accent-muted: oklch(80% 0.125 85 / 0.28);
+  --color-border-focus: oklch(80% 0.125 85 / 0.50);
+}
+
+body[data-theme="dark"][data-accent="sage"] {
+  --color-accent: oklch(72% 0.11 145);
+  --color-accent-dim: oklch(72% 0.11 145 / 0.14);
+  --color-accent-muted: oklch(72% 0.11 145 / 0.28);
+  --color-border-focus: oklch(72% 0.11 145 / 0.50);
+}
+
+body[data-theme="dark"][data-accent="teal"] {
+  --color-accent: oklch(74% 0.13 180);
+  --color-accent-dim: oklch(74% 0.13 180 / 0.14);
+  --color-accent-muted: oklch(74% 0.13 180 / 0.28);
+  --color-border-focus: oklch(74% 0.13 180 / 0.50);
+}
+
+body[data-theme="dark"][data-accent="sky"] {
+  --color-accent: oklch(76% 0.12 225);
+  --color-accent-dim: oklch(76% 0.12 225 / 0.14);
+  --color-accent-muted: oklch(76% 0.12 225 / 0.28);
+  --color-border-focus: oklch(76% 0.12 225 / 0.50);
+}
+
+body[data-theme="dark"][data-accent="indigo"] {
+  --color-accent: oklch(74% 0.14 258);
+  --color-accent-dim: oklch(74% 0.14 258 / 0.14);
+  --color-accent-muted: oklch(74% 0.14 258 / 0.28);
+  --color-border-focus: oklch(74% 0.14 258 / 0.50);
+}
+
+body[data-theme="dark"][data-accent="violet"] {
+  --color-accent: oklch(76% 0.14 288);
+  --color-accent-dim: oklch(76% 0.14 288 / 0.14);
+  --color-accent-muted: oklch(76% 0.14 288 / 0.28);
+  --color-border-focus: oklch(76% 0.14 288 / 0.50);
+}
+
+body[data-theme="dark"][data-accent="plum"] {
+  --color-accent: oklch(74% 0.14 316);
+  --color-accent-dim: oklch(74% 0.14 316 / 0.14);
+  --color-accent-muted: oklch(74% 0.14 316 / 0.28);
+  --color-border-focus: oklch(74% 0.14 316 / 0.50);
+}
+
+body[data-theme="dark"][data-accent="berry"] {
+  --color-accent: oklch(72% 0.14 345);
+  --color-accent-dim: oklch(72% 0.14 345 / 0.14);
+  --color-accent-muted: oklch(72% 0.14 345 / 0.28);
+  --color-border-focus: oklch(72% 0.14 345 / 0.50);
+}
+
+body[data-theme="dark"][data-accent="graphite"] {
+  --color-accent: oklch(80% 0.015 65);
+  --color-accent-dim: oklch(80% 0.015 65 / 0.14);
+  --color-accent-muted: oklch(80% 0.015 65 / 0.28);
+  --color-border-focus: oklch(80% 0.015 65 / 0.50);
+}
+
 /* Variables that aren't part of Tailwind's utility system — kept on :root for
  * inline-style access via var(...) but not exposed as Tailwind classes. */
 :root {
@@ -269,6 +423,10 @@ body[data-theme="dark"] {
    * width is 100%. Min-height prevents a squished layout if the user shrinks. */
   --report-width: 100%;
   --report-min-height: 560px;
+  /* Caps the tab-content column so fullscreen on a large/ultrawide display
+   * doesn't stretch charts and tables edge to edge — a no-op below this
+   * width, which covers the normal 960px expanded window. */
+  --report-content-max-width: 1200px;
 
   /* Progress bar heights */
   --bar-hairline: 2px;

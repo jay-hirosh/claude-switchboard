@@ -3,7 +3,7 @@
 //! displayed as two digits in the center. Square geometry is forced by the
 //! Windows shell tray API.
 
-use crate::tray_icon::{digits, shared};
+use crate::tray_icon::{digits, shared, IconStyle};
 use tiny_skia::{
     FillRule, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform,
 };
@@ -17,23 +17,82 @@ const INNER_R: f32 = 9.0;
 const INNER_STROKE: f32 = 2.5;
 const DIGIT_HEIGHT_PX: f32 = 9.0;
 
-pub fn render(five_hour: Option<f64>, seven_day: Option<f64>, paused: bool) -> Vec<u8> {
+// Primary/Minimal styles show a single glyph — a bit larger than the inner
+// ring of the Dual layout since there's no outer ring competing for space.
+const PRIMARY_R: f32 = 12.5;
+const PRIMARY_STROKE: f32 = 3.0;
+const PRIMARY_DIGIT_HEIGHT_PX: f32 = 11.0;
+const MINIMAL_DOT_R: f32 = 8.0;
+
+pub fn render(five_hour: Option<f64>, seven_day: Option<f64>, paused: bool, style: IconStyle) -> Vec<u8> {
     let mut pixmap = Pixmap::new(SIZE, SIZE).expect("32x32 fits in memory");
     pixmap.fill(tiny_skia::Color::TRANSPARENT);
 
     let no_data = paused || (five_hour.is_none() && seven_day.is_none());
+    let five_hour = if no_data { None } else { five_hour };
+    let seven_day = if no_data { None } else { seven_day };
 
-    draw_ring(&mut pixmap, OUTER_R, OUTER_STROKE, if no_data { None } else { five_hour });
-    draw_ring(&mut pixmap, INNER_R, INNER_STROKE, if no_data { None } else { seven_day });
+    match style {
+        IconStyle::Dual => {
+            draw_ring(&mut pixmap, OUTER_R, OUTER_STROKE, five_hour);
+            draw_ring(&mut pixmap, INNER_R, INNER_STROKE, seven_day);
 
-    let display_val = five_hour.or(seven_day);
-    let digit_str = match display_val {
-        Some(p) if !no_data => format!("{}", (p.clamp(0.0, 99.0).round()) as i64),
-        _ => "\u{2014}".to_string(),
-    };
-    draw_centered_text(&mut pixmap, &digit_str, CX, CY, DIGIT_HEIGHT_PX, shared::text());
+            let digit_str = match five_hour.or(seven_day) {
+                Some(p) => format!("{}", (p.clamp(0.0, 99.0).round()) as i64),
+                None => "\u{2014}".to_string(),
+            };
+            draw_centered_text(&mut pixmap, &digit_str, CX, CY, DIGIT_HEIGHT_PX, shared::text());
+        }
+        IconStyle::Primary => {
+            let pct = worse_of(five_hour, seven_day);
+            draw_ring(&mut pixmap, PRIMARY_R, PRIMARY_STROKE, pct);
+
+            let digit_str = match pct {
+                Some(p) => format!("{}", (p.clamp(0.0, 99.0).round()) as i64),
+                None => "\u{2014}".to_string(),
+            };
+            let color = match pct {
+                Some(_) => shared::text(),
+                None => shared::text_muted(),
+            };
+            draw_centered_text(&mut pixmap, &digit_str, CX, CY, PRIMARY_DIGIT_HEIGHT_PX, color);
+        }
+        IconStyle::Minimal => {
+            draw_dot(&mut pixmap, worse_of(five_hour, seven_day));
+        }
+    }
 
     pixmap.encode_png().expect("png encode never fails")
+}
+
+/// The bucket that's closer to its limit — the more urgent of the two to
+/// show when only one glyph fits (`Primary` style).
+fn worse_of(five_hour: Option<f64>, seven_day: Option<f64>) -> Option<f64> {
+    match (five_hour, seven_day) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// `Minimal` style — a plain status-colored dot, no ring/track and no
+/// digits. A muted gray stands in for "no data" instead of an em-dash,
+/// since there's no digit slot to put one in.
+fn draw_dot(pixmap: &mut Pixmap, pct: Option<f64>) {
+    let color = match pct {
+        Some(p) => shared::arc_color(p),
+        None => shared::track(),
+    };
+    let path = {
+        let mut pb = PathBuilder::new();
+        pb.push_circle(CX, CY, MINIMAL_DOT_R);
+        pb.finish().expect("circle is valid")
+    };
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
 fn draw_ring(pixmap: &mut Pixmap, radius: f32, stroke_width: f32, pct: Option<f64>) {
@@ -127,7 +186,7 @@ mod tests {
 
     #[test]
     fn output_is_32x32_png() {
-        let bytes = render(Some(50.0), Some(50.0), false);
+        let bytes = render(Some(50.0), Some(50.0), false, IconStyle::Dual);
         let (w, h, _) = decode_png(&bytes);
         assert_eq!((w, h), (32, 32));
     }
@@ -136,7 +195,7 @@ mod tests {
     fn five_hour_value_drives_center_digits() {
         // 80% on 5h, 30% on 7d: the digits should be "80", in danger color
         // is wrong (80 = warn). Here we just confirm SOMETHING gets rendered.
-        let bytes = render(Some(80.0), Some(30.0), false);
+        let bytes = render(Some(80.0), Some(30.0), false, IconStyle::Dual);
         let (_, _, rgba) = decode_png(&bytes);
         let any_opaque = rgba.chunks(4).any(|p| p[3] > 200);
         assert!(any_opaque);
@@ -144,10 +203,68 @@ mod tests {
 
     #[test]
     fn no_data_state_is_mostly_empty() {
-        let bytes = render(None, None, true);
+        let bytes = render(None, None, true, IconStyle::Dual);
         let (_, _, rgba) = decode_png(&bytes);
         let opaque_count = rgba.chunks(4).filter(|p| p[3] > 200).count();
         // Track rings + em-dash. Lower than two filled arcs + two two-digit numbers.
         assert!(opaque_count < 250, "got {} opaque pixels in no-data state", opaque_count);
+    }
+
+    #[test]
+    fn primary_style_uses_the_worse_of_the_two_buckets() {
+        let bytes = render(Some(80.0), Some(30.0), false, IconStyle::Primary);
+        let (_, _, rgba) = decode_png(&bytes);
+        let warn_target = (0xE8, 0x91, 0x49);
+        let has_warn = rgba
+            .chunks(4)
+            .any(|p| p[3] > 200 && near(p[0], warn_target.0) && near(p[1], warn_target.1) && near(p[2], warn_target.2));
+        assert!(has_warn, "expected the worse (80%) bucket's warn color to appear");
+    }
+
+    #[test]
+    fn primary_style_output_is_valid_32x32_png() {
+        let bytes = render(Some(50.0), Some(50.0), false, IconStyle::Primary);
+        let (w, h, _) = decode_png(&bytes);
+        assert_eq!((w, h), (32, 32));
+    }
+
+    #[test]
+    fn minimal_style_renders_no_digit_ink() {
+        let bytes = render(Some(50.0), Some(90.0), false, IconStyle::Minimal);
+        let (_, _, rgba) = decode_png(&bytes);
+        let text = shared::text();
+        let text_muted = shared::text_muted();
+        let has_digit_ink = rgba.chunks(4).any(|p| {
+            p[3] > 0
+                && ((near(p[0], (text.red() * 255.0) as u8)
+                    && near(p[1], (text.green() * 255.0) as u8)
+                    && near(p[2], (text.blue() * 255.0) as u8))
+                    || (near(p[0], (text_muted.red() * 255.0) as u8)
+                        && near(p[1], (text_muted.green() * 255.0) as u8)
+                        && near(p[2], (text_muted.blue() * 255.0) as u8)))
+        });
+        assert!(!has_digit_ink, "minimal style must not paint digit glyphs");
+    }
+
+    #[test]
+    fn minimal_style_dot_uses_the_worse_buckets_status_color() {
+        let bytes = render(Some(10.0), Some(95.0), false, IconStyle::Minimal);
+        let (_, _, rgba) = decode_png(&bytes);
+        let danger_target = (0xD8, 0x5A, 0x45);
+        let has_danger = rgba.chunks(4).any(|p| {
+            p[3] > 200 && near(p[0], danger_target.0) && near(p[1], danger_target.1) && near(p[2], danger_target.2)
+        });
+        assert!(has_danger, "expected the worse (95%) bucket's danger color in the dot");
+    }
+
+    #[test]
+    fn minimal_style_no_data_still_renders_a_valid_png() {
+        let bytes = render(None, None, true, IconStyle::Minimal);
+        let (w, h, _) = decode_png(&bytes);
+        assert_eq!((w, h), (32, 32));
+    }
+
+    fn near(a: u8, b: u8) -> bool {
+        (a as i16 - b as i16).abs() < 12
     }
 }

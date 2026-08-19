@@ -1233,6 +1233,7 @@ mod tests {
             terminal: Some(crate::providers::launcher::Terminal::Iterm2),
             notify_session_finished: false,
             notify_context_warning: false,
+            icon_style: crate::tray_icon::IconStyle::Minimal,
         };
         db.save_settings(&s).unwrap();
 
@@ -1248,6 +1249,7 @@ mod tests {
         assert_eq!(loaded.terminal, s.terminal);
         assert_eq!(loaded.notify_session_finished, s.notify_session_finished);
         assert_eq!(loaded.notify_context_warning, s.notify_context_warning);
+        assert_eq!(loaded.icon_style, s.icon_style);
 
         // Overwrite and confirm the latest value wins (UPSERT).
         let s2 = Settings { polling_interval_secs: 120, ..Settings::default() };

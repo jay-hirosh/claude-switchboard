@@ -1058,7 +1058,11 @@ pub async fn has_claude_code_creds() -> Result<bool, String> {
 
 #[command]
 #[specta::specta]
-pub async fn update_settings(s: Settings, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn update_settings(
+    s: Settings,
+    state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     if s.polling_interval_secs < 60 {
         return Err("polling_interval_secs must be at least 60".to_string());
     }
@@ -1075,7 +1079,23 @@ pub async fn update_settings(s: Settings, state: State<'_, Arc<AppState>>) -> Re
         return Err("payg_threshold must be between 0 and 100".to_string());
     }
     state.db.save_settings(&s).map_err(|e| e.to_string())?;
+    let icon_style = s.icon_style;
     *state.settings.write() = s;
+
+    // Redraw the tray icon immediately with the new style rather than
+    // waiting for the next poll cycle (up to `polling_interval_secs` away) —
+    // a style change should be visible the moment the user hits Save.
+    let cached = state.cached_usage.read().clone();
+    crate::tray::set_level(
+        &app,
+        cached.as_ref().and_then(|c| c.snapshot.five_hour.as_ref()).map(|u| u.utilization),
+        cached.as_ref().and_then(|c| c.snapshot.seven_day.as_ref()).map(|u| u.utilization),
+        cached.as_ref().and_then(|c| c.snapshot.five_hour.as_ref()).and_then(|u| u.resets_at),
+        cached.as_ref().and_then(|c| c.snapshot.seven_day.as_ref()).and_then(|u| u.resets_at),
+        false,
+        icon_style,
+    );
+
     Ok(())
 }
 
@@ -1258,6 +1278,24 @@ pub async fn resize_window(mode: String, extra_height: f64, app: tauri::AppHandl
 
 
     Ok(())
+}
+
+/// Flips native OS fullscreen on the "popover" window (only meaningful in
+/// expanded mode — the frontend gates the trigger surfaces to that state)
+/// and returns the resulting state. The frontend also re-queries
+/// `isFullscreen()` on resize, since the OS can exit fullscreen on its own
+/// (Mission Control, etc.) without going through this command.
+#[command]
+#[specta::specta]
+pub async fn toggle_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri::Manager;
+
+    let Some(w) = app.get_webview_window("popover") else {
+        return Ok(false);
+    };
+    let next = !w.is_fullscreen().map_err(|e| e.to_string())?;
+    w.set_fullscreen(next).map_err(|e| e.to_string())?;
+    Ok(next)
 }
 
 #[command]

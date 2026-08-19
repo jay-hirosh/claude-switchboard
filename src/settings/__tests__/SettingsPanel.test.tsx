@@ -15,6 +15,7 @@ const baseSettings: Settings = {
   payg_threshold: 85,
   notify_session_finished: true,
   notify_context_warning: true,
+  icon_style: 'dual',
 };
 
 vi.mock('../../lib/store', () => ({
@@ -30,6 +31,22 @@ vi.mock('../../lib/store', () => ({
 vi.mock('../../lib/theme', () => ({
   useThemeStore: (sel: (s: any) => any) =>
     sel({ themePreference: 'auto', setThemePreference: vi.fn() }),
+}));
+
+const setAccentColor = vi.fn();
+const setDensity = vi.fn();
+const setReduceMotion = vi.fn();
+
+vi.mock('../../lib/appearance', () => ({
+  useAppearanceStore: (sel: (s: any) => any) =>
+    sel({
+      accentColor: 'terracotta',
+      density: 'comfortable',
+      reduceMotion: false,
+      setAccentColor,
+      setDensity,
+      setReduceMotion,
+    }),
 }));
 
 // StatuslineSettings (rendered inside SettingsPanel) is self-contained and
@@ -79,5 +96,44 @@ describe('SettingsPanel', () => {
     expect(toggle.checked).toBe(true);
     fireEvent.click(toggle);
     expect(toggle.checked).toBe(false);
+  });
+
+  it('selects an accent color swatch', async () => {
+    render(<SettingsPanel />);
+    const teal = await screen.findByRole('button', { name: /teal/i });
+    fireEvent.click(teal);
+    expect(setAccentColor).toHaveBeenCalledWith('teal');
+  });
+
+  it('marks the active accent swatch as pressed', async () => {
+    render(<SettingsPanel />);
+    const terracotta = await screen.findByRole('button', { name: /terracotta/i });
+    expect(terracotta).toHaveAttribute('aria-pressed', 'true');
+    const teal = await screen.findByRole('button', { name: /teal/i });
+    expect(teal).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('toggles compact density', async () => {
+    render(<SettingsPanel />);
+    const toggle = (await screen.findByLabelText(/compact density/i)) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    expect(setDensity).toHaveBeenCalledWith('compact');
+  });
+
+  it('toggles reduce motion', async () => {
+    render(<SettingsPanel />);
+    const toggle = (await screen.findByLabelText(/reduce motion/i)) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    expect(setReduceMotion).toHaveBeenCalledWith(true);
+  });
+
+  it('renders and changes the tray icon style', async () => {
+    render(<SettingsPanel />);
+    const select = (await screen.findByLabelText(/icon style/i)) as HTMLSelectElement;
+    expect(select.value).toBe('dual');
+    fireEvent.change(select, { target: { value: 'minimal' } });
+    expect(select.value).toBe('minimal');
   });
 });

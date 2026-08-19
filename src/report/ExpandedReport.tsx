@@ -1,5 +1,7 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { motion } from 'framer-motion';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { IconButton } from '../components/ui/IconButton';
 import { SessionsTab, WINDOW_DAYS } from './SessionsTab';
 import { TodayTab } from './TodayTab';
@@ -12,8 +14,9 @@ import { LimitHitsTab } from './LimitHitsTab';
 import { useAppStore } from '../lib/store';
 import { ipc } from '../lib/ipc';
 import { tabSlide } from '../lib/motion';
-import { IconRefresh, IconCollapse, IconSettings, X } from '../lib/icons';
+import { IconRefresh, IconCollapse, IconSettings, IconFullscreen, IconExitFullscreen, X } from '../lib/icons';
 import { handleDragStart, closeWindow } from '../lib/window-chrome';
+import { isFullscreenShortcut } from '../lib/fullscreenShortcut';
 import { AccountsSidebar } from '../accounts/AccountsSidebar';
 import { SettingsModal } from '../components/modals/SettingsModal';
 import { ProvidersTab } from '../providers/ProvidersTab';
@@ -74,6 +77,9 @@ export function ExpandedReport() {
   const prevTabRef = useRef<string>('today');
   const stale = useAppStore((s) => s.stale);
   const toggleViewMode = useAppStore((s) => s.toggleViewMode);
+  const isFullscreen = useAppStore((s) => s.isFullscreen);
+  const toggleFullscreen = useAppStore((s) => s.toggleFullscreen);
+  const setFullscreen = useAppStore((s) => s.setFullscreen);
 
   const TabComponent = TAB_COMPONENTS[activeTab] ?? SessionsTab;
 
@@ -94,6 +100,57 @@ export function ExpandedReport() {
     }
   }
 
+  // Collapsing or closing while still in native fullscreen would strand the
+  // (much smaller) resulting window inside an empty fullscreen Space —
+  // always exit fullscreen first.
+  async function handleCollapse() {
+    if (isFullscreen) await toggleFullscreen();
+    toggleViewMode();
+  }
+
+  async function handleClose() {
+    if (isFullscreen) await toggleFullscreen();
+    closeWindow();
+  }
+
+  function handleHeaderDoubleClick(e: ReactMouseEvent<HTMLElement>) {
+    const target = e.target as HTMLElement;
+    if (target.closest('button, input, a, select, textarea')) return;
+    toggleFullscreen();
+  }
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!isFullscreenShortcut(e)) return;
+      e.preventDefault();
+      toggleFullscreen();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [toggleFullscreen]);
+
+  useEffect(() => {
+    // The OS can exit fullscreen on its own (Mission Control, etc.) without
+    // going through toggleFullscreen() — resync on every resize, which fires
+    // whenever fullscreen is entered or exited either way.
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const win = getCurrentWindow();
+        unlisten = await win.onResized(async () => {
+          try {
+            setFullscreen(await win.isFullscreen());
+          } catch {
+            // no-op
+          }
+        });
+      } catch {
+        // outside Tauri
+      }
+    })();
+    return () => unlisten?.();
+  }, [setFullscreen]);
+
   return (
     <>
       <div
@@ -109,6 +166,7 @@ export function ExpandedReport() {
           {/* Header — generous padding, brand-warm tinted strip with hairline below */}
           <header
             onPointerDown={handleDragStart}
+            onDoubleClick={handleHeaderDoubleClick}
             className="
               relative flex items-center justify-between gap-[var(--space-md)]
               px-[var(--space-2xl)] pt-[var(--space-xl)] pb-[var(--space-lg)]
@@ -145,10 +203,16 @@ export function ExpandedReport() {
               <IconButton label="Settings" onClick={() => setSettingsOpen(true)}>
                 <IconSettings size={13} />
               </IconButton>
-              <IconButton label="Collapse details" onClick={toggleViewMode}>
+              <IconButton
+                label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                onClick={toggleFullscreen}
+              >
+                {isFullscreen ? <IconExitFullscreen size={13} /> : <IconFullscreen size={13} />}
+              </IconButton>
+              <IconButton label="Collapse details" onClick={handleCollapse}>
                 <IconCollapse size={13} />
               </IconButton>
-              <IconButton label="Close" onClick={closeWindow}>
+              <IconButton label="Close" onClick={handleClose}>
                 <X size={13} />
               </IconButton>
             </div>
@@ -161,7 +225,9 @@ export function ExpandedReport() {
             tabs={TAB_CONFIG.map((t) => ({ id: t.id, label: t.label }))}
           />
 
-          {/* Tab content */}
+          {/* Tab content — capped and centered so fullscreen on a large or
+             ultrawide display doesn't stretch charts/tables edge to edge;
+             a no-op at the normal 960px window width. */}
           <div className="flex-1 overflow-y-auto px-[var(--space-2xl)] pb-[var(--space-2xl)] pt-[var(--space-lg)]">
             <motion.div
               key={`${activeTab}-${tabKey}`}
@@ -170,6 +236,7 @@ export function ExpandedReport() {
               animate="center"
               exit="exit"
               custom={slideDir}
+              style={{ maxWidth: 'var(--report-content-max-width)', marginInline: 'auto' }}
             >
               <TabComponent />
             </motion.div>

@@ -27,11 +27,13 @@ vi.mock('./ipc', () => ({
     hasClaudeCodeCreds: vi.fn().mockResolvedValue(false),
     listAccounts: vi.fn().mockResolvedValue([]),
     getLiveSessions: vi.fn().mockResolvedValue([]),
+    toggleFullscreen: vi.fn().mockResolvedValue(true),
   },
 }));
 
 // Import store AFTER mocks are set up.
 import { useAppStore } from './store';
+import { ipc } from './ipc';
 
 describe('useAppStore — event-listener lifecycle', () => {
   beforeEach(() => {
@@ -111,5 +113,32 @@ describe('useAppStore — event-listener lifecycle', () => {
     for (const unlisten of secondUnlisteners) {
       expect(unlisten).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe('useAppStore — fullscreen', () => {
+  beforeEach(() => {
+    vi.mocked(ipc.toggleFullscreen).mockReset();
+    useAppStore.setState({ isFullscreen: false });
+  });
+
+  it('defaults to isFullscreen: false', () => {
+    expect(useAppStore.getState().isFullscreen).toBe(false);
+  });
+
+  it('toggleFullscreen() calls ipc.toggleFullscreen() and adopts its resolved state', async () => {
+    vi.mocked(ipc.toggleFullscreen).mockResolvedValue(true);
+
+    await useAppStore.getState().toggleFullscreen();
+
+    expect(ipc.toggleFullscreen).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().isFullscreen).toBe(true);
+  });
+
+  it('setFullscreen() sets isFullscreen without calling ipc', () => {
+    useAppStore.getState().setFullscreen(true);
+
+    expect(useAppStore.getState().isFullscreen).toBe(true);
+    expect(ipc.toggleFullscreen).not.toHaveBeenCalled();
   });
 });
