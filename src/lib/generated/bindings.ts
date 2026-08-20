@@ -73,6 +73,30 @@ async getTodayPattern() : Promise<Result<DailyPatternReport, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Same shape as `get_today_pattern`, scoped to yesterday's local calendar
+ * day — the Dashboard tab's Yesterday hourly charts.
+ */
+async getYesterdayPattern() : Promise<Result<DailyPatternReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_pattern") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Same shape as `get_today_pattern`, scoped to the rolling 7-day window
+ * ending now — the Dashboard tab's This Week hourly charts.
+ */
+async getWeekPattern() : Promise<Result<DailyPatternReport, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_week_pattern") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async exportTrendsCsv(path: string, days: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("export_trends_csv", { path, days }) };
@@ -125,6 +149,30 @@ async getTodayRepoBreakdown() : Promise<Result<RepoStats[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Same repo/project grouping as `get_today_repo_breakdown`, scoped to
+ * yesterday's local calendar day — the Dashboard tab's Yesterday repo cards.
+ */
+async getYesterdayRepoBreakdown() : Promise<Result<RepoStats[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_repo_breakdown") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Same repo/project grouping as `get_today_repo_breakdown`, scoped to the
+ * rolling 7-day window ending now — the Dashboard tab's This Week repo cards.
+ */
+async getWeekRepoBreakdown() : Promise<Result<RepoStats[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_week_repo_breakdown") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getCacheStats(days: number) : Promise<Result<CacheStats, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_cache_stats", { days }) };
@@ -136,11 +184,35 @@ async getCacheStats(days: number) : Promise<Result<CacheStats, string>> {
 /**
  * Same math as `get_cache_stats`, scoped to today's local calendar day
  * (`local_midnight_utc`..now) instead of a rolling `days`-day window — the
- * Today tab's cache card.
+ * Dashboard tab's Today cache card.
  */
 async getTodayCacheStats() : Promise<Result<CacheStats, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_today_cache_stats") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Same math as `get_today_cache_stats`, scoped to yesterday's local calendar
+ * day — the Dashboard tab's Yesterday cache card.
+ */
+async getYesterdayCacheStats() : Promise<Result<CacheStats, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_cache_stats") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Same math as `get_today_cache_stats`, scoped to the rolling 7-day window
+ * ending now — the Dashboard tab's This Week cache card.
+ */
+async getWeekCacheStats() : Promise<Result<CacheStats, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_week_cache_stats") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

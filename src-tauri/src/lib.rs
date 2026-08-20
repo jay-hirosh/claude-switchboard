@@ -125,14 +125,20 @@ pub fn run() {
             commands::get_daily_trends,
             commands::get_daily_pattern,
             commands::get_today_pattern,
+            commands::get_yesterday_pattern,
+            commands::get_week_pattern,
             commands::export_trends_csv,
             commands::get_model_breakdown,
             commands::get_daily_model_breakdown,
             commands::get_project_breakdown,
             commands::get_repo_breakdown,
             commands::get_today_repo_breakdown,
+            commands::get_yesterday_repo_breakdown,
+            commands::get_week_repo_breakdown,
             commands::get_cache_stats,
             commands::get_today_cache_stats,
+            commands::get_yesterday_cache_stats,
+            commands::get_week_cache_stats,
             commands::get_daily_account_breakdown,
             commands::get_cache_stats_by_account,
             commands::start_oauth_flow,
@@ -191,14 +197,20 @@ pub fn run() {
             commands::get_daily_trends,
             commands::get_daily_pattern,
             commands::get_today_pattern,
+            commands::get_yesterday_pattern,
+            commands::get_week_pattern,
             commands::export_trends_csv,
             commands::get_model_breakdown,
             commands::get_daily_model_breakdown,
             commands::get_project_breakdown,
             commands::get_repo_breakdown,
             commands::get_today_repo_breakdown,
+            commands::get_yesterday_repo_breakdown,
+            commands::get_week_repo_breakdown,
             commands::get_cache_stats,
             commands::get_today_cache_stats,
+            commands::get_yesterday_cache_stats,
+            commands::get_week_cache_stats,
             commands::get_daily_account_breakdown,
             commands::get_cache_stats_by_account,
             commands::start_oauth_flow,
@@ -248,13 +260,18 @@ pub fn run() {
             commands::uninstall_statusline,
         ]);
 
+    // Absolute, anchored to this crate's manifest dir at compile time — a
+    // path relative to the process's runtime cwd broke whenever the app was
+    // launched any way other than `cargo run`/`tauri dev` (e.g. double-clicking
+    // a `tauri build --debug` bundle from Finder, where cwd isn't the repo),
+    // panicking here before the window ever opened.
     #[cfg(debug_assertions)]
     specta_builder
         .export(
             specta_typescript::Typescript::default()
                 .bigint(specta_typescript::BigIntExportBehavior::Number)
                 .header("// @ts-nocheck"),
-            "../src/lib/generated/bindings.ts",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/generated/bindings.ts"),
         )
         .expect("failed to export specta bindings");
 

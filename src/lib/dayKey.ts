@@ -12,6 +12,15 @@ export function localDayKey(iso: string): string {
   return `${d.getFullYear()}-${month}-${day}`;
 }
 
+/** Local day key 6 calendar days before today — the start of the Dashboard
+ * tab's "This Week" rolling window, matching the backend's `week_range_utc`
+ * (today plus the 6 preceding local calendar days). */
+export function weekStartDayKey(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  return localDayKey(d.toISOString());
+}
+
 export function formatDayLabel(dayKey: string): string {
   const today = localDayKey(new Date().toISOString());
   if (dayKey === today) return 'Today';

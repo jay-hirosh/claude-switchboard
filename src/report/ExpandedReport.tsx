@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { IconButton } from '../components/ui/IconButton';
 import { SessionsTab, WINDOW_DAYS } from './SessionsTab';
-import { TodayTab } from './TodayTab';
+import { DashboardTab } from './DashboardTab';
 import { ModelsTab } from './ModelsTab';
 import { TrendsTab } from './TrendsTab';
 import { RepoTab } from './RepoTab';
@@ -23,7 +23,7 @@ import { ProvidersTab } from '../providers/ProvidersTab';
 import { SessionsBrowserTab } from '../sessions/SessionsBrowserTab';
 
 const TAB_CONFIG = [
-  { id: 'today', label: 'Today' },
+  { id: 'today', label: 'Dashboard' },
   { id: 'repo', label: 'Repository' },
   { id: 'browse', label: 'Sessions' },
   { id: 'cost', label: 'Cost' },
@@ -57,7 +57,7 @@ const TAB_WINDOW_DAYS: Record<string, number | undefined> = {
 };
 
 const TAB_COMPONENTS: Record<string, React.FC> = {
-  today: TodayTab,
+  today: DashboardTab,
   repo: RepoTab,
   browse: SessionsBrowserTab,
   cost: SessionsTab,
@@ -154,15 +154,17 @@ export function ExpandedReport() {
   return (
     <>
       <div
-        className="flex h-full overflow-hidden"
+        className="flex h-full overflow-hidden print:h-auto print:overflow-visible"
         style={{
           width: '100%',
           minHeight: 'var(--report-min-height)',
           background: 'var(--color-bg-base)',
         }}
       >
-        <AccountsSidebar />
-        <div className="flex flex-1 flex-col overflow-hidden min-w-0">
+        <div className="print:hidden contents">
+          <AccountsSidebar />
+        </div>
+        <div className="flex flex-1 flex-col overflow-hidden min-w-0 print:overflow-visible">
           {/* Header — generous padding, brand-warm tinted strip with hairline below */}
           <header
             onPointerDown={handleDragStart}
@@ -171,6 +173,7 @@ export function ExpandedReport() {
               relative flex items-center justify-between gap-[var(--space-md)]
               px-[var(--space-2xl)] pt-[var(--space-xl)] pb-[var(--space-lg)]
               shrink-0 cursor-default select-none
+              print:hidden
             "
           >
             <div className="flex items-center gap-[var(--space-xs)] pointer-events-none">
@@ -182,7 +185,7 @@ export function ExpandedReport() {
                 {TAB_WINDOW_DAYS[activeTab]
                   ? ` · last ${TAB_WINDOW_DAYS[activeTab]} days`
                   : activeTab === 'today'
-                    ? ' · Today'
+                    ? ' · Dashboard'
                     : ''}
               </span>
             </div>
@@ -228,7 +231,7 @@ export function ExpandedReport() {
           {/* Tab content — capped and centered so fullscreen on a large or
              ultrawide display doesn't stretch charts/tables edge to edge;
              a no-op at the normal 960px window width. */}
-          <div className="flex-1 overflow-y-auto px-[var(--space-2xl)] pb-[var(--space-2xl)] pt-[var(--space-lg)]">
+          <div className="flex-1 overflow-y-auto px-[var(--space-2xl)] pb-[var(--space-2xl)] pt-[var(--space-lg)] print:overflow-visible print:h-auto print:px-0 print:pt-0">
             <motion.div
               key={`${activeTab}-${tabKey}`}
               variants={tabSlide}
@@ -303,6 +306,7 @@ function TabBar({
         px-[var(--space-2xl)]
         border-b border-[var(--color-rule)]
         shrink-0
+        print:hidden
       "
     >
       {tabs.map((tab) => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { localDayKey, formatDayLabel } from './dayKey';
+import { localDayKey, formatDayLabel, weekStartDayKey } from './dayKey';
 
 describe('localDayKey', () => {
   it('returns the local calendar day as YYYY-MM-DD', () => {
@@ -22,5 +22,13 @@ describe('formatDayLabel', () => {
 
   it('formats an older day as "Mon D"', () => {
     expect(formatDayLabel('2026-01-05')).toBe('Jan 5');
+  });
+});
+
+describe('weekStartDayKey', () => {
+  it('returns the day key 6 calendar days before today, matching a 7-day rolling window', () => {
+    const sixDaysAgo = new Date();
+    sixDaysAgo.setDate(sixDaysAgo.getDate() - 6);
+    expect(weekStartDayKey()).toBe(localDayKey(sixDaysAgo.toISOString()));
   });
 });

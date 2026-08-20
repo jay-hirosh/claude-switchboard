@@ -326,6 +326,30 @@ pub async fn get_today_pattern(
     Ok(crate::pattern::compute_daily_pattern(&events, 1))
 }
 
+/// Same shape as `get_today_pattern`, scoped to yesterday's local calendar
+/// day — the Dashboard tab's Yesterday hourly charts.
+#[command]
+#[specta::specta]
+pub async fn get_yesterday_pattern(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::pattern::DailyPatternReport, String> {
+    let (from, to) = crate::pattern::yesterday_range_utc(Utc::now());
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    Ok(crate::pattern::compute_daily_pattern(&events, 1))
+}
+
+/// Same shape as `get_today_pattern`, scoped to the rolling 7-day window
+/// ending now — the Dashboard tab's This Week hourly charts.
+#[command]
+#[specta::specta]
+pub async fn get_week_pattern(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::pattern::DailyPatternReport, String> {
+    let (from, to) = crate::pattern::week_range_utc(Utc::now());
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    Ok(crate::pattern::compute_daily_pattern(&events, 7))
+}
+
 /// Serializes daily buckets to CSV — one row per day, header always present
 /// even when there's no data, so an empty export is still a valid file.
 fn daily_trends_to_csv(buckets: &[DailyBucket]) -> String {
@@ -772,6 +796,36 @@ pub async fn get_today_repo_breakdown(
     Ok(group_repo_stats(&inputs))
 }
 
+/// Same repo/project grouping as `get_today_repo_breakdown`, scoped to
+/// yesterday's local calendar day — the Dashboard tab's Yesterday repo cards.
+#[command]
+#[specta::specta]
+pub async fn get_yesterday_repo_breakdown(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<RepoStats>, String> {
+    let (from, to) = crate::pattern::yesterday_range_utc(Utc::now());
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let folds = fold_today_events_by_parent(&events);
+    let sessions = list_resumable_sessions(state).await?;
+    let inputs = build_today_repo_inputs(folds, &sessions);
+    Ok(group_repo_stats(&inputs))
+}
+
+/// Same repo/project grouping as `get_today_repo_breakdown`, scoped to the
+/// rolling 7-day window ending now — the Dashboard tab's This Week repo cards.
+#[command]
+#[specta::specta]
+pub async fn get_week_repo_breakdown(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<RepoStats>, String> {
+    let (from, to) = crate::pattern::week_range_utc(Utc::now());
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let folds = fold_today_events_by_parent(&events);
+    let sessions = list_resumable_sessions(state).await?;
+    let inputs = build_today_repo_inputs(folds, &sessions);
+    Ok(group_repo_stats(&inputs))
+}
+
 #[command]
 #[specta::specta]
 pub async fn get_cache_stats(
@@ -812,19 +866,15 @@ pub async fn get_cache_stats(
     })
 }
 
-/// Same math as `get_cache_stats`, scoped to today's local calendar day
-/// (`local_midnight_utc`..now) instead of a rolling `days`-day window — the
-/// Today tab's cache card.
-#[command]
-#[specta::specta]
-pub async fn get_today_cache_stats(state: State<'_, Arc<AppState>>) -> Result<CacheStats, String> {
-    let pricing = state.pricing.clone();
-    let to = Utc::now();
-    let from = crate::pattern::local_midnight_utc(to);
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+/// Shared math behind `get_today_cache_stats`/`get_yesterday_cache_stats`/
+/// `get_week_cache_stats` — only the `events_between` bounds differ per period.
+fn cache_stats_from_events(
+    pricing: &crate::jsonl_parser::PricingTable,
+    events: &[StoredSessionEvent],
+) -> CacheStats {
     let mut read = 0u64;
     let mut created = 0u64;
-    for e in &events {
+    for e in events {
         read += e.cache_read_tokens;
         created += e.cache_creation_5m_tokens + e.cache_creation_1h_tokens;
     }
@@ -842,12 +892,46 @@ pub async fn get_today_cache_stats(state: State<'_, Arc<AppState>>) -> Result<Ca
                 / 1_000_000.0
         })
         .sum();
-    Ok(CacheStats {
+    CacheStats {
         total_cache_read_tokens: read,
         total_cache_creation_tokens: created,
         estimated_savings_usd: savings,
         hit_ratio,
-    })
+    }
+}
+
+/// Same math as `get_cache_stats`, scoped to today's local calendar day
+/// (`local_midnight_utc`..now) instead of a rolling `days`-day window — the
+/// Dashboard tab's Today cache card.
+#[command]
+#[specta::specta]
+pub async fn get_today_cache_stats(state: State<'_, Arc<AppState>>) -> Result<CacheStats, String> {
+    let to = Utc::now();
+    let from = crate::pattern::local_midnight_utc(to);
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    Ok(cache_stats_from_events(&state.pricing, &events))
+}
+
+/// Same math as `get_today_cache_stats`, scoped to yesterday's local calendar
+/// day — the Dashboard tab's Yesterday cache card.
+#[command]
+#[specta::specta]
+pub async fn get_yesterday_cache_stats(
+    state: State<'_, Arc<AppState>>,
+) -> Result<CacheStats, String> {
+    let (from, to) = crate::pattern::yesterday_range_utc(Utc::now());
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    Ok(cache_stats_from_events(&state.pricing, &events))
+}
+
+/// Same math as `get_today_cache_stats`, scoped to the rolling 7-day window
+/// ending now — the Dashboard tab's This Week cache card.
+#[command]
+#[specta::specta]
+pub async fn get_week_cache_stats(state: State<'_, Arc<AppState>>) -> Result<CacheStats, String> {
+    let (from, to) = crate::pattern::week_range_utc(Utc::now());
+    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    Ok(cache_stats_from_events(&state.pricing, &events))
 }
 
 /// Sums cache read/creation tokens per account and computes each account's
@@ -2056,6 +2140,25 @@ mod tests {
             event_id: format!("evt-{}", ts.timestamp_nanos_opt().unwrap()),
             account_uuid: None,
         }
+    }
+
+    #[test]
+    fn cache_stats_from_events_computes_hit_ratio_and_savings() {
+        let pricing = crate::jsonl_parser::PricingTable::bundled().unwrap();
+        let mut e1 = test_event(Utc::now());
+        e1.model = "claude-sonnet-4-6".into();
+        e1.cache_read_tokens = 1_000_000;
+        e1.cache_creation_5m_tokens = 500_000;
+        let mut e2 = test_event(Utc::now());
+        e2.model = "claude-sonnet-4-6".into();
+        e2.cache_creation_1h_tokens = 500_000;
+
+        let stats = cache_stats_from_events(&pricing, &[e1, e2]);
+
+        assert_eq!(stats.total_cache_read_tokens, 1_000_000);
+        assert_eq!(stats.total_cache_creation_tokens, 1_000_000);
+        assert_eq!(stats.hit_ratio, 0.5);
+        assert_eq!(stats.estimated_savings_usd, 2.7);
     }
 
     #[test]
