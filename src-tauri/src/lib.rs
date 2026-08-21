@@ -820,6 +820,33 @@ pub fn run() {
                 }
             }
 
+            // Repo discovery depends on the same projects root as the JSONL
+            // backfill above, so this runs after it — but independently: a
+            // failure here must never affect session ingestion. Backfill and
+            // watcher-start are bundled into one task (unlike the JSONL
+            // watcher, which starts immediately) because start() needs the
+            // scope list, which depends on discovery finishing first.
+            if let Some(home) = archive_watcher::home_dir() {
+                let archive_state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut scopes = archive_watcher::fixed_scopes(&home);
+                    if let Some(root) = jsonl_parser::walker::claude_projects_root() {
+                        for repo in archive_watcher::discover_project_roots(&root) {
+                            scopes.extend(archive_watcher::repo_scopes(&repo));
+                        }
+                    }
+                    archive_watcher::backfill(&archive_state.db, &scopes);
+                    match archive_watcher::start(archive_state.db.clone(), scopes) {
+                        Ok(watcher_handle) => {
+                            Box::leak(Box::new(watcher_handle));
+                        }
+                        Err(e) => {
+                            tracing::error!("archive watcher failed to start: {e}");
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .build(tauri::generate_context!())
