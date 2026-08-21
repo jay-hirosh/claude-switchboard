@@ -1,4 +1,5 @@
 mod app_state;
+mod archive_watcher;
 pub mod auth;
 pub mod branding;
 pub mod cli;
