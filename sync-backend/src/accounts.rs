@@ -153,6 +153,7 @@ mod tests {
         ).await;
         assert_eq!(status, StatusCode::OK);
         let api_key_a = body["api_key"].as_str().unwrap().to_string();
+        let user_id_a = body["user_id"].as_str().unwrap().to_string();
         assert_eq!(body["device_id"], device_a_id);
 
         // Pair-code requires authentication as an existing device.
@@ -169,7 +170,9 @@ mod tests {
             None,
         ).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["user_id"], body["user_id"]); // sanity
+        // The whole point of pairing: Device B must land on the SAME account
+        // that generated the pairing code, not a fresh one.
+        assert_eq!(body["user_id"], user_id_a);
         assert_eq!(body["device_id"], device_b_id);
 
         // The pairing code is single-use — joining again with it must fail.
