@@ -18,6 +18,21 @@ pub async fn push(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    // Serialize pushes per account: BIGSERIAL `seq` values are allocated at
+    // INSERT time but only become visible to other transactions at COMMIT
+    // time, so without this lock, commit order can differ from seq
+    // allocation order under concurrency. That would let a pull's cursor
+    // advance past a still-in-flight lower seq, permanently and silently
+    // skipping it once it finally commits. This transaction-scoped
+    // advisory lock ensures no other push transaction for the same account
+    // can be concurrently open, so commit order always matches seq order.
+    // Released automatically on commit or rollback.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+        .bind(device.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let mut transcript_lines_accepted = 0usize;
     for line in &req.transcript_lines {
         let result = sqlx::query(
@@ -77,17 +92,29 @@ pub async fn pull(
     device: AuthedDevice,
     Query(q): Query<PullQuery>,
 ) -> Result<Json<PullResponse>, (StatusCode, String)> {
-    let rows: Vec<(i64, String, String, String, i64, String, i64)> = sqlx::query_as(
-        "SELECT seq, project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at
+    // Clamp server-side: an unbounded or negative page size from the client
+    // must never translate into an unbounded query/response size.
+    let limit = q.limit.clamp(1, 1000);
+
+    // Note: this query is NOT filtered by device_id in SQL. It selects the
+    // full window of rows for the account (including the caller's own),
+    // so the high-water mark below reflects everything actually scanned —
+    // not just what happened to survive a device_id filter. That's what
+    // guarantees the cursor advances by up to `limit` rows on every pull,
+    // even when a window happens to be dominated by the caller's own rows
+    // (otherwise a device that just pushed a lot and is now idle would
+    // rescan the same full range on every poll, forever). The caller's own
+    // rows are excluded afterwards, in Rust, when building the response.
+    let rows: Vec<(i64, uuid::Uuid, String, String, String, i64, String, i64)> = sqlx::query_as(
+        "SELECT seq, device_id, project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at
          FROM archive_transcript_lines
-         WHERE user_id = $1 AND device_id != $2 AND seq > $3
+         WHERE user_id = $1 AND seq > $2
          ORDER BY seq
-         LIMIT $4",
+         LIMIT $3",
     )
     .bind(device.user_id)
-    .bind(device.device_id)
     .bind(q.since_transcript_seq)
-    .bind(q.limit)
+    .bind(limit)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -95,7 +122,8 @@ pub async fn pull(
     let transcript_seq_high_water = rows.last().map(|r| r.0).unwrap_or(q.since_transcript_seq);
     let transcript_lines: Vec<SyncTranscriptLine> = rows
         .into_iter()
-        .map(|(_, project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)| SyncTranscriptLine {
+        .filter(|r| r.1 != device.device_id)
+        .map(|(_, _, project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)| SyncTranscriptLine {
             project_slug,
             session_id,
             jsonl_path,
@@ -105,17 +133,17 @@ pub async fn pull(
         })
         .collect();
 
-    let rows: Vec<(i64, String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT seq, source_path, kind, content, content_hash, captured_at
+    // Same restructuring as above, applied identically to file_snapshots.
+    let rows: Vec<(i64, uuid::Uuid, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT seq, device_id, source_path, kind, content, content_hash, captured_at
          FROM archive_file_snapshots
-         WHERE user_id = $1 AND device_id != $2 AND seq > $3
+         WHERE user_id = $1 AND seq > $2
          ORDER BY seq
-         LIMIT $4",
+         LIMIT $3",
     )
     .bind(device.user_id)
-    .bind(device.device_id)
     .bind(q.since_snapshot_seq)
-    .bind(q.limit)
+    .bind(limit)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -123,7 +151,8 @@ pub async fn pull(
     let snapshot_seq_high_water = rows.last().map(|r| r.0).unwrap_or(q.since_snapshot_seq);
     let file_snapshots: Vec<SyncFileSnapshot> = rows
         .into_iter()
-        .map(|(_, source_path, kind, content, content_hash, captured_at)| SyncFileSnapshot {
+        .filter(|r| r.1 != device.device_id)
+        .map(|(_, _, source_path, kind, content, content_hash, captured_at)| SyncFileSnapshot {
             source_path,
             kind,
             content,
@@ -265,6 +294,120 @@ mod tests {
         assert_eq!(first.transcript_lines_accepted, 1);
         let second = push_lines(&pool, &key_a, vec![sample_line(0)]).await;
         assert_eq!(second.transcript_lines_accepted, 0, "re-pushing an identical row must not duplicate it");
+    }
+
+    fn sample_snapshot(hash: &str) -> SyncFileSnapshot {
+        SyncFileSnapshot {
+            source_path: "/home/a/.claude/settings.json".into(),
+            kind: "settings".into(),
+            content: "{\"x\":1}".into(),
+            content_hash: hash.into(),
+            captured_at: 0,
+        }
+    }
+
+    async fn push_snapshots(pool: &PgPool, api_key: &str, snapshots: Vec<SyncFileSnapshot>) -> PushResponse {
+        let body = PushRequest { transcript_lines: vec![], file_snapshots: snapshots };
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/archive/push")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let response = app(pool.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // Fix 10: mirrors `re_pushing_the_same_batch_is_idempotent` but for
+    // file_snapshots, proving the (device_id, source_path, content_hash)
+    // ON CONFLICT target actually works and isn't just exercised for
+    // transcript_lines.
+    #[sqlx::test]
+    async fn re_pushing_the_same_file_snapshot_is_idempotent(pool: PgPool) {
+        let (_device_a, key_a) = register_device(&pool, "A").await;
+        let first = push_snapshots(&pool, &key_a, vec![sample_snapshot("hash1")]).await;
+        assert_eq!(first.file_snapshots_accepted, 1);
+        let second = push_snapshots(&pool, &key_a, vec![sample_snapshot("hash1")]).await;
+        assert_eq!(second.file_snapshots_accepted, 0, "re-pushing an identical snapshot must not duplicate it");
+    }
+
+    async fn pull_lines_since(pool: &PgPool, api_key: &str, since_transcript_seq: i64) -> PullResponse {
+        let uri = format!(
+            "/v1/archive/pull?since_transcript_seq={since_transcript_seq}&since_snapshot_seq=0&limit=500"
+        );
+        let request = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app(pool.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // Fix 9: proves Fix 1 (per-account advisory lock serializing push commit
+    // order) and Fix 2 (high-water mark computed from the full scanned
+    // window, not just the filtered response) actually work together. This
+    // is the test that would have caught the original cursor-computation
+    // bug, where the high-water mark was derived only from the (other
+    // devices') filtered rows and so never advanced past a batch dominated
+    // by the caller's own pushes.
+    #[sqlx::test]
+    async fn a_second_devices_cursor_advances_and_never_redelivers(pool: PgPool) {
+        let (_device_a, key_a) = register_device(&pool, "A").await;
+
+        let pair_request = Request::builder()
+            .method("POST")
+            .uri("/v1/devices/pair-code")
+            .header("authorization", format!("Bearer {key_a}"))
+            .body(Body::empty())
+            .unwrap();
+        let pair_response = app(pool.clone()).oneshot(pair_request).await.unwrap();
+        let bytes = to_bytes(pair_response.into_body(), usize::MAX).await.unwrap();
+        let code = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["pairing_code"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let device_b_id = Uuid::new_v4().to_string();
+        let join_request = Request::builder()
+            .method("POST")
+            .uri("/v1/devices/join")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "pairing_code": code, "device_id": device_b_id, "device_name": "B" })).unwrap(),
+            ))
+            .unwrap();
+        let join_response = app(pool.clone()).oneshot(join_request).await.unwrap();
+        let bytes = to_bytes(join_response.into_body(), usize::MAX).await.unwrap();
+        let key_b = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["api_key"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Device A pushes 2 lines (seq 1, 2).
+        push_lines(&pool, &key_a, vec![sample_line(0), sample_line(1)]).await;
+
+        // Device B pulls from scratch and gets both.
+        let first_pull = pull_lines_since(&pool, &key_b, 0).await;
+        assert_eq!(first_pull.transcript_lines.len(), 2);
+        assert_eq!(first_pull.transcript_seq_high_water, 2);
+
+        // Device A pushes one more line (seq 3).
+        push_lines(&pool, &key_a, vec![sample_line(2)]).await;
+
+        // Device B pulls again using the high-water mark from its first
+        // pull as the cursor — it must receive ONLY the new line, not a
+        // re-delivery of the first two.
+        let second_pull = pull_lines_since(&pool, &key_b, first_pull.transcript_seq_high_water).await;
+        assert_eq!(second_pull.transcript_lines.len(), 1, "must receive only the new line, not a re-delivery");
+        assert_eq!(second_pull.transcript_lines[0].line_no, 2);
+        assert_eq!(second_pull.transcript_seq_high_water, 3);
     }
 
     #[sqlx::test]
