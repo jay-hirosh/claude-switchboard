@@ -3,6 +3,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 
+pub mod accounts;
 pub mod auth;
 
 #[derive(Clone)]
@@ -20,8 +21,12 @@ async fn health() -> Json<Health> {
 }
 
 pub fn app(pool: PgPool) -> Router {
+    use axum::routing::post;
     Router::new()
         .route("/health", get(health))
+        .route("/v1/accounts", post(accounts::create_account))
+        .route("/v1/devices/pair-code", post(accounts::pair_code))
+        .route("/v1/devices/join", post(accounts::join))
         .with_state(Arc::new(AppState { pool }))
 }
 
