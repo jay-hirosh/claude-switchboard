@@ -78,10 +78,3 @@ mockito = "1"
 pretty_assertions = "1"
 tokio = { version = "1", features = ["test-util"] }
 filetime = "0.2.29"
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-strip = true
-panic = "abort"
