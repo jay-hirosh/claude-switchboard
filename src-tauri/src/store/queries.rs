@@ -56,6 +56,36 @@ pub struct StoredCompaction {
     pub uuid: String,
 }
 
+/// One raw line ever observed in a transcript JSONL file, archived verbatim
+/// (trimmed of surrounding whitespace — the same text session_events'
+/// parser already works from) regardless of whether the line carried usage
+/// data. `line_no` is the byte offset the line started at — the same value
+/// session_events.source_line and jsonl_cursors track — not a sequential
+/// count. Never pruned: this table's existence is what lets ~/.claude be
+/// deleted without losing session history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredTranscriptLine {
+    pub project_slug: String,
+    pub session_id: String,
+    pub jsonl_path: String,
+    pub line_no: i64,
+    pub raw_line: String,
+}
+
+/// One content version of a small non-transcript file worth archiving
+/// (settings.json, CLAUDE.md, a repo's .remember/*.md, ...). `content_hash`
+/// dedups repeated writes of identical content; a genuine content change
+/// gets its own row rather than overwriting the last one, so the history of
+/// what changed and when survives too. Never pruned, same as
+/// transcript_lines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredFileSnapshot {
+    pub source_path: String,
+    pub kind: String,
+    pub content: String,
+    pub content_hash: String,
+}
+
 /// The parent transcript's most recent event — used by the live-session
 /// registry to answer "what is this session doing right now." Subagent
 /// transcripts are deliberately excluded: they have their own context
@@ -671,6 +701,104 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(inserted)
+    }
+
+    /// Archives every raw transcript line passed in, keyed by (jsonl_path,
+    /// line_no). `INSERT OR REPLACE` rather than `OR IGNORE`: on the rare
+    /// truncation-then-rewrite case (see jsonl_parser::walker), a byte
+    /// offset can be reused for genuinely different content, and the
+    /// archive must reflect what's actually there now, not the first thing
+    /// ever seen at that offset. For the ordinary append-only case this is
+    /// indistinguishable from IGNORE — the values are identical, so REPLACE
+    /// just rewrites the same row.
+    pub fn insert_transcript_lines(&self, lines: &[StoredTranscriptLine]) -> Result<usize> {
+        if lines.is_empty() {
+            return Ok(0);
+        }
+        let now = Utc::now().timestamp();
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let inserted = {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO transcript_lines
+                 (project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            let mut n = 0;
+            for l in lines {
+                n += stmt.execute(params![
+                    l.project_slug,
+                    l.session_id,
+                    l.jsonl_path,
+                    l.line_no,
+                    l.raw_line,
+                    now,
+                ])?;
+            }
+            n
+        };
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Ordered by line_no (== byte offset) — a transcript's archived lines
+    /// back in original file order.
+    pub fn transcript_lines_for_path(&self, jsonl_path: &str) -> Result<Vec<StoredTranscriptLine>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT project_slug, session_id, jsonl_path, line_no, raw_line
+             FROM transcript_lines WHERE jsonl_path = ?1 ORDER BY line_no",
+        )?;
+        let rows = stmt.query_map(params![jsonl_path], |r| {
+            Ok(StoredTranscriptLine {
+                project_slug: r.get(0)?,
+                session_id: r.get(1)?,
+                jsonl_path: r.get(2)?,
+                line_no: r.get(3)?,
+                raw_line: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Inserts one file snapshot if its content_hash differs from every
+    /// prior snapshot at the same path. Returns true if a new row was
+    /// written, false if this exact content was already archived.
+    pub fn insert_file_snapshot(&self, snap: &StoredFileSnapshot) -> Result<bool> {
+        let now = Utc::now().timestamp();
+        let changed = self.conn().execute(
+            "INSERT OR IGNORE INTO file_snapshots
+             (source_path, kind, content, content_hash, captured_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![snap.source_path, snap.kind, snap.content, snap.content_hash, now],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Ordered oldest-first.
+    pub fn file_snapshots_for_path(&self, source_path: &str) -> Result<Vec<StoredFileSnapshot>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT source_path, kind, content, content_hash
+             FROM file_snapshots WHERE source_path = ?1 ORDER BY captured_at, id",
+        )?;
+        let rows = stmt.query_map(params![source_path], |r| {
+            Ok(StoredFileSnapshot {
+                source_path: r.get(0)?,
+                kind: r.get(1)?,
+                content: r.get(2)?,
+                content_hash: r.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     pub fn notification_last_fired(
@@ -1949,5 +2077,83 @@ mod tests {
             "acc2's interval starts where acc1's ended — no overlap"
         );
         assert!(rows[1].1 >= rows[0].1, "intervals stay monotonically ordered by started_at");
+    }
+
+    #[test]
+    fn insert_transcript_lines_is_idempotent_and_replaces_stale_content() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let line = StoredTranscriptLine {
+            project_slug: "proj".into(),
+            session_id: "sess".into(),
+            jsonl_path: "proj/sess.jsonl".into(),
+            line_no: 0,
+            raw_line: r#"{"a":1}"#.into(),
+        };
+        let n1 = db.insert_transcript_lines(std::slice::from_ref(&line)).unwrap();
+        assert_eq!(n1, 1);
+        let n2 = db.insert_transcript_lines(std::slice::from_ref(&line)).unwrap();
+        assert_eq!(n2, 1, "REPLACE still reports a row written, but count must not grow");
+
+        let rows = db.transcript_lines_for_path("proj/sess.jsonl").unwrap();
+        assert_eq!(rows.len(), 1, "same (jsonl_path, line_no) must not duplicate");
+
+        let rewritten = StoredTranscriptLine { raw_line: r#"{"a":2}"#.into(), ..line };
+        db.insert_transcript_lines(std::slice::from_ref(&rewritten)).unwrap();
+        let rows = db.transcript_lines_for_path("proj/sess.jsonl").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].raw_line, r#"{"a":2}"#, "replace must win over the stale row");
+    }
+
+    #[test]
+    fn insert_file_snapshot_dedupes_identical_content() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let snap = StoredFileSnapshot {
+            source_path: "/home/.claude/settings.json".into(),
+            kind: "settings".into(),
+            content: "{\"a\":1}".into(),
+            content_hash: "hash1".into(),
+        };
+        assert!(db.insert_file_snapshot(&snap).unwrap(), "first write is new");
+        assert!(!db.insert_file_snapshot(&snap).unwrap(), "identical content is not re-stored");
+
+        let changed = StoredFileSnapshot {
+            content_hash: "hash2".into(),
+            content: "{\"a\":2}".into(),
+            ..snap.clone()
+        };
+        assert!(db.insert_file_snapshot(&changed).unwrap(), "a real content change gets its own row");
+
+        let rows = db.file_snapshots_for_path("/home/.claude/settings.json").unwrap();
+        assert_eq!(rows.len(), 2, "two distinct content versions must both be kept");
+    }
+
+    #[test]
+    fn archive_tables_are_never_pruned() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        db.insert_transcript_lines(&[StoredTranscriptLine {
+            project_slug: "p".into(),
+            session_id: "s".into(),
+            jsonl_path: "p/s.jsonl".into(),
+            line_no: 0,
+            raw_line: "{}".into(),
+        }])
+        .unwrap();
+        db.insert_file_snapshot(&StoredFileSnapshot {
+            source_path: "/x".into(),
+            kind: "misc".into(),
+            content: "x".into(),
+            content_hash: "h".into(),
+        })
+        .unwrap();
+
+        let far_future = Utc::now() + chrono::Duration::days(3650);
+        db.prune_events_older_than(far_future).unwrap();
+        db.prune_snapshots(0).unwrap();
+
+        assert_eq!(db.transcript_lines_for_path("p/s.jsonl").unwrap().len(), 1);
+        assert_eq!(db.file_snapshots_for_path("/x").unwrap().len(), 1);
     }
 }
