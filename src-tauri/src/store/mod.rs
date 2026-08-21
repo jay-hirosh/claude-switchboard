@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=12 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=13 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [12_i64],
+            [13_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -191,9 +191,15 @@ impl Db {
                 .context("apply migration 0012")?;
         }
 
+        if current < 13 {
+            tracing::info!("migrating v12 -> v13 (transcript_lines + file_snapshots archive tables)");
+            conn.execute_batch(include_str!("migrations/0013_archive_tables.sql"))
+                .context("apply migration 0013")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [12_i64],
+            [13_i64],
         )?;
         Ok(())
     }
@@ -659,7 +665,7 @@ mod tests {
             .conn()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12, "create_fresh_db and migrate() must both stamp 12");
+        assert_eq!(version, 13, "create_fresh_db and migrate() must both stamp 13");
     }
 
     /// 0009 adds the compactions table and, like 0008, clears cursors so the
@@ -791,7 +797,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
 
         conn.execute(
             "INSERT INTO accounts (id, email, last_seen_at) VALUES ('a1', 'a@x.com', 0)",
@@ -808,5 +814,39 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM account_intervals", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn migration_0013_adds_archive_tables() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("v12.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        conn.execute_batch("DROP TABLE transcript_lines; DROP TABLE file_snapshots;")
+            .unwrap();
+
+        conn.execute_batch(include_str!("migrations/0013_archive_tables.sql")).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('transcript_lines','file_snapshots')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2, "migration 0013 must create both archive tables");
+
+        conn.execute(
+            "INSERT INTO transcript_lines (project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)
+             VALUES ('p', 's', 'p/s.jsonl', 0, '{}', 0)",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO transcript_lines (project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)
+             VALUES ('p', 's', 'p/s.jsonl', 0, '{\"different\":true}', 1)",
+            [],
+        );
+        assert!(dup.is_err(), "duplicate (jsonl_path, line_no) must be rejected");
     }
 }
