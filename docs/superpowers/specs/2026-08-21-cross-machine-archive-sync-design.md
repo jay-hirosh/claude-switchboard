@@ -119,18 +119,20 @@ CREATE TABLE archive_file_snapshots (
 
 **Bootstrapping a user + first device:**
 ```
-POST /v1/accounts  { device_name }
+POST /v1/accounts  { device_id, device_name }
   → { user_id, device_id, api_key }
 ```
+`device_id` is supplied by the client, never minted by the server — see §4's note on why (phase 1's local archive already assigns one per install, independent of sync).
 
 **Pairing a second device:**
 ```
 POST /v1/devices/pair-code            (authenticated as an existing device)
   → { pairing_code }                  (10-minute TTL, single-use)
 
-POST /v1/devices/join  { pairing_code, device_name }   (unauthenticated — this is how a new device obtains its key)
+POST /v1/devices/join  { pairing_code, device_id, device_name }   (unauthenticated — this is how a new device obtains its key)
   → { user_id, device_id, api_key }
 ```
+Same rule: `device_id` is the joining device's own, client-generated value.
 
 **Ongoing sync** (authenticated via `Authorization: Bearer <api_key>`):
 ```
