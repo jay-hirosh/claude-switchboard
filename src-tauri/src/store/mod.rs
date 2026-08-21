@@ -201,6 +201,40 @@ impl Db {
             tracing::info!("migrating v13 -> v14 (device_id for sync)");
             conn.execute_batch(include_str!("migrations/0014_sync_device_id.sql"))
                 .context("apply migration 0014")?;
+
+            // Backfill: pre-existing rows (device_id='' from the ALTER TABLE
+            // default / the file_snapshots rebuild) need this install's own
+            // device_id — otherwise the sync engine's "rows to push" query
+            // (which filters by device_id) can never find them, and
+            // archive_watcher's re-snapshot-on-every-launch behavior would
+            // create a duplicate file_snapshots row per file (the new
+            // UNIQUE constraint is device_id-inclusive and no longer
+            // matches the old ''-tagged row). This migration block only
+            // ever runs once per database (gated by schema_version), so
+            // INSERT OR IGNORE followed by a plain read is safe — it
+            // guarantees a 'sync_device_id' settings row exists afterward
+            // (ours, since nothing could have seeded it before this
+            // feature existed) without needing OptionalExtension.
+            let device_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES ('sync_device_id', ?1)",
+                rusqlite::params![device_id],
+            )?;
+            let device_id: String = conn.query_row(
+                "SELECT value FROM settings WHERE key = 'sync_device_id'",
+                [],
+                |r| r.get(0),
+            )?;
+            conn.execute(
+                "UPDATE transcript_lines SET device_id = ?1 WHERE device_id = ''",
+                rusqlite::params![device_id],
+            )
+            .context("backfill transcript_lines device_id")?;
+            conn.execute(
+                "UPDATE file_snapshots SET device_id = ?1 WHERE device_id = ''",
+                rusqlite::params![device_id],
+            )
+            .context("backfill file_snapshots device_id")?;
         }
 
         conn.execute(
@@ -956,5 +990,98 @@ mod tests {
             [],
         )
         .expect("same (source_path, content_hash) from a DIFFERENT device_id must not collide");
+    }
+
+    /// Regression test for the critical migration bug: rows archived before
+    /// this install ever ran the device_id migration must be backfilled
+    /// with this install's own device_id, not left at the '' default
+    /// forever. Unlike `migration_0014_adds_device_id_and_rebuilds_file_snapshots`
+    /// above (which calls `execute_batch` on the raw migration SQL directly),
+    /// this test must go through the REAL `Db::open()` -> `migrate()` path,
+    /// since the backfill logic lives in Rust code inside `migrate()`, not
+    /// in the migration's `.sql` file.
+    #[test]
+    fn migration_0014_backfills_device_id_on_preexisting_rows_via_real_open() {
+        let dir = tempdir().unwrap();
+        // `Db::open` always opens `<dir>/data.db` — build the pre-upgrade
+        // (v13-shaped) database at that exact path so the real open path
+        // picks it up as an existing file to migrate, not a fresh install.
+        let db_path = dir.path().join("data.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(include_str!("schema.sql")).unwrap();
+            // Simulate a pre-v14 shape: drop device_id from both tables by
+            // rebuilding them without it, matching what a real v13 DB looked like.
+            conn.execute_batch(
+                "DROP TABLE transcript_lines;
+                 CREATE TABLE transcript_lines (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     project_slug TEXT NOT NULL, session_id TEXT NOT NULL,
+                     jsonl_path TEXT NOT NULL, line_no INTEGER NOT NULL,
+                     raw_line TEXT NOT NULL, ingested_at INTEGER NOT NULL,
+                     UNIQUE (jsonl_path, line_no)
+                 );
+                 DROP TABLE file_snapshots;
+                 CREATE TABLE file_snapshots (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     source_path TEXT NOT NULL, kind TEXT NOT NULL,
+                     content TEXT NOT NULL, content_hash TEXT NOT NULL,
+                     captured_at INTEGER NOT NULL,
+                     UNIQUE (source_path, content_hash)
+                 );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO transcript_lines (project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)
+                 VALUES ('p', 's', 'p/s.jsonl', 0, '{}', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO file_snapshots (source_path, kind, content, content_hash, captured_at)
+                 VALUES ('/x', 'misc', 'hi', 'h1', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_version (version) VALUES (13)",
+                [],
+            )
+            .unwrap();
+            // conn dropped at end of this block, releasing the sqlite handle
+            // before Db::open (which takes its own separate lockfile) below.
+        }
+
+        // The real open/migrate path — this is what actually exercises the
+        // backfill code inside migrate(), not just the raw migration SQL.
+        let db = Db::open(dir.path()).expect("open should upgrade v13 -> v14 with backfill");
+        let my_id = db.device_id().unwrap();
+        assert!(!my_id.is_empty());
+        assert!(uuid::Uuid::parse_str(&my_id).is_ok(), "device_id must be a real UUID, not the '' sentinel");
+
+        let conn = db.conn();
+        let line_device_id: String = conn
+            .query_row(
+                "SELECT device_id FROM transcript_lines WHERE jsonl_path = 'p/s.jsonl'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            line_device_id, my_id,
+            "pre-existing transcript_lines row must be backfilled with this install's device_id"
+        );
+
+        let snap_device_id: String = conn
+            .query_row(
+                "SELECT device_id FROM file_snapshots WHERE source_path = '/x'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            snap_device_id, my_id,
+            "pre-existing file_snapshots row must be backfilled with this install's device_id"
+        );
     }
 }
