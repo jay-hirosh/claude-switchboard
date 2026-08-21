@@ -23,3 +23,14 @@ CREATE TABLE IF NOT EXISTS file_snapshots (
     UNIQUE (source_path, content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_file_snapshots_path ON file_snapshots(source_path);
+
+-- Every pre-existing jsonl_cursors row was written by the pre-archive walker,
+-- which cursors a file to its end without ever having called
+-- insert_transcript_lines. ingest_file's own short-circuit (unchanged mtime +
+-- unchanged length -> return early) means those files would otherwise never
+-- be re-read again, so transcript_lines would silently stay empty for a
+-- user's entire pre-existing history. Clearing jsonl_cursors forces a re-read
+-- from byte 0 on the next backfill, which archives it. session_events is NOT
+-- deleted: event_id is stable and UNIQUE, so re-reading is idempotent for
+-- rows already stored (same pattern as 0006, 0008, 0009).
+DELETE FROM jsonl_cursors;

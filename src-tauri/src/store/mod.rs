@@ -849,4 +849,48 @@ mod tests {
         );
         assert!(dup.is_err(), "duplicate (jsonl_path, line_no) must be rejected");
     }
+
+    /// The headline archive bug: every pre-existing jsonl_cursors row was
+    /// written by the pre-archive walker, which never called
+    /// insert_transcript_lines. ingest_file's unchanged-mtime/unchanged-length
+    /// short-circuit means those files would otherwise never be re-read, so
+    /// transcript_lines would silently stay empty for a user's entire
+    /// pre-existing history. Migration 0013 must clear jsonl_cursors to force
+    /// a full re-read on the next backfill — same pattern as 0008/0009.
+    #[test]
+    fn migration_0013_clears_cursors_to_force_archive_backfill() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("v12.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        conn.execute_batch("DROP TABLE transcript_lines; DROP TABLE file_snapshots;")
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO jsonl_cursors (file_path, last_mtime_ns, byte_offset)
+             VALUES ('/a/b.jsonl', 1, 4096)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_events
+               (ts, project, model, input_tokens, output_tokens,
+                cache_read_tokens, cost_usd, source_file, source_line, event_id)
+             VALUES (0, 'p', 'm', 1, 1, 0, 0.0, '/a/b.jsonl', 1, 'evt-1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(include_str!("migrations/0013_archive_tables.sql")).unwrap();
+
+        let cursors: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jsonl_cursors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cursors, 0, "cursors must be cleared to force transcript archiving on re-read");
+
+        let events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, 1, "events must survive — re-ingest is idempotent");
+    }
 }
