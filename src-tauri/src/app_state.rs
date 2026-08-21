@@ -246,6 +246,22 @@ impl CachedUsage {
     }
 }
 
+/// Summary of the most recent push/pull cycle (manual or periodic),
+/// shown by the settings UI. Defined here (rather than in `sync::engine`,
+/// which produces it) because Task 4 also needs it as `AppState.sync_status`'s
+/// element type and as a Tauri command return type — both of which require
+/// a type this crate's specta/serde derives can see. `sync::engine::
+/// summarize_cycle_result` (Task 3) is the only place a `SyncCycleResult`
+/// gets turned into one, so the manual "sync now" command and the periodic
+/// background task can never drift on how a result maps to a status string.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct SyncCycleSummary {
+    pub last_run_at: String,
+    pub outcome: String, // "ok" | "unauthorized" | "transient"
+    pub pushed: u32,
+    pub pulled: u32,
+}
+
 pub struct AppState {
     pub db: Arc<Db>,
     pub auth: Arc<AuthOrchestrator>,

@@ -86,6 +86,18 @@ pub struct StoredFileSnapshot {
     pub content_hash: String,
 }
 
+/// `device_id` stamped on rows the sync engine pulls in from the backend
+/// (see `insert_pulled_transcript_lines`/`insert_pulled_file_snapshot`).
+/// A real device_id is always a UUID v4 string, so this fixed, non-UUID
+/// marker can never collide with one. Using it (rather than
+/// `self.device_id()`) is what keeps `local_transcript_lines_since`/
+/// `local_file_snapshots_since` — which only return rows tagged with THIS
+/// device's own id — from ever re-offering a pulled-in row for push.
+/// Re-pushing one would not be a harmless no-op: the backend's uniqueness
+/// key includes device_id, so pushing it back under our own id would
+/// create a genuine duplicate row misattributed to us.
+const SYNCED_FROM_PEER_DEVICE_ID: &str = "synced-from-peer";
+
 /// The parent transcript's most recent event — used by the live-session
 /// registry to answer "what is this session doing right now." Subagent
 /// transcripts are deliberately excluded: they have their own context
@@ -353,6 +365,103 @@ impl Db {
             |r| r.get(0),
         )?;
         Ok(id)
+    }
+
+    /// Highest local `transcript_lines.id`/`file_snapshots.id` already
+    /// pushed to the backend, per table. `None` means nothing pushed yet
+    /// (start from the beginning of this device's own rows).
+    pub fn sync_push_watermark(&self, table: &str) -> Result<Option<i64>> {
+        let key = format!("sync_push_watermark_{table}");
+        let v: Option<String> = self
+            .conn()
+            .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()?;
+        Ok(v.and_then(|s| s.parse().ok()))
+    }
+
+    pub fn set_sync_push_watermark(&self, table: &str, id: i64) -> Result<()> {
+        let key = format!("sync_push_watermark_{table}");
+        self.conn().execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![key, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Highest remote `seq` already pulled from the backend, per table.
+    pub fn sync_pull_watermark(&self, table: &str) -> Result<i64> {
+        let key = format!("sync_pull_watermark_{table}");
+        let v: Option<String> = self
+            .conn()
+            .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()?;
+        Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
+    }
+
+    pub fn set_sync_pull_watermark(&self, table: &str, seq: i64) -> Result<()> {
+        let key = format!("sync_pull_watermark_{table}");
+        self.conn().execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![key, seq.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// This device's own rows created after `since_id` (exclusive),
+    /// oldest first, capped at `limit` — used by the sync engine to find
+    /// what to push next. Only returns rows tagged with THIS device's own
+    /// `device_id` (never rows already pulled in from another device —
+    /// re-pushing those would be pointless and would misattribute them).
+    pub fn local_transcript_lines_since(&self, since_id: i64, limit: i64) -> Result<Vec<(i64, StoredTranscriptLine)>> {
+        let my_id = self.device_id()?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, project_slug, session_id, jsonl_path, line_no, raw_line
+             FROM transcript_lines WHERE device_id = ?1 AND id > ?2 ORDER BY id LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![my_id, since_id, limit], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                StoredTranscriptLine {
+                    project_slug: r.get(1)?,
+                    session_id: r.get(2)?,
+                    jsonl_path: r.get(3)?,
+                    line_no: r.get(4)?,
+                    raw_line: r.get(5)?,
+                },
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Same idea as `local_transcript_lines_since`, for file_snapshots.
+    pub fn local_file_snapshots_since(&self, since_id: i64, limit: i64) -> Result<Vec<(i64, StoredFileSnapshot)>> {
+        let my_id = self.device_id()?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, source_path, kind, content, content_hash
+             FROM file_snapshots WHERE device_id = ?1 AND id > ?2 ORDER BY id LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![my_id, since_id, limit], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                StoredFileSnapshot {
+                    source_path: r.get(1)?,
+                    kind: r.get(2)?,
+                    content: r.get(3)?,
+                    content_hash: r.get(4)?,
+                },
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Recompute `cost_usd` for every stored session event using the current
@@ -752,6 +861,23 @@ impl Db {
         // Fetch before taking `conn()` below — device_id() takes the same
         // Mutex<Connection> lock, so calling it after would deadlock.
         let device_id = self.device_id()?;
+        self.insert_transcript_lines_as(lines, &device_id)
+    }
+
+    /// Same idempotent insert as `insert_transcript_lines`, but for rows the
+    /// sync engine just pulled in from another device. Stamped with the
+    /// fixed `SYNCED_FROM_PEER_DEVICE_ID` sentinel instead of this device's
+    /// own id — see that constant's doc comment for why that distinction
+    /// matters (it's what keeps a pulled row from being re-pushed and
+    /// duplicated under our own identity on the next cycle).
+    pub fn insert_pulled_transcript_lines(&self, lines: &[StoredTranscriptLine]) -> Result<usize> {
+        self.insert_transcript_lines_as(lines, SYNCED_FROM_PEER_DEVICE_ID)
+    }
+
+    fn insert_transcript_lines_as(&self, lines: &[StoredTranscriptLine], device_id: &str) -> Result<usize> {
+        if lines.is_empty() {
+            return Ok(0);
+        }
         let now = Utc::now().timestamp();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -810,6 +936,17 @@ impl Db {
         // Fetch before taking `conn()` below — device_id() takes the same
         // Mutex<Connection> lock, so calling it after would deadlock.
         let device_id = self.device_id()?;
+        self.insert_file_snapshot_as(snap, &device_id)
+    }
+
+    /// Same as `insert_file_snapshot`, but for a snapshot the sync engine
+    /// just pulled in from another device — see `SYNCED_FROM_PEER_DEVICE_ID`
+    /// and `insert_pulled_transcript_lines` for why the sentinel matters.
+    pub fn insert_pulled_file_snapshot(&self, snap: &StoredFileSnapshot) -> Result<bool> {
+        self.insert_file_snapshot_as(snap, SYNCED_FROM_PEER_DEVICE_ID)
+    }
+
+    fn insert_file_snapshot_as(&self, snap: &StoredFileSnapshot, device_id: &str) -> Result<bool> {
         let now = Utc::now().timestamp();
         let changed = self.conn().execute(
             "INSERT OR IGNORE INTO file_snapshots
@@ -1287,6 +1424,68 @@ mod tests {
             .query_row("SELECT device_id FROM file_snapshots WHERE source_path = '/x'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(device_id, my_id);
+    }
+
+    #[test]
+    fn local_transcript_lines_since_excludes_other_devices_rows() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let my_id = db.device_id().unwrap();
+
+        db.insert_transcript_lines(&[StoredTranscriptLine {
+            project_slug: "p".into(), session_id: "mine".into(),
+            jsonl_path: "p/mine.jsonl".into(), line_no: 0, raw_line: "{}".into(),
+        }]).unwrap();
+
+        // Simulate a row pulled in from another device: same table, but a
+        // different device_id, inserted directly (bypassing insert_transcript_lines,
+        // which always stamps THIS device's own id).
+        db.conn().execute(
+            "INSERT INTO transcript_lines (device_id, project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)
+             VALUES ('other-device', 'p', 'theirs', 'p/theirs.jsonl', 0, '{}', 0)",
+            [],
+        ).unwrap();
+
+        let rows = db.local_transcript_lines_since(0, 500).unwrap();
+        assert_eq!(rows.len(), 1, "only this device's own row should be returned for pushing");
+        assert_eq!(rows[0].1.session_id, "mine");
+        let _ = my_id;
+    }
+
+    // Regression test for a real bug caught via the sync engine's pull-pagination
+    // test: rows the sync engine pulls in from another device must NOT be
+    // re-offered by `local_transcript_lines_since`/`local_file_snapshots_since`
+    // on the next push cycle. Pushing a pulled-in row back under our own
+    // device_id would not be a harmless no-op — the backend's uniqueness key
+    // includes device_id, so it would create a genuine duplicate row
+    // misattributed to us. `insert_pulled_transcript_lines`/
+    // `insert_pulled_file_snapshot` (used by the sync engine's pull path,
+    // instead of the plain `insert_transcript_lines`/`insert_file_snapshot`
+    // the JSONL watcher uses) are what prevent that, by stamping a sentinel
+    // device_id instead of `self.device_id()`.
+    #[test]
+    fn insert_pulled_rows_are_excluded_from_this_devices_local_rows() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+
+        db.insert_pulled_transcript_lines(&[StoredTranscriptLine {
+            project_slug: "p".into(), session_id: "theirs".into(),
+            jsonl_path: "p/theirs.jsonl".into(), line_no: 0, raw_line: "{}".into(),
+        }]).unwrap();
+        assert_eq!(
+            db.local_transcript_lines_since(0, 500).unwrap().len(),
+            0,
+            "a row just pulled in from another device must not be re-offered for push"
+        );
+
+        db.insert_pulled_file_snapshot(&StoredFileSnapshot {
+            source_path: "/x".into(), kind: "misc".into(), content: "x".into(), content_hash: "h".into(),
+        }).unwrap();
+        assert_eq!(
+            db.local_file_snapshots_since(0, 500).unwrap().len(),
+            0,
+            "a snapshot just pulled in from another device must not be re-offered for push"
+        );
     }
 
     #[test]
