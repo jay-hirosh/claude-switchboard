@@ -889,8 +889,46 @@ pub fn run() {
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
                         interval.tick().await;
-                        let base_url = sync_state.db.sync_backend_url().unwrap_or(None);
-                        let api_key = sync_state.db.sync_api_key().unwrap_or(None);
+
+                        // Never retry-loop against a permanently broken
+                        // credential: if the last recorded outcome was a
+                        // 401 (key revoked/invalid), skip running the cycle
+                        // again on this timer. The manual "Sync now"
+                        // command is unaffected by this check — a
+                        // successful manual sync (e.g. after the user
+                        // re-pairs) naturally overwrites sync_status with a
+                        // fresh, non-unauthorized outcome, which un-skips
+                        // this dispatcher on its next tick.
+                        let last_was_unauthorized = sync_state
+                            .sync_status
+                            .read()
+                            .as_ref()
+                            .map(|s| s.outcome == "unauthorized")
+                            .unwrap_or(false);
+                        if last_was_unauthorized {
+                            tracing::debug!(
+                                "skipping periodic sync — last cycle was unauthorized (needs re-pairing)"
+                            );
+                            continue;
+                        }
+
+                        // Distinguish "DB read failed" from "legitimately
+                        // not configured yet" — mirrors the warmup
+                        // dispatcher's `tracing::warn!` pattern above.
+                        let base_url = match sync_state.db.sync_backend_url() {
+                            Ok(url) => url,
+                            Err(e) => {
+                                tracing::warn!("periodic sync: failed to read sync_backend_url: {e:#}");
+                                continue;
+                            }
+                        };
+                        let api_key = match sync_state.db.sync_api_key() {
+                            Ok(key) => key,
+                            Err(e) => {
+                                tracing::warn!("periodic sync: failed to read sync_api_key: {e:#}");
+                                continue;
+                            }
+                        };
                         if let (Some(base_url), Some(api_key)) = (base_url, api_key) {
                             let client = sync::SyncClient::new(sync_state.http_client.clone(), base_url);
                             let result = sync::engine::run_sync_cycle(&sync_state.db, &client, &api_key).await;
