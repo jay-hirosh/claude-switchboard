@@ -8,6 +8,15 @@ use std::path::{Path, PathBuf};
 
 const MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
 
+// Flush archive_lines to the DB every this-many lines rather than only once
+// at the end of the file. Migration 0013 clears jsonl_cursors, forcing every
+// pre-existing transcript (up to MAX_FILE_BYTES = 100MB) to be fully re-read
+// on first launch after upgrade; buffering the whole file's StoredTranscriptLine
+// Vec (3 owned Strings per line) before a single insert would hold the
+// entire file in memory per file, for potentially thousands of files at
+// once. Chunking bounds that to ~5000 lines' worth regardless of file size.
+const ARCHIVE_FLUSH_EVERY: usize = 5000;
+
 pub fn claude_projects_root() -> Option<PathBuf> {
     directories::UserDirs::new()
         .map(|u| u.home_dir().join(".claude").join("projects"))
@@ -129,6 +138,19 @@ pub fn ingest_file(
         .to_string_lossy()
         .into_owned();
 
+    // For transcript_lines.project_slug only — NOT session_events.project
+    // (that stays `project`, derived above, unchanged). A subagent transcript
+    // lives at `<project_slug>/<sessionId>/subagents/agent-*.jsonl`, so
+    // `path.parent()` (what `project` uses) is literally `subagents` for the
+    // majority of files in a typical corpus. The real project slug is always
+    // the first component of source_file_path, regardless of subagent
+    // nesting, since that path is relative to the projects root.
+    let archive_project_slug = Path::new(&source_file_path)
+        .components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .unwrap_or_else(|| project.clone());
+
     let session_id = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -161,12 +183,25 @@ pub fn ingest_file(
             continue;
         }
         archive_lines.push(StoredTranscriptLine {
-            project_slug: project.clone(),
+            project_slug: archive_project_slug.clone(),
             session_id: session_id.clone(),
             jsonl_path: source_file_path.clone(),
             line_no: line_start,
             raw_line: text.to_string(),
         });
+        if archive_lines.len() >= ARCHIVE_FLUSH_EVERY {
+            // Same log-and-swallow behavior as the end-of-function flush
+            // below — a transcript-archive failure must never block
+            // analytics ingestion. Ordering is still safe: every flush here
+            // happens strictly before ingest_atomic advances the cursor at
+            // the very end of the function, so a crash mid-file just
+            // re-derives and re-inserts (idempotent via REPLACE) rather than
+            // losing anything.
+            if let Err(e) = db.insert_transcript_lines(&archive_lines) {
+                tracing::warn!("archive: failed to insert transcript lines for {}: {}", key, e);
+            }
+            archive_lines.clear();
+        }
         // Claude Code JSONLs interleave many non-usage record types
         // (`user`, `permission-mode`, `attachment`, `system`, `last-prompt`, …);
         // only `assistant` lines carry a `message.usage` payload. parse_event_line

@@ -139,6 +139,61 @@ fn archive_reflects_new_content_after_truncation() {
 }
 
 #[test]
+fn archives_lines_across_a_mid_loop_flush_boundary() {
+    // ARCHIVE_FLUSH_EVERY is 5000; write more than one chunk's worth of
+    // lines so both the mid-loop flush and the final end-of-function flush
+    // fire, and confirm every line still lands (no gap at the boundary, no
+    // duplication).
+    let (_d, db, p, projects) = setup();
+    let f = projects.join("demo").join("session.jsonl");
+    let total_lines = 12_000;
+    let assistant_line = |i: usize| -> String {
+        format!(
+            r#"{{"type":"user","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp/x","message":{{"role":"user","content":[{{"type":"text","text":"line {i}"}}]}}}}"#
+        )
+    };
+    let contents: String = (0..total_lines).map(|i| assistant_line(i) + "\n").collect();
+    fs::write(&f, contents).unwrap();
+
+    let n = walker::ingest_file(&db, &p, &f, &projects).unwrap();
+    assert_eq!(n, 0, "these lines carry no usage payload, so 0 analytics events");
+
+    let rel = f.strip_prefix(&projects).unwrap().to_string_lossy().into_owned();
+    let lines = db.transcript_lines_for_path(&rel).unwrap();
+    assert_eq!(
+        lines.len(),
+        total_lines,
+        "every line must be archived across the flush boundary, no gap or duplicate"
+    );
+}
+
+#[test]
+fn subagent_transcript_archives_the_real_project_slug() {
+    // Subagent transcripts live at
+    // <project_slug>/<sessionId>/subagents/agent-*.jsonl. path.parent() for
+    // such a file is literally `subagents`, which must NOT leak into
+    // transcript_lines.project_slug — the real slug is the first path
+    // component of the path relative to the projects root.
+    let (_d, db, p, projects) = setup();
+    let subagents_dir = projects.join("demo").join("session-id").join("subagents");
+    fs::create_dir_all(&subagents_dir).unwrap();
+    let f = subagents_dir.join("agent-x.jsonl");
+    fs::copy("tests/fixtures/jsonl/current_schema.jsonl", &f).unwrap();
+
+    walker::ingest_file(&db, &p, &f, &projects).unwrap();
+
+    let rel = f.strip_prefix(&projects).unwrap().to_string_lossy().into_owned();
+    let lines = db.transcript_lines_for_path(&rel).unwrap();
+    assert!(!lines.is_empty());
+    for l in &lines {
+        assert_eq!(
+            l.project_slug, "demo",
+            "project_slug must be the real project slug, not 'subagents'"
+        );
+    }
+}
+
+#[test]
 fn discover_jsonl_skips_deep_nesting() {
     let (_d, _db, _p, projects) = setup();
     let deep = projects.join("demo").join("nested").join("deeper");
