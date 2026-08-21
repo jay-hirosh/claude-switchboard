@@ -4,6 +4,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 pub mod accounts;
+pub mod archive;
 pub mod auth;
 
 #[derive(Clone)]
@@ -27,6 +28,8 @@ pub fn app(pool: PgPool) -> Router {
         .route("/v1/accounts", post(accounts::create_account))
         .route("/v1/devices/pair-code", post(accounts::pair_code))
         .route("/v1/devices/join", post(accounts::join))
+        .route("/v1/archive/push", post(archive::push))
+        .route("/v1/archive/pull", get(archive::pull))
         .with_state(Arc::new(AppState { pool }))
 }
 
