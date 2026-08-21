@@ -1,3 +1,4 @@
+use axum::extract::DefaultBodyLimit;
 use axum::{routing::get, Json, Router};
 use serde::Serialize;
 use sqlx::PgPool;
@@ -23,6 +24,11 @@ async fn health() -> Json<Health> {
 
 pub fn app(pool: PgPool) -> Router {
     use axum::routing::post;
+    // Axum's default body-size limit is 2MB, but a full push batch (up to
+    // 500 rows, individually tens of KB) can exceed that and would
+    // otherwise be silently rejected with 413 — permanently stalling that
+    // device's sync, since the watermark-advance rule never skips a failed
+    // batch. 32MB is generous headroom above the spec's batch size.
     Router::new()
         .route("/health", get(health))
         .route("/v1/accounts", post(accounts::create_account))
@@ -30,6 +36,7 @@ pub fn app(pool: PgPool) -> Router {
         .route("/v1/devices/join", post(accounts::join))
         .route("/v1/archive/push", post(archive::push))
         .route("/v1/archive/pull", get(archive::pull))
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .with_state(Arc::new(AppState { pool }))
 }
 
