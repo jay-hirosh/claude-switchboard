@@ -321,6 +321,40 @@ impl Db {
         Ok(())
     }
 
+    /// This install's stable sync identity — a UUID generated once on
+    /// first call and persisted as a settings row, never regenerated
+    /// afterward. Independent of whether sync is ever enabled; phase 1's
+    /// local archive already needs a stable per-install identity so that
+    /// rows synced in later from other devices can be told apart from
+    /// this device's own.
+    pub fn device_id(&self) -> Result<String> {
+        let existing: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'sync_device_id'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        self.conn().execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('sync_device_id', ?1)",
+            params![id],
+        )?;
+        // Re-read rather than trust the just-generated value: a concurrent
+        // caller could have won the INSERT OR IGNORE race, in which case
+        // the stable, already-persisted id is whichever came first.
+        let id: String = self.conn().query_row(
+            "SELECT value FROM settings WHERE key = 'sync_device_id'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(id)
+    }
+
     /// Recompute `cost_usd` for every stored session event using the current
     /// pricing table. Used as a one-time migration when pricing entries are
     /// added or corrected (e.g. fable-5 events that were costed 0.0 before
@@ -715,18 +749,22 @@ impl Db {
         if lines.is_empty() {
             return Ok(0);
         }
+        // Fetch before taking `conn()` below — device_id() takes the same
+        // Mutex<Connection> lock, so calling it after would deadlock.
+        let device_id = self.device_id()?;
         let now = Utc::now().timestamp();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let inserted = {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO transcript_lines
-                 (project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (device_id, project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             let mut n = 0;
             for l in lines {
                 n += stmt.execute(params![
+                    device_id,
                     l.project_slug,
                     l.session_id,
                     l.jsonl_path,
@@ -769,12 +807,15 @@ impl Db {
     /// prior snapshot at the same path. Returns true if a new row was
     /// written, false if this exact content was already archived.
     pub fn insert_file_snapshot(&self, snap: &StoredFileSnapshot) -> Result<bool> {
+        // Fetch before taking `conn()` below — device_id() takes the same
+        // Mutex<Connection> lock, so calling it after would deadlock.
+        let device_id = self.device_id()?;
         let now = Utc::now().timestamp();
         let changed = self.conn().execute(
             "INSERT OR IGNORE INTO file_snapshots
-             (source_path, kind, content, content_hash, captured_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![snap.source_path, snap.kind, snap.content, snap.content_hash, now],
+             (device_id, source_path, kind, content, content_hash, captured_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![device_id, snap.source_path, snap.kind, snap.content, snap.content_hash, now],
         )?;
         Ok(changed > 0)
     }
@@ -1202,6 +1243,50 @@ mod tests {
         assert_eq!(db.repriced_version().unwrap(), None);
         db.set_repriced_version(2).unwrap();
         assert_eq!(db.repriced_version().unwrap(), Some(2));
+    }
+
+    #[test]
+    fn device_id_is_generated_once_and_stable_across_calls() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let id1 = db.device_id().unwrap();
+        let id2 = db.device_id().unwrap();
+        assert_eq!(id1, id2, "device_id must be stable across calls, not regenerated");
+        assert!(uuid::Uuid::parse_str(&id1).is_ok(), "device_id must be a valid UUID string");
+    }
+
+    #[test]
+    fn insert_transcript_lines_and_file_snapshot_stamp_this_devices_id() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let my_id = db.device_id().unwrap();
+
+        db.insert_transcript_lines(&[StoredTranscriptLine {
+            project_slug: "p".into(),
+            session_id: "s".into(),
+            jsonl_path: "p/s.jsonl".into(),
+            line_no: 0,
+            raw_line: "{}".into(),
+        }])
+        .unwrap();
+        let device_id: String = db
+            .conn()
+            .query_row("SELECT device_id FROM transcript_lines WHERE jsonl_path = 'p/s.jsonl'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(device_id, my_id);
+
+        db.insert_file_snapshot(&StoredFileSnapshot {
+            source_path: "/x".into(),
+            kind: "misc".into(),
+            content: "x".into(),
+            content_hash: "h".into(),
+        })
+        .unwrap();
+        let device_id: String = db
+            .conn()
+            .query_row("SELECT device_id FROM file_snapshots WHERE source_path = '/x'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(device_id, my_id);
     }
 
     #[test]

@@ -680,6 +680,7 @@ dependencies = [
  "tracing-subscriber",
  "ttf-parser",
  "url",
+ "uuid",
  "which",
  "window-vibrancy 0.5.3",
  "windows-sys 0.59.0",

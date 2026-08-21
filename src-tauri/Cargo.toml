@@ -38,6 +38,7 @@ notify-debouncer-full = "0.4"
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.9"
+uuid = { version = "1", features = ["v4"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 anyhow = "1"
 fs2 = "0.4"

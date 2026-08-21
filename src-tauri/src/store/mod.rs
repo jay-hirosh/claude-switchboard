@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=13 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=14 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [13_i64],
+            [14_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -197,9 +197,15 @@ impl Db {
                 .context("apply migration 0013")?;
         }
 
+        if current < 14 {
+            tracing::info!("migrating v13 -> v14 (device_id for sync)");
+            conn.execute_batch(include_str!("migrations/0014_sync_device_id.sql"))
+                .context("apply migration 0014")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [13_i64],
+            [14_i64],
         )?;
         Ok(())
     }
@@ -665,7 +671,7 @@ mod tests {
             .conn()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 13, "create_fresh_db and migrate() must both stamp 13");
+        assert_eq!(version, 14, "create_fresh_db and migrate() must both stamp 14");
     }
 
     /// 0009 adds the compactions table and, like 0008, clears cursors so the
@@ -797,7 +803,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
 
         conn.execute(
             "INSERT INTO accounts (id, email, last_seen_at) VALUES ('a1', 'a@x.com', 0)",
@@ -892,5 +898,63 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(events, 1, "events must survive — re-ingest is idempotent");
+    }
+
+    #[test]
+    fn migration_0014_adds_device_id_and_rebuilds_file_snapshots() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("v13.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        // Simulate a pre-v14 shape: drop device_id from both tables by
+        // rebuilding them without it, matching what a real v13 DB looked like.
+        conn.execute_batch(
+            "DROP TABLE transcript_lines;
+             CREATE TABLE transcript_lines (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 project_slug TEXT NOT NULL, session_id TEXT NOT NULL,
+                 jsonl_path TEXT NOT NULL, line_no INTEGER NOT NULL,
+                 raw_line TEXT NOT NULL, ingested_at INTEGER NOT NULL,
+                 UNIQUE (jsonl_path, line_no)
+             );
+             DROP TABLE file_snapshots;
+             CREATE TABLE file_snapshots (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 source_path TEXT NOT NULL, kind TEXT NOT NULL,
+                 content TEXT NOT NULL, content_hash TEXT NOT NULL,
+                 captured_at INTEGER NOT NULL,
+                 UNIQUE (source_path, content_hash)
+             );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_snapshots (source_path, kind, content, content_hash, captured_at)
+             VALUES ('/x', 'misc', 'hi', 'h1', 0)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(include_str!("migrations/0014_sync_device_id.sql")).unwrap();
+
+        let device_id: String = conn
+            .query_row("SELECT device_id FROM file_snapshots WHERE source_path = '/x'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(device_id, "", "pre-existing rows default to empty device_id until backfilled");
+
+        // Prove the new UNIQUE constraint actually includes device_id: two
+        // rows with the same (source_path, content_hash) but different
+        // device_id must both be insertable.
+        conn.execute(
+            "INSERT INTO file_snapshots (device_id, source_path, kind, content, content_hash, captured_at)
+             VALUES ('device-a', '/y', 'misc', 'hi', 'h2', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_snapshots (device_id, source_path, kind, content, content_hash, captured_at)
+             VALUES ('device-b', '/y', 'misc', 'hi', 'h2', 0)",
+            [],
+        )
+        .expect("same (source_path, content_hash) from a DIFFERENT device_id must not collide");
     }
 }

@@ -164,6 +164,7 @@ CREATE INDEX IF NOT EXISTS idx_account_intervals_span
 -- See docs/superpowers/specs/2026-08-21-durable-claude-archive-design.md.
 CREATE TABLE IF NOT EXISTS transcript_lines (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id     TEXT NOT NULL DEFAULT '',
     project_slug  TEXT NOT NULL,
     session_id    TEXT NOT NULL,
     jsonl_path    TEXT NOT NULL,
@@ -176,11 +177,12 @@ CREATE INDEX IF NOT EXISTS idx_transcript_lines_path ON transcript_lines(jsonl_p
 
 CREATE TABLE IF NOT EXISTS file_snapshots (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id    TEXT NOT NULL DEFAULT '',
     source_path  TEXT NOT NULL,
     kind         TEXT NOT NULL,
     content      TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     captured_at  INTEGER NOT NULL,
-    UNIQUE (source_path, content_hash)
+    UNIQUE (device_id, source_path, content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_file_snapshots_path ON file_snapshots(source_path);
