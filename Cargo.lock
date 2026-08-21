@@ -637,6 +637,7 @@ name = "claude-switchboard"
 version = "1.4.0"
 dependencies = [
  "anyhow",
+ "archive-sync-types",
  "async-trait",
  "base64 0.22.1",
  "chrono",
