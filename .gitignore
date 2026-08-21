@@ -19,3 +19,4 @@ target-check/
 src-tauri/patches/
 debug_*.md
 .superpowers/
+.worktrees/
