@@ -187,6 +187,13 @@ pub fn run() {
             commands::get_statusline_install_state,
             commands::install_statusline,
             commands::uninstall_statusline,
+            commands::get_sync_status,
+            commands::set_sync_backend_url,
+            commands::get_sync_backend_url,
+            commands::bootstrap_sync_account,
+            commands::generate_pairing_code,
+            commands::join_sync_account,
+            commands::sync_now,
         ]);
 
     #[cfg(debug_assertions)]
@@ -260,6 +267,13 @@ pub fn run() {
             commands::get_statusline_install_state,
             commands::install_statusline,
             commands::uninstall_statusline,
+            commands::get_sync_status,
+            commands::set_sync_backend_url,
+            commands::get_sync_backend_url,
+            commands::bootstrap_sync_account,
+            commands::generate_pairing_code,
+            commands::join_sync_account,
+            commands::sync_now,
         ]);
 
     // Absolute, anchored to this crate's manifest dir at compile time — a
@@ -343,6 +357,7 @@ pub fn run() {
         tray_position_known: std::sync::atomic::AtomicBool::new(false),
         sessions_cache: parking_lot::RwLock::new(None),
         live_sessions: crate::live_sessions::LiveSessionRegistry::default(),
+        sync_status: parking_lot::RwLock::new(None),
     });
 
     // One-time per pricing revision: recompute historical event costs with
@@ -854,6 +869,35 @@ pub fn run() {
                         }
                     }
                     archive_watcher::backfill(&archive_state.db, &scopes);
+                });
+            }
+
+            // Periodic background sync: every 5 minutes, if the user has
+            // configured a backend URL and this device has an API key,
+            // construct a fresh `SyncClient` (same construction the manual
+            // `sync_now` command uses — the backend URL is user-configured,
+            // so nothing can be built once at startup) and run one push/pull
+            // cycle. Mirrors the warm-up dispatcher's spawn pattern above.
+            // Uses the exact same two-line
+            // `run_sync_cycle`/`summarize_cycle_result` pattern as
+            // `sync_now` so the periodic task and the manual command can
+            // never disagree on how a result maps to a status.
+            {
+                let sync_state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        interval.tick().await;
+                        let base_url = sync_state.db.sync_backend_url().unwrap_or(None);
+                        let api_key = sync_state.db.sync_api_key().unwrap_or(None);
+                        if let (Some(base_url), Some(api_key)) = (base_url, api_key) {
+                            let client = sync::SyncClient::new(sync_state.http_client.clone(), base_url);
+                            let result = sync::engine::run_sync_cycle(&sync_state.db, &client, &api_key).await;
+                            let summary = sync::engine::summarize_cycle_result(result, chrono::Utc::now());
+                            *sync_state.sync_status.write() = Some(summary);
+                        }
+                    }
                 });
             }
 

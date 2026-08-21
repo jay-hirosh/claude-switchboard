@@ -112,4 +112,14 @@ export const ipc = {
 
   // Session browser
   listResumableSessions: () => commands.listResumableSessions().then(unwrap),
+
+  // Sync
+  getSyncStatus: () => commands.getSyncStatus().then(unwrap),
+  getSyncBackendUrl: () => commands.getSyncBackendUrl().then(unwrap),
+  setSyncBackendUrl: (url: string) => commands.setSyncBackendUrl(url).then(unwrap),
+  bootstrapSyncAccount: (deviceName: string) => commands.bootstrapSyncAccount(deviceName).then(unwrap),
+  generatePairingCode: () => commands.generatePairingCode().then(unwrap),
+  joinSyncAccount: (pairingCode: string, deviceName: string) =>
+    commands.joinSyncAccount(pairingCode, deviceName).then(unwrap),
+  syncNow: () => commands.syncNow().then(unwrap),
 };

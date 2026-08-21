@@ -63,6 +63,13 @@ vi.mock('../../lib/ipc', () => ({
     revokeWarmupConsent: vi.fn().mockResolvedValue(undefined),
     osSchedulerRegister: vi.fn().mockResolvedValue(undefined),
     osSchedulerUnregister: vi.fn().mockResolvedValue(undefined),
+    getSyncBackendUrl: vi.fn().mockResolvedValue(null),
+    getSyncStatus: vi.fn().mockResolvedValue(null),
+    setSyncBackendUrl: vi.fn().mockResolvedValue(undefined),
+    bootstrapSyncAccount: vi.fn().mockResolvedValue(undefined),
+    generatePairingCode: vi.fn().mockResolvedValue(''),
+    joinSyncAccount: vi.fn().mockResolvedValue(undefined),
+    syncNow: vi.fn().mockResolvedValue({ last_run_at: '', outcome: 'ok', pushed: 0, pulled: 0 }),
   },
 }));
 

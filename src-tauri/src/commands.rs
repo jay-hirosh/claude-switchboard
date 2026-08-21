@@ -2711,3 +2711,94 @@ pub async fn list_resumable_sessions(
     *state.sessions_cache.write() = Some((newest, rows.clone()));
     Ok(rows)
 }
+
+// ---------------------------------------------------------------------------
+// Sync (Task 4) — backend-URL/pairing/manual-sync commands. `SyncClient` is
+// intentionally NOT stored in `AppState`: the backend URL is user-configured
+// (there's no fixed default), so it's constructed fresh, cheaply, at each
+// call site from the CURRENT `db.sync_backend_url()` value — a thin wrapper
+// around the shared `Arc<reqwest::Client>` already in `AppState.http_client`,
+// so this costs no new HTTP connection setup per construction.
+// ---------------------------------------------------------------------------
+
+#[command]
+#[specta::specta]
+pub async fn get_sync_status(state: State<'_, Arc<AppState>>) -> Result<Option<crate::app_state::SyncCycleSummary>, String> {
+    Ok(state.sync_status.read().clone())
+}
+
+#[command]
+#[specta::specta]
+pub async fn set_sync_backend_url(state: State<'_, Arc<AppState>>, url: String) -> Result<(), String> {
+    state.db.set_sync_backend_url(&url).map_err(err_to_string)
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_sync_backend_url(state: State<'_, Arc<AppState>>) -> Result<Option<String>, String> {
+    state.db.sync_backend_url().map_err(err_to_string)
+}
+
+#[command]
+#[specta::specta]
+pub async fn bootstrap_sync_account(
+    state: State<'_, Arc<AppState>>,
+    device_name: String,
+) -> Result<(), String> {
+    let base_url = state.db.sync_backend_url().map_err(err_to_string)?.ok_or("set a backend URL first")?;
+    let client = crate::sync::SyncClient::new(state.http_client.clone(), base_url);
+    let device_id = state.db.device_id().map_err(err_to_string)?;
+    match client.create_account(device_id, device_name).await {
+        crate::sync::SyncOutcome::Ok(resp) => {
+            state.db.set_sync_api_key(&resp.api_key).map_err(err_to_string)?;
+            Ok(())
+        }
+        crate::sync::SyncOutcome::Unauthorized => Err("unexpected unauthorized on account creation".into()),
+        crate::sync::SyncOutcome::Transient(e) => Err(e),
+    }
+}
+
+#[command]
+#[specta::specta]
+pub async fn generate_pairing_code(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let base_url = state.db.sync_backend_url().map_err(err_to_string)?.ok_or("set a backend URL first")?;
+    let api_key = state.db.sync_api_key().map_err(err_to_string)?.ok_or("sync not configured on this device")?;
+    let client = crate::sync::SyncClient::new(state.http_client.clone(), base_url);
+    match client.pair_code(&api_key).await {
+        crate::sync::SyncOutcome::Ok(resp) => Ok(resp.pairing_code),
+        crate::sync::SyncOutcome::Unauthorized => Err("this device's sync key is no longer valid".into()),
+        crate::sync::SyncOutcome::Transient(e) => Err(e),
+    }
+}
+
+#[command]
+#[specta::specta]
+pub async fn join_sync_account(
+    state: State<'_, Arc<AppState>>,
+    pairing_code: String,
+    device_name: String,
+) -> Result<(), String> {
+    let base_url = state.db.sync_backend_url().map_err(err_to_string)?.ok_or("set a backend URL first")?;
+    let client = crate::sync::SyncClient::new(state.http_client.clone(), base_url);
+    let device_id = state.db.device_id().map_err(err_to_string)?;
+    match client.join(pairing_code, device_id, device_name).await {
+        crate::sync::SyncOutcome::Ok(resp) => {
+            state.db.set_sync_api_key(&resp.api_key).map_err(err_to_string)?;
+            Ok(())
+        }
+        crate::sync::SyncOutcome::Unauthorized => Err("invalid or expired pairing code".into()),
+        crate::sync::SyncOutcome::Transient(e) => Err(e),
+    }
+}
+
+#[command]
+#[specta::specta]
+pub async fn sync_now(state: State<'_, Arc<AppState>>) -> Result<crate::app_state::SyncCycleSummary, String> {
+    let base_url = state.db.sync_backend_url().map_err(err_to_string)?.ok_or("set a backend URL first")?;
+    let api_key = state.db.sync_api_key().map_err(err_to_string)?.ok_or("sync not configured on this device")?;
+    let client = crate::sync::SyncClient::new(state.http_client.clone(), base_url);
+    let result = crate::sync::engine::run_sync_cycle(&state.db, &client, &api_key).await;
+    let summary = crate::sync::engine::summarize_cycle_result(result, chrono::Utc::now());
+    *state.sync_status.write() = Some(summary.clone());
+    Ok(summary)
+}

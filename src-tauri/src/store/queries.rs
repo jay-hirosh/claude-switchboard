@@ -367,6 +367,42 @@ impl Db {
         Ok(id)
     }
 
+    /// The user's own sync-backend URL, if they've configured one. `None`
+    /// until `set_sync_backend_url` is called — there is no fixed default,
+    /// since the backend is self-hosted per the spec.
+    pub fn sync_backend_url(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT value FROM settings WHERE key = 'sync_backend_url'", [], |r| r.get(0))
+            .optional()?)
+    }
+
+    pub fn set_sync_backend_url(&self, url: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_backend_url', ?1)",
+            params![url],
+        )?;
+        Ok(())
+    }
+
+    /// This device's API key for the configured sync backend, issued by
+    /// `create_account`/`join` and stored so subsequent pushes/pulls don't
+    /// need to re-authenticate.
+    pub fn sync_api_key(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT value FROM settings WHERE key = 'sync_api_key'", [], |r| r.get(0))
+            .optional()?)
+    }
+
+    pub fn set_sync_api_key(&self, key: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_api_key', ?1)",
+            params![key],
+        )?;
+        Ok(())
+    }
+
     /// Highest local `transcript_lines.id`/`file_snapshots.id` already
     /// pushed to the backend, per table. `None` means nothing pushed yet
     /// (start from the beginning of this device's own rows).
@@ -1390,6 +1426,18 @@ mod tests {
         let id2 = db.device_id().unwrap();
         assert_eq!(id1, id2, "device_id must be stable across calls, not regenerated");
         assert!(uuid::Uuid::parse_str(&id1).is_ok(), "device_id must be a valid UUID string");
+    }
+
+    #[test]
+    fn sync_backend_url_and_api_key_round_trip() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        assert_eq!(db.sync_backend_url().unwrap(), None);
+        assert_eq!(db.sync_api_key().unwrap(), None);
+        db.set_sync_backend_url("https://example.com").unwrap();
+        db.set_sync_api_key("k1").unwrap();
+        assert_eq!(db.sync_backend_url().unwrap(), Some("https://example.com".to_string()));
+        assert_eq!(db.sync_api_key().unwrap(), Some("k1".to_string()));
     }
 
     #[test]

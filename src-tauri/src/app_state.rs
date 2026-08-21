@@ -304,6 +304,10 @@ pub struct AppState {
     /// right now. In-memory only — starts empty on every launch (see
     /// `live_sessions::LiveSessionRegistry`'s doc comment for why).
     pub live_sessions: crate::live_sessions::LiveSessionRegistry,
+    /// In-memory only, like `sessions_cache` — starts empty on every
+    /// launch. Read by `get_sync_status`; written after each sync cycle
+    /// (manual or periodic).
+    pub sync_status: RwLock<Option<SyncCycleSummary>>,
 }
 
 #[derive(Debug, Clone, Copy)]

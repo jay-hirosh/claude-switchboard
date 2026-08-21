@@ -15,9 +15,11 @@ import {
   disable as disableAutostart,
   isEnabled as isAutostartEnabled,
 } from '@tauri-apps/plugin-autostart';
+import { hostname } from '@tauri-apps/plugin-os';
 import { ipc } from '../lib/ipc';
 import { WarmupSettings } from './WarmupSettings';
 import { StatuslineSettings } from './StatuslineSettings';
+import { SyncSettings } from './SyncSettings';
 
 const POLL_MIN_SECS = 60;
 const POLL_MAX_SECS = 1800;
@@ -79,11 +81,30 @@ export function SettingsPanel() {
   const [consentGranted, setConsentGranted] = useState(false);
   const [osRegistered, setOsRegistered] = useState(false);
   const [availableTerminals, setAvailableTerminals] = useState<Terminal[]>([]);
+  const [backendUrl, setBackendUrl] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<{
+    lastRunAt: string;
+    outcome: string;
+    pushed: number;
+    pulled: number;
+  } | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
 
   useEffect(() => {
     ipc.getWarmupConsentGranted().then(setConsentGranted).catch(() => {});
     ipc.osSchedulerIsRegistered().then(setOsRegistered).catch(() => {});
     ipc.listAvailableTerminals().then(setAvailableTerminals).catch(() => {});
+    ipc.getSyncBackendUrl().then(setBackendUrl).catch(() => {});
+    ipc
+      .getSyncStatus()
+      .then((s) =>
+        setSyncStatus(
+          s
+            ? { lastRunAt: s.last_run_at, outcome: s.outcome, pushed: s.pushed, pulled: s.pulled }
+            : null,
+        ),
+      )
+      .catch(() => {});
   }, []);
 
   const handleRevoke = async () => {
@@ -99,6 +120,39 @@ export function SettingsPanel() {
   const handleUnregisterOs = async () => {
     await ipc.osSchedulerUnregister();
     setOsRegistered(false);
+  };
+
+  const handleSaveBackendUrl = async (url: string) => {
+    await ipc.setSyncBackendUrl(url);
+    setBackendUrl(url);
+  };
+
+  const handleBootstrap = async () => {
+    // The "Enable on this device" button has no name field of its own — a
+    // reasonable default beats a name prompt for what's meant to be a
+    // one-click action. `hostname()` resolves to null in some sandboxed
+    // environments; fall back to a generic label rather than sending "null".
+    const name = (await hostname().catch(() => null)) ?? 'My Device';
+    await ipc.bootstrapSyncAccount(name);
+  };
+
+  const handleGenerateCode = async () => {
+    const code = await ipc.generatePairingCode();
+    setPairingCode(code);
+  };
+
+  const handleJoin = async (code: string, deviceName: string) => {
+    await ipc.joinSyncAccount(code, deviceName);
+  };
+
+  const handleSyncNow = async () => {
+    const summary = await ipc.syncNow();
+    setSyncStatus({
+      lastRunAt: summary.last_run_at,
+      outcome: summary.outcome,
+      pushed: summary.pushed,
+      pulled: summary.pulled,
+    });
   };
 
   if (!local) return <p className="text-[color:var(--color-text-muted)]">Loading...</p>;
@@ -420,6 +474,25 @@ export function SettingsPanel() {
         </h2>
         <Card className="p-[var(--space-md)]">
           <StatuslineSettings />
+        </Card>
+      </section>
+
+      {/* Sync */}
+      <section className="flex flex-col gap-[var(--space-sm)]">
+        <h2 className="text-[length:var(--text-label)] font-[var(--weight-semibold)] text-[color:var(--color-text-muted)] uppercase tracking-[0.04em] px-[var(--space-2xs)]">
+          Sync
+        </h2>
+        <Card className="p-[var(--space-md)]">
+          <SyncSettings
+            backendUrl={backendUrl}
+            status={syncStatus}
+            pairingCode={pairingCode}
+            onSaveBackendUrl={handleSaveBackendUrl}
+            onBootstrap={handleBootstrap}
+            onGenerateCode={handleGenerateCode}
+            onJoin={handleJoin}
+            onSyncNow={handleSyncNow}
+          />
         </Card>
       </section>
 
