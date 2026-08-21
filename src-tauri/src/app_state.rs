@@ -260,6 +260,12 @@ pub struct SyncCycleSummary {
     pub outcome: String, // "ok" | "unauthorized" | "transient"
     pub pushed: u32,
     pub pulled: u32,
+    /// The `SyncCycleResult::Transient` failure message, when `outcome ==
+    /// "transient"` — `None` otherwise. Without this the only place the
+    /// reason ever existed (the `String` payload) was discarded the moment
+    /// `summarize_cycle_result` matched on it.
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 pub struct AppState {

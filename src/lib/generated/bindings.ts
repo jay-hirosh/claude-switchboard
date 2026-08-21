@@ -1177,7 +1177,7 @@ export type SwapReport = { new_active_slot: number; running: RunningClaudeCode }
  * gets turned into one, so the manual "sync now" command and the periodic
  * background task can never drift on how a result maps to a status string.
  */
-export type SyncCycleSummary = { last_run_at: string; outcome: string; pushed: number; pulled: number }
+export type SyncCycleSummary = { last_run_at: string; outcome: string; pushed: number; pulled: number; last_error?: string | null }
 export type Terminal = "ghostty" | "terminal_app" | "iterm_2" | "kitty" | "wez_term" | "windows_terminal" | "power_shell"
 export type UsageSnapshot = { five_hour: Utilization | null; seven_day: Utilization | null; seven_day_sonnet: Utilization | null; seven_day_opus: Utilization | null; extra_usage: ExtraUsage | null; fetched_at?: string }
 export type Utilization = { utilization: number; resets_at?: string | null }
