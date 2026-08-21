@@ -410,6 +410,21 @@ mod tests {
         assert_eq!(second_pull.transcript_seq_high_water, 3);
     }
 
+    // Fix 7: RFC 7235 defines the auth scheme name as case-insensitive.
+    // Proves a lowercase "bearer" scheme is accepted, not just "Bearer".
+    #[sqlx::test]
+    async fn bearer_scheme_match_is_case_insensitive(pool: PgPool) {
+        let (_device_a, key_a) = register_device(&pool, "A").await;
+        let request = Request::builder()
+            .method("GET")
+            .uri("/v1/archive/pull?since_transcript_seq=0&since_snapshot_seq=0&limit=10")
+            .header("authorization", format!("bearer {key_a}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app(pool.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "lowercase 'bearer' scheme must be accepted");
+    }
+
     #[sqlx::test]
     async fn push_and_pull_require_auth(pool: PgPool) {
         let request = Request::builder()

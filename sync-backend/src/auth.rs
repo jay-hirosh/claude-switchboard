@@ -1,4 +1,10 @@
+use axum::extract::FromRequestParts;
+use axum::http::{request::Parts, StatusCode};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use uuid::Uuid;
+
+use crate::AppState;
 
 /// SHA-256 hex digest of a raw API key. High-entropy random tokens (not
 /// user-chosen secrets) don't need a slow hash — this matches how e.g.
@@ -6,13 +12,6 @@ use sha2::{Digest, Sha256};
 pub fn hash_api_key(raw: &str) -> String {
     format!("{:x}", Sha256::digest(raw.as_bytes()))
 }
-
-use axum::extract::FromRequestParts;
-use axum::http::{request::Parts, StatusCode};
-use std::sync::Arc;
-use uuid::Uuid;
-
-use crate::AppState;
 
 /// A request authenticated by a valid device API key. Extracting this
 /// type is how every protected route requires auth — a route that takes
@@ -33,7 +32,10 @@ impl FromRequestParts<Arc<AppState>> for AuthedDevice {
             .headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
+            .and_then(|v| {
+                let (scheme, token) = v.split_once(' ')?;
+                scheme.eq_ignore_ascii_case("bearer").then_some(token)
+            })
             .ok_or((StatusCode::UNAUTHORIZED, "missing bearer token".to_string()))?;
 
         let hash = hash_api_key(raw_key);
