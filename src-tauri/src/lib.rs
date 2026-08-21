@@ -19,7 +19,7 @@ pub mod scheduler_glue;
 pub mod sessions;
 pub mod statusline_installer;
 pub mod store;
-mod sync;
+pub mod sync;
 mod tray;
 mod tray_icon;
 mod updater;
