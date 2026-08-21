@@ -1,6 +1,6 @@
 use super::record::{parse_compaction_line, parse_event_line};
 use super::pricing::PricingTable;
-use crate::store::{Db, StoredCompaction, StoredSessionEvent};
+use crate::store::{Db, StoredCompaction, StoredSessionEvent, StoredTranscriptLine};
 use anyhow::{Context, Result, anyhow};
 use std::fs::{self, File};
 use std::io::{BufRead, Seek, SeekFrom};
@@ -129,10 +129,17 @@ pub fn ingest_file(
         .to_string_lossy()
         .into_owned();
 
+    let session_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
     let mut reader = std::io::BufReader::new(f);
     let mut buf = Vec::new();
     let mut stored = Vec::<StoredSessionEvent>::new();
     let mut compactions = Vec::<StoredCompaction>::new();
+    let mut archive_lines = Vec::<StoredTranscriptLine>::new();
     let mut consumed: i64 = offset;
 
     loop {
@@ -153,6 +160,13 @@ pub fn ingest_file(
         if text.is_empty() {
             continue;
         }
+        archive_lines.push(StoredTranscriptLine {
+            project_slug: project.clone(),
+            session_id: session_id.clone(),
+            jsonl_path: source_file_path.clone(),
+            line_no: line_start,
+            raw_line: text.to_string(),
+        });
         // Claude Code JSONLs interleave many non-usage record types
         // (`user`, `permission-mode`, `attachment`, `system`, `last-prompt`, …);
         // only `assistant` lines carry a `message.usage` payload. parse_event_line
@@ -203,6 +217,17 @@ pub fn ingest_file(
             });
         }
     }
+    // Archived before the cursor advances (ingest_atomic, below, is what
+    // advances it): if the process crashes between the two calls, the
+    // cursor is still at the old offset, so the next read re-derives and
+    // re-inserts the same archive_lines (idempotent via REPLACE) rather
+    // than silently skipping them. Errors here are logged, not propagated —
+    // the archive is a separate concern from analytics ingestion and must
+    // never block it.
+    if let Err(e) = db.insert_transcript_lines(&archive_lines) {
+        tracing::warn!("archive: failed to insert transcript lines for {}: {}", key, e);
+    }
+
     let inserted = db.ingest_atomic(&key, &stored, &compactions, mtime_ns, consumed)?;
     Ok(inserted)
 }

@@ -92,6 +92,53 @@ fn malformed_lines_are_skipped_not_fatal() {
 }
 
 #[test]
+fn archives_raw_lines_alongside_events() {
+    let (_d, db, p, projects) = setup();
+    let f = projects.join("demo").join("session.jsonl");
+    fs::copy("tests/fixtures/jsonl/current_schema.jsonl", &f).unwrap();
+    walker::ingest_file(&db, &p, &f, &projects).unwrap();
+
+    let rel = f.strip_prefix(&projects).unwrap().to_string_lossy().into_owned();
+    let lines = db.transcript_lines_for_path(&rel).unwrap();
+    let expected: Vec<&str> = include_str!("fixtures/jsonl/current_schema.jsonl").lines().collect();
+    assert_eq!(
+        lines.len(),
+        expected.len(),
+        "every raw line is archived, not just usage-bearing ones"
+    );
+    for (row, original) in lines.iter().zip(expected.iter()) {
+        assert_eq!(row.raw_line, original.trim());
+    }
+}
+
+#[test]
+fn archive_reflects_new_content_after_truncation() {
+    let (_d, db, p, projects) = setup();
+    let f = projects.join("demo").join("session.jsonl");
+    fs::copy("tests/fixtures/jsonl/current_schema.jsonl", &f).unwrap();
+    walker::ingest_file(&db, &p, &f, &projects).unwrap();
+
+    fs::write(&f, "{\"different\":true}\n").unwrap();
+    walker::ingest_file(&db, &p, &f, &projects).unwrap();
+
+    let rel = f.strip_prefix(&projects).unwrap().to_string_lossy().into_owned();
+    let lines = db.transcript_lines_for_path(&rel).unwrap();
+    // Rows at offsets the shorter post-truncation content never reaches
+    // (e.g. the original fixture's other lines) legitimately survive as
+    // historical content — the archive is never pruned. Only the row at
+    // offset 0 was actually revisited, so only it needs to prove REPLACE
+    // (not IGNORE) won over the stale content that used to live there.
+    let at_offset_zero = lines
+        .iter()
+        .find(|l| l.line_no == 0)
+        .expect("offset 0 must have a row after truncation");
+    assert_eq!(
+        at_offset_zero.raw_line, "{\"different\":true}",
+        "replace must win over the stale row at the same offset"
+    );
+}
+
+#[test]
 fn discover_jsonl_skips_deep_nesting() {
     let (_d, _db, _p, projects) = setup();
     let deep = projects.join("demo").join("nested").join("deeper");
