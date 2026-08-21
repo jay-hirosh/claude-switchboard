@@ -820,12 +820,21 @@ pub fn run() {
                 }
             }
 
-            // Repo discovery depends on the same projects root as the JSONL
-            // backfill above, so this runs after it — but independently: a
-            // failure here must never affect session ingestion. Backfill and
+            // Repo discovery runs independently of, and concurrently with,
+            // the JSONL backfill above — it reads the filesystem directly
+            // and has no dependency on the backfill completing. Backfill and
             // watcher-start are bundled into one task (unlike the JSONL
             // watcher, which starts immediately) because start() needs the
             // scope list, which depends on discovery finishing first.
+            //
+            // start() runs before backfill() (not after) to close the small
+            // race window where a file changed between backfill finishing
+            // and watches being registered would otherwise be missed until
+            // the next launch. This ordering is safe because
+            // insert_file_snapshot's content-hash dedup makes a
+            // duplicate/overlapping detection harmless — the backfill and a
+            // live-watcher-triggered snapshot of the same unchanged content
+            // just produce the same no-op.
             if let Some(home) = archive_watcher::home_dir() {
                 let archive_state = state.clone();
                 tauri::async_runtime::spawn(async move {
@@ -835,8 +844,7 @@ pub fn run() {
                             scopes.extend(archive_watcher::repo_scopes(&repo));
                         }
                     }
-                    archive_watcher::backfill(&archive_state.db, &scopes);
-                    match archive_watcher::start(archive_state.db.clone(), scopes) {
+                    match archive_watcher::start(archive_state.db.clone(), scopes.clone()) {
                         Ok(watcher_handle) => {
                             Box::leak(Box::new(watcher_handle));
                         }
@@ -844,6 +852,7 @@ pub fn run() {
                             tracing::error!("archive watcher failed to start: {e}");
                         }
                     }
+                    archive_watcher::backfill(&archive_state.db, &scopes);
                 });
             }
 
