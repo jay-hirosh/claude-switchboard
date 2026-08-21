@@ -8,3 +8,14 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Production builds of sync-backend must use this profile, NOT the
+# default `release` above: `panic = "abort"` is a sensible size
+# optimization for the desktop app, but it means any panic in any
+# request handler would abort the entire server process instead of
+# just failing that one request (the normal, safe behavior under
+# `panic = "unwind"`, where a per-task panic is caught at its task
+# boundary). See sync-backend/src/main.rs for the build command.
+[profile.server-release]
+inherits = "release"
+panic = "unwind"

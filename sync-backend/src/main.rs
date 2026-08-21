@@ -1,5 +1,10 @@
 use sqlx::postgres::PgPoolOptions;
 
+// Production builds of this binary should use `cargo build --profile
+// server-release -p sync-backend` — NOT the default --release — since the
+// workspace's [profile.release] sets panic="abort" for the desktop app,
+// which would turn a single request-handler panic into a full process
+// crash instead of a contained per-request failure.
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
