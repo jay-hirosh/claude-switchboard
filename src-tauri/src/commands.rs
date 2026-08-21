@@ -1920,6 +1920,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sync_backend_url_validation_rejects_empty_and_unparseable() {
+        assert!(validate_sync_backend_url("").is_err());
+        assert!(validate_sync_backend_url("   ").is_err());
+        assert!(validate_sync_backend_url("not a url").is_err());
+    }
+
+    #[test]
+    fn sync_backend_url_validation_accepts_valid_urls_and_trims_whitespace() {
+        assert_eq!(validate_sync_backend_url("https://example.com").unwrap(), "https://example.com");
+        assert_eq!(
+            validate_sync_backend_url("  https://example.com  ").unwrap(),
+            "https://example.com",
+            "surrounding whitespace must be trimmed before storing"
+        );
+    }
+
+    #[test]
     fn compact_resize_keeps_top_edge_glued() {
         // Collapsing 380 → 208 must not move the top edge — a menu-bar
         // popover hangs from the tray; center-fixed math visibly detaches it.
@@ -2727,10 +2744,31 @@ pub async fn get_sync_status(state: State<'_, Arc<AppState>>) -> Result<Option<c
     Ok(state.sync_status.read().clone())
 }
 
+/// Validates a user-supplied sync backend URL: non-empty (after trimming
+/// surrounding whitespace) and parseable as an absolute URL. Extracted as a
+/// pure function — separate from the `#[command]` wrapper below — so it's
+/// unit-testable without a `tauri::State` fixture, matching this file's
+/// existing pattern of keeping validation/formatting logic in plain
+/// functions (e.g. `daily_trends_to_csv`, `compute_warmup_suggestion`).
+///
+/// Without this check, an empty (or otherwise unparseable) URL would still
+/// make the frontend's `configured` check true, and the periodic sync loop
+/// would try to build a relative request like `/v1/archive/push` — reqwest
+/// has no base to resolve that against, producing a confusing failure far
+/// from its actual cause.
+fn validate_sync_backend_url(url: &str) -> Result<&str, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || url::Url::parse(trimmed).is_err() {
+        return Err("backend URL must be a valid, non-empty URL".to_string());
+    }
+    Ok(trimmed)
+}
+
 #[command]
 #[specta::specta]
 pub async fn set_sync_backend_url(state: State<'_, Arc<AppState>>, url: String) -> Result<(), String> {
-    state.db.set_sync_backend_url(&url).map_err(err_to_string)
+    let trimmed = validate_sync_backend_url(&url)?;
+    state.db.set_sync_backend_url(trimmed).map_err(err_to_string)
 }
 
 #[command]

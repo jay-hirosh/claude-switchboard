@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface Props {
   backendUrl: string | null;
@@ -25,6 +25,14 @@ export function SyncSettings({
   const [joinCode, setJoinCode] = useState('');
   const [deviceName, setDeviceName] = useState('');
   const configured = Boolean(backendUrl);
+
+  // `backendUrl` starts `null` and is loaded asynchronously by the parent
+  // (SettingsPanel) after mount — `useState(backendUrl ?? '')` above only
+  // reads it once, at first render, so without this effect `urlInput` would
+  // stay pinned to '' forever once the real value arrives later.
+  useEffect(() => {
+    setUrlInput(backendUrl ?? '');
+  }, [backendUrl]);
 
   return (
     <div className="space-y-3 text-[12px]">

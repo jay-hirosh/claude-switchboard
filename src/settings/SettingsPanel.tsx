@@ -89,6 +89,7 @@ export function SettingsPanel() {
     pulled: number;
   } | null>(null);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   useEffect(() => {
     ipc.getWarmupConsentGranted().then(setConsentGranted).catch(() => {});
@@ -122,37 +123,67 @@ export function SettingsPanel() {
     setOsRegistered(false);
   };
 
+  // The sync buttons below are gated only on `backendUrl` being set, not on
+  // an API key already existing — so a natural first-use sequence (save
+  // URL, then click "Sync now" before ever pairing) hits a real IPC error.
+  // Every handler below is wrapped so that error surfaces here instead of
+  // becoming an unhandled promise rejection with no user feedback.
   const handleSaveBackendUrl = async (url: string) => {
-    await ipc.setSyncBackendUrl(url);
-    setBackendUrl(url);
+    try {
+      setSyncError(null);
+      await ipc.setSyncBackendUrl(url);
+      setBackendUrl(url);
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handleBootstrap = async () => {
-    // The "Enable on this device" button has no name field of its own — a
-    // reasonable default beats a name prompt for what's meant to be a
-    // one-click action. `hostname()` resolves to null in some sandboxed
-    // environments; fall back to a generic label rather than sending "null".
-    const name = (await hostname().catch(() => null)) ?? 'My Device';
-    await ipc.bootstrapSyncAccount(name);
+    try {
+      setSyncError(null);
+      // The "Enable on this device" button has no name field of its own —
+      // a reasonable default beats a name prompt for what's meant to be a
+      // one-click action. `hostname()` resolves to null in some sandboxed
+      // environments; fall back to a generic label rather than sending "null".
+      const name = (await hostname().catch(() => null)) ?? 'My Device';
+      await ipc.bootstrapSyncAccount(name);
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handleGenerateCode = async () => {
-    const code = await ipc.generatePairingCode();
-    setPairingCode(code);
+    try {
+      setSyncError(null);
+      const code = await ipc.generatePairingCode();
+      setPairingCode(code);
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handleJoin = async (code: string, deviceName: string) => {
-    await ipc.joinSyncAccount(code, deviceName);
+    try {
+      setSyncError(null);
+      await ipc.joinSyncAccount(code, deviceName);
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handleSyncNow = async () => {
-    const summary = await ipc.syncNow();
-    setSyncStatus({
-      lastRunAt: summary.last_run_at,
-      outcome: summary.outcome,
-      pushed: summary.pushed,
-      pulled: summary.pulled,
-    });
+    try {
+      setSyncError(null);
+      const summary = await ipc.syncNow();
+      setSyncStatus({
+        lastRunAt: summary.last_run_at,
+        outcome: summary.outcome,
+        pushed: summary.pushed,
+        pulled: summary.pulled,
+      });
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   if (!local) return <p className="text-[color:var(--color-text-muted)]">Loading...</p>;
@@ -482,7 +513,7 @@ export function SettingsPanel() {
         <h2 className="text-[length:var(--text-label)] font-[var(--weight-semibold)] text-[color:var(--color-text-muted)] uppercase tracking-[0.04em] px-[var(--space-2xs)]">
           Sync
         </h2>
-        <Card className="p-[var(--space-md)]">
+        <Card className="p-[var(--space-md)] flex flex-col gap-[var(--space-xs)]">
           <SyncSettings
             backendUrl={backendUrl}
             status={syncStatus}
@@ -493,6 +524,9 @@ export function SettingsPanel() {
             onJoin={handleJoin}
             onSyncNow={handleSyncNow}
           />
+          {syncError && (
+            <span className="text-[length:var(--text-micro)] text-[color:var(--color-danger)]">{syncError}</span>
+          )}
         </Card>
       </section>
 
