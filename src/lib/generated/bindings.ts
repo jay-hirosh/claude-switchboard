@@ -289,6 +289,27 @@ async toggleFullscreen() : Promise<Result<boolean, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Opens the native OS print sheet for the calling webview — the Dashboard
+ * tab's "Export PDF" (macOS's print panel has a built-in Save as PDF option).
+ * The DOM's own `window.print()` is unreliable in Tauri's macOS webview
+ * (wry/WKWebView), so this goes through wry's dedicated print dispatch
+ * instead, which is the one wry documents as macOS-supported.
+ * 
+ * Must run on the main thread: wry's macOS implementation walks AppKit view
+ * APIs (`NSView.window`, `NSPrintOperation`) that are undefined behavior off
+ * it, and Tauri command handlers run on a worker thread by default — calling
+ * `webview.print()` directly here previously failed silently (no dialog, no
+ * error) instead of opening the sheet.
+ */
+async printWebview() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("print_webview") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async forceRefresh(scope: RefreshScope) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("force_refresh", { scope }) };
@@ -673,62 +694,6 @@ async installStatusline(force: boolean) : Promise<Result<InstallStatuslineOutcom
 async uninstallStatusline() : Promise<Result<boolean, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("uninstall_statusline") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async getSyncStatus() : Promise<Result<SyncCycleSummary | null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_sync_status") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async setSyncBackendUrl(url: string) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("set_sync_backend_url", { url }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async getSyncBackendUrl() : Promise<Result<string | null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_sync_backend_url") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async bootstrapSyncAccount(deviceName: string) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("bootstrap_sync_account", { deviceName }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async generatePairingCode() : Promise<Result<string, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("generate_pairing_code") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async joinSyncAccount(pairingCode: string, deviceName: string) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("join_sync_account", { pairingCode, deviceName }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async syncNow() : Promise<Result<SyncCycleSummary, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("sync_now") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1167,17 +1132,6 @@ event_id: string;
  */
 account_uuid: string | null }
 export type SwapReport = { new_active_slot: number; running: RunningClaudeCode }
-/**
- * Summary of the most recent push/pull cycle (manual or periodic),
- * shown by the settings UI. Defined here (rather than in `sync::engine`,
- * which produces it) because Task 4 also needs it as `AppState.sync_status`'s
- * element type and as a Tauri command return type — both of which require
- * a type this crate's specta/serde derives can see. `sync::engine::
- * summarize_cycle_result` (Task 3) is the only place a `SyncCycleResult`
- * gets turned into one, so the manual "sync now" command and the periodic
- * background task can never drift on how a result maps to a status string.
- */
-export type SyncCycleSummary = { last_run_at: string; outcome: string; pushed: number; pulled: number; last_error?: string | null }
 export type Terminal = "ghostty" | "terminal_app" | "iterm_2" | "kitty" | "wez_term" | "windows_terminal" | "power_shell"
 export type UsageSnapshot = { five_hour: Utilization | null; seven_day: Utilization | null; seven_day_sonnet: Utilization | null; seven_day_opus: Utilization | null; extra_usage: ExtraUsage | null; fetched_at?: string }
 export type Utilization = { utilization: number; resets_at?: string | null }

@@ -50,6 +50,7 @@ export const ipc = {
   resizeWindow: (mode: 'compact' | 'compact-minimal' | 'expanded', extraHeight = 0) =>
     commands.resizeWindow(mode, extraHeight).then(unwrap),
   toggleFullscreen: () => commands.toggleFullscreen().then(unwrap),
+  printWebview: () => commands.printWebview().then(unwrap),
   forceRefresh: (scope: 'active' | 'all') => commands.forceRefresh(scope).then(unwrap),
 
   // Warmup pillar

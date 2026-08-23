@@ -147,12 +147,11 @@ export function DashboardTab() {
     { key: 'yesterday', label: 'Yesterday', pattern: data.yesterdayPattern, repos: data.yesterdayRepos, cache: data.yesterdayCache, events: yesterdayEvents },
     { key: 'week', label: 'This Week', pattern: data.weekPattern, repos: data.weekRepos, cache: data.weekCache, events: weekEvents },
   ];
-  const activePeriod = periods.find((p) => p.key === selectedPeriod) ?? periods[0];
 
   return (
     <div className="flex flex-col gap-[var(--space-2xl)]">
       <h1 className="hidden print:block text-[length:var(--text-title)] font-[var(--weight-semibold)] text-[color:var(--color-text)]">
-        Claude Switchboard · {activePeriod.label} · {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+        Claude Switchboard · {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
       </h1>
       <div className="flex items-center justify-between print:hidden">
         <div className="flex gap-[var(--space-2xs)] bg-[var(--color-track)] rounded-[var(--radius-sm)] p-[2px] w-fit">
@@ -177,23 +176,48 @@ export function DashboardTab() {
             </button>
           ))}
         </div>
-        <IconButton label="Export PDF" onClick={() => window.print()}>
+        <IconButton label="Export PDF" onClick={() => ipc.printWebview()}>
           <IconExport size={13} />
         </IconButton>
       </div>
-      <PeriodSection period={activePeriod} accounts={accounts} />
+      {periods.map((period, i) => (
+        <PeriodSection
+          key={period.key}
+          period={period}
+          accounts={accounts}
+          active={period.key === selectedPeriod}
+          pageBreak={i > 0}
+        />
+      ))}
     </div>
   );
 }
 
-function PeriodSection({ period, accounts }: { period: PeriodConfig; accounts: AccountListEntry[] }) {
+/** All three periods stay mounted at once — only the active one is visible
+ * on screen (the rest get `hidden`), but the print stylesheet forces every
+ * period visible so PDF export captures Today, Yesterday, and This Week
+ * together rather than just whichever tab happens to be selected. */
+function PeriodSection({ period, accounts, active, pageBreak }: { period: PeriodConfig; accounts: AccountListEntry[]; active: boolean; pageBreak: boolean }) {
   const sessions = useMemo(() => aggregateSessions(period.events, null), [period.events]);
   const totalCost = useMemo(() => sessions.reduce((s, r) => s + r.total_cost_usd, 0), [sessions]);
   const totalTokens = useMemo(() => sessions.reduce((s, r) => s + r.headline_tokens, 0), [sessions]);
   const modelStats = useMemo(() => foldByModel(period.events), [period.events]);
 
   return (
-    <section className="flex flex-col gap-[var(--space-md)]">
+    <section
+      data-testid={`${period.key}-period-section`}
+      className={[
+        'flex flex-col gap-[var(--space-md)]',
+        active ? '' : 'hidden print:flex',
+        pageBreak ? 'print:break-before-page' : '',
+      ].join(' ')}
+    >
+      <h2
+        data-testid={`${period.key}-print-heading`}
+        className="hidden print:block text-[length:var(--text-title)] font-[var(--weight-semibold)] text-[color:var(--color-text)]"
+      >
+        {period.label}
+      </h2>
       {period.events.length === 0 ? (
         <EmptyState
           icon={<IconTrends size={24} />}

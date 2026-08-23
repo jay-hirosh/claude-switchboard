@@ -13,6 +13,7 @@ const ipcMock = vi.hoisted(() => ({
   getWeekPattern: vi.fn(),
   getWeekRepoBreakdown: vi.fn(),
   getWeekCacheStats: vi.fn(),
+  printWebview: vi.fn(),
 }));
 vi.mock('../lib/ipc', () => ({ ipc: ipcMock }));
 
@@ -76,6 +77,7 @@ describe('DashboardTab', () => {
     ipcMock.getWeekPattern.mockReset().mockResolvedValue(EMPTY_PATTERN);
     ipcMock.getWeekRepoBreakdown.mockReset().mockResolvedValue([]);
     ipcMock.getWeekCacheStats.mockReset().mockResolvedValue(EMPTY_CACHE);
+    ipcMock.printWebview.mockReset();
   });
 
   it('defaults to the Today period and switches to Yesterday/This Week on demand', async () => {
@@ -89,11 +91,11 @@ describe('DashboardTab', () => {
     render(<DashboardTab />);
 
     expect(await screen.findByTestId('today-cost')).toBeInTheDocument();
-    expect(screen.queryByTestId('yesterday-cost')).not.toBeInTheDocument();
+    expect(screen.getByTestId('yesterday-period-section')).toHaveClass('hidden');
 
     fireEvent.click(screen.getByTestId('period-switch-yesterday'));
 
-    expect(screen.queryByTestId('today-cost')).not.toBeInTheDocument();
+    expect(screen.getByTestId('today-period-section')).toHaveClass('hidden');
     expect(screen.getByTestId('yesterday-cost')).toHaveTextContent('$1.00');
   });
 
@@ -160,15 +162,56 @@ describe('DashboardTab', () => {
     ipcMock.getSessionHistory.mockResolvedValue([
       ev({ ts: todayIso, source_file: 'proj/a.jsonl', cost_usd: 0.5 }),
     ]);
-    const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
+    ipcMock.printWebview.mockResolvedValue(undefined);
 
     render(<DashboardTab />);
     await screen.findByTestId('today-cost');
 
     fireEvent.click(screen.getByLabelText('Export PDF'));
 
-    expect(printSpy).toHaveBeenCalledTimes(1);
-    printSpy.mockRestore();
+    expect(ipcMock.printWebview).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps every period mounted so PDF export includes all three, hidden on screen except the active one', async () => {
+    const todayIso = new Date().toISOString();
+    ipcMock.getSessionHistory.mockResolvedValue([
+      ev({ ts: todayIso, source_file: 'proj/a.jsonl', cost_usd: 0.5 }),
+    ]);
+
+    render(<DashboardTab />);
+    await screen.findByTestId('today-cost');
+
+    expect(screen.getByTestId('today-period-section')).not.toHaveClass('hidden');
+    expect(screen.getByTestId('yesterday-period-section')).toHaveClass('hidden');
+    expect(screen.getByTestId('week-period-section')).toHaveClass('hidden');
+  });
+
+  it('starts the Yesterday and This Week blocks on a new page when printed', async () => {
+    const todayIso = new Date().toISOString();
+    ipcMock.getSessionHistory.mockResolvedValue([
+      ev({ ts: todayIso, source_file: 'proj/a.jsonl', cost_usd: 0.5 }),
+    ]);
+
+    render(<DashboardTab />);
+    await screen.findByTestId('today-cost');
+
+    expect(screen.getByTestId('today-period-section')).not.toHaveClass('print:break-before-page');
+    expect(screen.getByTestId('yesterday-period-section')).toHaveClass('print:break-before-page');
+    expect(screen.getByTestId('week-period-section')).toHaveClass('print:break-before-page');
+  });
+
+  it('labels each period block with its own print-only heading', async () => {
+    const todayIso = new Date().toISOString();
+    ipcMock.getSessionHistory.mockResolvedValue([
+      ev({ ts: todayIso, source_file: 'proj/a.jsonl', cost_usd: 0.5 }),
+    ]);
+
+    render(<DashboardTab />);
+    await screen.findByTestId('today-cost');
+
+    expect(screen.getByTestId('today-print-heading')).toHaveTextContent('Today');
+    expect(screen.getByTestId('yesterday-print-heading')).toHaveTextContent('Yesterday');
+    expect(screen.getByTestId('week-print-heading')).toHaveTextContent('This Week');
   });
 
   it('renders a repo card from getTodayRepoBreakdown', async () => {

@@ -1382,6 +1382,30 @@ pub async fn toggle_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(next)
 }
 
+/// Opens the native OS print sheet for the calling webview — the Dashboard
+/// tab's "Export PDF" (macOS's print panel has a built-in Save as PDF option).
+/// The DOM's own `window.print()` is unreliable in Tauri's macOS webview
+/// (wry/WKWebView), so this goes through wry's dedicated print dispatch
+/// instead, which is the one wry documents as macOS-supported.
+///
+/// Must run on the main thread: wry's macOS implementation walks AppKit view
+/// APIs (`NSView.window`, `NSPrintOperation`) that are undefined behavior off
+/// it, and Tauri command handlers run on a worker thread by default — calling
+/// `webview.print()` directly here previously failed silently (no dialog, no
+/// error) instead of opening the sheet.
+#[command]
+#[specta::specta]
+pub fn print_webview(webview: tauri::Webview) -> Result<(), String> {
+    let target = webview.clone();
+    webview
+        .run_on_main_thread(move || {
+            if let Err(e) = target.print() {
+                tracing::error!("print_webview failed: {e}");
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
 #[command]
 #[specta::specta]
 pub async fn check_for_updates_now(app: tauri::AppHandle) -> Result<(), String> {

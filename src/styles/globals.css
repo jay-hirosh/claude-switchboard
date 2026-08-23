@@ -230,6 +230,20 @@ body[data-theme="dark"] .glass::before {
   }
 }
 
+/* ─── Print (Dashboard PDF export) ───
+   WebKit drops background-color/box-shadow when printing by default (an
+   ink-saving default meant for text documents), which strips the glassy
+   dark theme entirely. Force it to render exactly like the on-screen app. */
+
+@media print {
+  *,
+  *::before,
+  *::after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}
+
 /* ─── Monospace utility ─── */
 
 .mono {
