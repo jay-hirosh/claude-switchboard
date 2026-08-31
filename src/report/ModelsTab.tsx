@@ -9,15 +9,21 @@ import { IconChart } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
+import { useDataScopeStore } from '../lib/dataScope';
 import { colorForAccount } from './accountDisplay';
 import { MODEL_VARIANT, modelKey, shortName } from './modelDisplay';
 
 export function ModelsTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
   const accounts = useAppStore((s) => s.accounts);
+  const showAllDevices = useDataScopeStore((s) => s.showAllDevices);
   const { data, error, loading, reload } = useTabData(
-    () => Promise.all([ipc.getModelBreakdown(30), ipc.getCacheStats(30)]).then(([m, c]) => ({ models: m, cache: c })),
-    [version],
+    () =>
+      Promise.all([
+        ipc.getModelBreakdown(30, !showAllDevices),
+        ipc.getCacheStats(30, !showAllDevices),
+      ]).then(([m, c]) => ({ models: m, cache: c })),
+    [version, showAllDevices],
   );
   const models = data?.models ?? null;
   const cache = data?.cache ?? null;

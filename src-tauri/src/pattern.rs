@@ -293,6 +293,32 @@ pub fn week_range_utc(
     (today_midnight - chrono::Duration::days(6), now)
 }
 
+/// UTC bounds for an arbitrary local calendar day: local midnight of `date`
+/// through local midnight of the following day, capped at `now` if `date` is
+/// today (matching `week_range_utc`'s treatment of the current day). Used by
+/// `commands::get_date_*`, the Dashboard tab's date-picker lookback.
+pub fn date_range_utc(
+    date: chrono::NaiveDate,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
+    use chrono::TimeZone;
+
+    let local_midnight = |d: chrono::NaiveDate| {
+        let naive = d
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is always a valid time");
+        chrono::Local
+            .from_local_datetime(&naive)
+            .single()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or(now)
+    };
+
+    let from = local_midnight(date);
+    let to = local_midnight(date + chrono::Duration::days(1)).min(now);
+    (from, to)
+}
+
 /// Entry point for `commands::get_daily_pattern`.
 pub fn compute_daily_pattern(
     events: &[StoredSessionEvent],
@@ -499,6 +525,38 @@ mod tests {
             from_local.date_naive(),
             local_now.date_naive() - chrono::Duration::days(6)
         );
+        assert_eq!(to, now_utc);
+    }
+
+    #[test]
+    fn date_range_utc_spans_the_given_local_calendar_day() {
+        let local_now = chrono::Local
+            .with_ymd_and_hms(2026, 8, 18, 15, 30, 0)
+            .single()
+            .unwrap();
+        let now_utc = local_now.with_timezone(&Utc);
+        let picked = local_now.date_naive() - chrono::Duration::days(5);
+
+        let (from, to) = date_range_utc(picked, now_utc);
+        let from_local = from.with_timezone(&chrono::Local);
+        let to_local = to.with_timezone(&chrono::Local);
+
+        assert_eq!((from_local.hour(), from_local.minute()), (0, 0));
+        assert_eq!((to_local.hour(), to_local.minute()), (0, 0));
+        assert_eq!(from_local.date_naive(), picked);
+        assert_eq!(to_local.date_naive(), picked + chrono::Duration::days(1));
+    }
+
+    #[test]
+    fn date_range_utc_caps_todays_end_at_now() {
+        let local_now = chrono::Local
+            .with_ymd_and_hms(2026, 8, 18, 15, 30, 0)
+            .single()
+            .unwrap();
+        let now_utc = local_now.with_timezone(&Utc);
+
+        let (_, to) = date_range_utc(local_now.date_naive(), now_utc);
+
         assert_eq!(to, now_utc);
     }
 

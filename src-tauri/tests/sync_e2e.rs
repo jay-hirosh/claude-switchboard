@@ -1,3 +1,4 @@
+use claude_switchboard_lib::jsonl_parser::PricingTable;
 use claude_switchboard_lib::store::{Db, StoredTranscriptLine};
 use claude_switchboard_lib::sync::{engine::run_sync_cycle, SyncClient, SyncOutcome};
 use std::sync::Arc;
@@ -36,7 +37,8 @@ async fn desktop_app_can_push_and_pull_against_a_real_backend() {
     }])
     .unwrap();
 
-    let result = run_sync_cycle(&db, &client, &api_key).await;
+    let pricing = PricingTable::bundled().unwrap();
+    let result = run_sync_cycle(&db, &client, &api_key, &pricing).await;
     match result {
         claude_switchboard_lib::sync::engine::SyncCycleResult::Ok { pushed, .. } => {
             assert_eq!(pushed, 1);

@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SessionEvent, DailyPatternReport } from '../lib/types';
 
 const ipcMock = vi.hoisted(() => ({
@@ -13,6 +13,9 @@ const ipcMock = vi.hoisted(() => ({
   getWeekPattern: vi.fn(),
   getWeekRepoBreakdown: vi.fn(),
   getWeekCacheStats: vi.fn(),
+  getDatePattern: vi.fn(),
+  getDateRepoBreakdown: vi.fn(),
+  getDateCacheStats: vi.fn(),
   printWebview: vi.fn(),
 }));
 vi.mock('../lib/ipc', () => ({ ipc: ipcMock }));
@@ -77,6 +80,9 @@ describe('DashboardTab', () => {
     ipcMock.getWeekPattern.mockReset().mockResolvedValue(EMPTY_PATTERN);
     ipcMock.getWeekRepoBreakdown.mockReset().mockResolvedValue([]);
     ipcMock.getWeekCacheStats.mockReset().mockResolvedValue(EMPTY_CACHE);
+    ipcMock.getDatePattern.mockReset().mockResolvedValue(EMPTY_PATTERN);
+    ipcMock.getDateRepoBreakdown.mockReset().mockResolvedValue([]);
+    ipcMock.getDateCacheStats.mockReset().mockResolvedValue(EMPTY_CACHE);
     ipcMock.printWebview.mockReset();
   });
 
@@ -250,5 +256,54 @@ describe('DashboardTab', () => {
     render(<DashboardTab />);
 
     expect(await screen.findByText('90%')).toBeInTheDocument();
+  });
+
+  describe('date picker', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      // Aug 18, 2026 — mid-month so "8 days ago" stays in the same month.
+      vi.setSystemTime(new Date(2026, 7, 18));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('picks a past day from the calendar and shows it as a 4th, active period', async () => {
+      const pickedIso = new Date(2026, 7, 10).toISOString();
+      ipcMock.getSessionHistory.mockImplementation((days: number) =>
+        Promise.resolve(
+          days >= 9 ? [ev({ ts: pickedIso, source_file: 'proj/picked.jsonl', cost_usd: 0.75 })] : [],
+        ),
+      );
+
+      render(<DashboardTab />);
+      await screen.findByTestId('date-picker-trigger');
+
+      fireEvent.click(screen.getByTestId('date-picker-trigger'));
+      expect(screen.getByTestId('date-picker-popover')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('date-picker-day-2026-08-10'));
+
+      expect(await screen.findByTestId('date-cost')).toHaveTextContent('$0.75');
+      expect(screen.getByTestId('today-period-section')).toHaveClass('hidden');
+      expect(screen.getByTestId('date-period-section')).not.toHaveClass('hidden');
+      expect(ipcMock.getDatePattern).toHaveBeenCalledWith('2026-08-10', true);
+    });
+
+    it('shows a date-specific empty message and disables future dates/months', async () => {
+      ipcMock.getSessionHistory.mockResolvedValue([]);
+
+      render(<DashboardTab />);
+      await screen.findByText('No activity yet today');
+
+      fireEvent.click(screen.getByTestId('date-picker-trigger'));
+      expect(screen.getByTestId('date-picker-day-2026-08-19')).toBeDisabled();
+      expect(screen.getByLabelText('Next month')).toBeDisabled();
+
+      fireEvent.click(screen.getByTestId('date-picker-day-2026-08-10'));
+
+      expect(await screen.findByText('No activity on Aug 10')).toBeInTheDocument();
+    });
   });
 });

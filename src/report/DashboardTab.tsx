@@ -6,12 +6,14 @@ import { AccountBadge } from '../components/ui/AccountBadge';
 import { ModelBadge } from '../components/ui/ModelBadge';
 import { Badge } from '../components/ui/Badge';
 import { IconButton } from '../components/ui/IconButton';
+import { DatePicker } from '../components/ui/DatePicker';
 import { formatCost, formatTokens } from '../lib/format';
 import { IconTrends, IconExport, GitBranch, ChevronDown, ChevronRight } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
-import { localDayKey, weekStartDayKey } from '../lib/dayKey';
+import { useDataScopeStore } from '../lib/dataScope';
+import { localDayKey, weekStartDayKey, formatDayLabel } from '../lib/dayKey';
 import type { DailyPatternReport, RepoStats, CacheStats, SessionEvent } from '../lib/types';
 import type { AccountListEntry } from '../lib/generated/bindings';
 import { aggregateSessions, isHeadlessProject, formatClock, type AggregatedSession } from './SessionsTab';
@@ -30,7 +32,7 @@ const MODEL_BAR_COLORS: Record<string, string> = {
   haiku: 'var(--color-model-haiku)',
 };
 
-type PeriodKey = 'today' | 'yesterday' | 'week';
+type PeriodKey = 'today' | 'yesterday' | 'week' | 'date';
 
 const PERIOD_SWITCHES: { key: PeriodKey; label: string }[] = [
   { key: 'today', label: 'Today' },
@@ -61,6 +63,18 @@ function foldByModel(events: { model: string; input_tokens: number; output_token
   return [...byModel.values()].sort((a, b) => b.cost_usd - a.cost_usd);
 }
 
+/** Local calendar days between `dayKey` (`YYYY-MM-DD`) and today — sizes the
+ * `getSessionHistory` window wide enough to cover an arbitrary picked date,
+ * the same rolling-window-plus-buffer approach `SESSION_HISTORY_DAYS` uses
+ * for the fixed Today/Yesterday/Week periods. */
+function calendarDaysAgo(dayKey: string): number {
+  const [y, m, d] = dayKey.split('-').map(Number);
+  const target = new Date(y, m - 1, d).getTime();
+  const now = new Date();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return Math.round((todayMidnight - target) / 86_400_000);
+}
+
 interface PeriodConfig {
   key: PeriodKey;
   label: string;
@@ -72,21 +86,24 @@ interface PeriodConfig {
 
 export function DashboardTab() {
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodKey>('today');
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const version = useAppStore((s) => s.sessionDataVersion);
   const accounts = useAppStore((s) => s.accounts);
+  const showAllDevices = useDataScopeStore((s) => s.showAllDevices);
+  const localOnly = !showAllDevices;
   const { data, error, loading, reload } = useTabData(
     () =>
       Promise.all([
-        ipc.getSessionHistory(SESSION_HISTORY_DAYS),
-        ipc.getTodayPattern(),
-        ipc.getTodayRepoBreakdown(),
-        ipc.getTodayCacheStats(),
-        ipc.getYesterdayPattern(),
-        ipc.getYesterdayRepoBreakdown(),
-        ipc.getYesterdayCacheStats(),
-        ipc.getWeekPattern(),
-        ipc.getWeekRepoBreakdown(),
-        ipc.getWeekCacheStats(),
+        ipc.getSessionHistory(SESSION_HISTORY_DAYS, localOnly),
+        ipc.getTodayPattern(localOnly),
+        ipc.getTodayRepoBreakdown(localOnly),
+        ipc.getTodayCacheStats(localOnly),
+        ipc.getYesterdayPattern(localOnly),
+        ipc.getYesterdayRepoBreakdown(localOnly),
+        ipc.getYesterdayCacheStats(localOnly),
+        ipc.getWeekPattern(localOnly),
+        ipc.getWeekRepoBreakdown(localOnly),
+        ipc.getWeekCacheStats(localOnly),
       ]).then(
         ([
           events,
@@ -112,7 +129,21 @@ export function DashboardTab() {
           weekCache,
         }),
       ),
-    [version],
+    [version, showAllDevices],
+  );
+
+  const dateResult = useTabData(
+    () => {
+      if (!selectedDate) return Promise.resolve(null);
+      const days = calendarDaysAgo(selectedDate) + 2;
+      return Promise.all([
+        ipc.getSessionHistory(days, localOnly),
+        ipc.getDatePattern(selectedDate, localOnly),
+        ipc.getDateRepoBreakdown(selectedDate, localOnly),
+        ipc.getDateCacheStats(selectedDate, localOnly),
+      ]).then(([dateEvents, pattern, repos, cache]) => ({ dateEvents, pattern, repos, cache }));
+    },
+    [selectedDate, version, showAllDevices],
   );
 
   const todayKey = localDayKey(new Date().toISOString());
@@ -127,6 +158,13 @@ export function DashboardTab() {
   const todayEvents = useMemo(() => events.filter((e) => localDayKey(e.ts) === todayKey), [events, todayKey]);
   const yesterdayEvents = useMemo(() => events.filter((e) => localDayKey(e.ts) === yesterdayKey), [events, yesterdayKey]);
   const weekEvents = useMemo(() => events.filter((e) => localDayKey(e.ts) >= weekStartKey), [events, weekStartKey]);
+  const selectedDateEvents = useMemo(
+    () =>
+      dateResult.data && selectedDate
+        ? dateResult.data.dateEvents.filter((e) => localDayKey(e.ts) === selectedDate)
+        : [],
+    [dateResult.data, selectedDate],
+  );
 
   if (error) {
     return (
@@ -175,6 +213,14 @@ export function DashboardTab() {
               {p.label}
             </button>
           ))}
+          <DatePicker
+            value={selectedDate}
+            active={selectedPeriod === 'date'}
+            onSelect={(day) => {
+              setSelectedDate(day);
+              setSelectedPeriod('date');
+            }}
+          />
         </div>
         <IconButton label="Export PDF" onClick={() => ipc.printWebview()}>
           <IconExport size={13} />
@@ -189,6 +235,33 @@ export function DashboardTab() {
           pageBreak={i > 0}
         />
       ))}
+      {selectedDate && dateResult.error && selectedPeriod === 'date' && (
+        <EmptyState
+          icon={<IconTrends size={24} />}
+          title="Couldn't load that day's activity"
+          description={dateResult.error}
+          action={<Button variant="ghost" size="sm" onClick={dateResult.reload}>Retry</Button>}
+        />
+      )}
+      {selectedDate && dateResult.data && (
+        <PeriodSection
+          key="date"
+          period={{
+            key: 'date',
+            label: formatDayLabel(selectedDate),
+            pattern: dateResult.data.pattern,
+            repos: dateResult.data.repos,
+            cache: dateResult.data.cache,
+            events: selectedDateEvents,
+          }}
+          accounts={accounts}
+          active={selectedPeriod === 'date'}
+          pageBreak
+        />
+      )}
+      {selectedDate && !dateResult.data && !dateResult.error && selectedPeriod === 'date' && (
+        <p className="text-[color:var(--color-text-muted)]">Loading…</p>
+      )}
     </div>
   );
 }
@@ -221,7 +294,13 @@ function PeriodSection({ period, accounts, active, pageBreak }: { period: Period
       {period.events.length === 0 ? (
         <EmptyState
           icon={<IconTrends size={24} />}
-          title={period.key === 'today' ? 'No activity yet today' : `No activity ${period.label.toLowerCase()}`}
+          title={
+            period.key === 'today'
+              ? 'No activity yet today'
+              : period.key === 'date'
+                ? `No activity on ${period.label}`
+                : `No activity ${period.label.toLowerCase()}`
+          }
         />
       ) : (
         <div className="flex flex-col gap-[var(--space-lg)]">

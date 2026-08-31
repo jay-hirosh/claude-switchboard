@@ -13,6 +13,14 @@ async getCurrentUsage() : Promise<Result<CachedUsage | null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getDeviceId() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_device_id") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getPricing() : Promise<Result<PricingEntry[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_pricing") };
@@ -21,9 +29,9 @@ async getPricing() : Promise<Result<PricingEntry[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getSessionHistory(days: number) : Promise<Result<StoredSessionEvent[], string>> {
+async getSessionHistory(days: number, localOnly: boolean) : Promise<Result<StoredSessionEvent[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_session_history", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_session_history", { days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -33,17 +41,17 @@ async getSessionHistory(days: number) : Promise<Result<StoredSessionEvent[], str
  * Compaction boundaries in the same window as `get_session_history`, so the
  * Cost tab can mark which sessions had their context reset partway through.
  */
-async getCompactions(days: number) : Promise<Result<StoredCompaction[], string>> {
+async getCompactions(days: number, localOnly: boolean) : Promise<Result<StoredCompaction[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_compactions", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_compactions", { days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getDailyTrends(days: number) : Promise<Result<DailyBucket[], string>> {
+async getDailyTrends(days: number, localOnly: boolean) : Promise<Result<DailyBucket[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_daily_trends", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_daily_trends", { days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -53,9 +61,9 @@ async getDailyTrends(days: number) : Promise<Result<DailyBucket[], string>> {
  * Hour-of-day usage profile plus a warm-up anchor recommendation, over the
  * trailing `days` of local activity. See `pattern::compute_daily_pattern`.
  */
-async getDailyPattern(days: number) : Promise<Result<DailyPatternReport, string>> {
+async getDailyPattern(days: number, localOnly: boolean) : Promise<Result<DailyPatternReport, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_daily_pattern", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_daily_pattern", { days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -65,9 +73,9 @@ async getDailyPattern(days: number) : Promise<Result<DailyPatternReport, string>
  * Same shape as `get_daily_pattern`, scoped to local-midnight-to-now
  * instead of a rolling day window — the "Today" lookback option.
  */
-async getTodayPattern() : Promise<Result<DailyPatternReport, string>> {
+async getTodayPattern(localOnly: boolean) : Promise<Result<DailyPatternReport, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_today_pattern") };
+    return { status: "ok", data: await TAURI_INVOKE("get_today_pattern", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -77,9 +85,9 @@ async getTodayPattern() : Promise<Result<DailyPatternReport, string>> {
  * Same shape as `get_today_pattern`, scoped to yesterday's local calendar
  * day — the Dashboard tab's Yesterday hourly charts.
  */
-async getYesterdayPattern() : Promise<Result<DailyPatternReport, string>> {
+async getYesterdayPattern(localOnly: boolean) : Promise<Result<DailyPatternReport, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_pattern") };
+    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_pattern", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -89,41 +97,53 @@ async getYesterdayPattern() : Promise<Result<DailyPatternReport, string>> {
  * Same shape as `get_today_pattern`, scoped to the rolling 7-day window
  * ending now — the Dashboard tab's This Week hourly charts.
  */
-async getWeekPattern() : Promise<Result<DailyPatternReport, string>> {
+async getWeekPattern(localOnly: boolean) : Promise<Result<DailyPatternReport, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_week_pattern") };
+    return { status: "ok", data: await TAURI_INVOKE("get_week_pattern", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async exportTrendsCsv(path: string, days: number) : Promise<Result<null, string>> {
+/**
+ * Same shape as `get_today_pattern`, scoped to an arbitrary local calendar
+ * day — the Dashboard tab's date-picker lookback.
+ */
+async getDatePattern(date: string, localOnly: boolean) : Promise<Result<DailyPatternReport, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("export_trends_csv", { path, days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_date_pattern", { date, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getModelBreakdown(days: number) : Promise<Result<ModelStats[], string>> {
+async exportTrendsCsv(path: string, days: number, localOnly: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_model_breakdown", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("export_trends_csv", { path, days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getDailyModelBreakdown(days: number) : Promise<Result<DailyModelBucket[], string>> {
+async getModelBreakdown(days: number, localOnly: boolean) : Promise<Result<ModelStats[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_daily_model_breakdown", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_model_breakdown", { days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getProjectBreakdown(days: number) : Promise<Result<ProjectStats[], string>> {
+async getDailyModelBreakdown(days: number, localOnly: boolean) : Promise<Result<DailyModelBucket[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_project_breakdown", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_daily_model_breakdown", { days, localOnly }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getProjectBreakdown(days: number, localOnly: boolean) : Promise<Result<ProjectStats[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_project_breakdown", { days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -141,9 +161,9 @@ async getRepoBreakdown() : Promise<Result<RepoStats[], string>> {
  * Same repo/project grouping as `get_repo_breakdown`, scoped to today's
  * local calendar day instead of all time.
  */
-async getTodayRepoBreakdown() : Promise<Result<RepoStats[], string>> {
+async getTodayRepoBreakdown(localOnly: boolean) : Promise<Result<RepoStats[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_today_repo_breakdown") };
+    return { status: "ok", data: await TAURI_INVOKE("get_today_repo_breakdown", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -153,9 +173,9 @@ async getTodayRepoBreakdown() : Promise<Result<RepoStats[], string>> {
  * Same repo/project grouping as `get_today_repo_breakdown`, scoped to
  * yesterday's local calendar day — the Dashboard tab's Yesterday repo cards.
  */
-async getYesterdayRepoBreakdown() : Promise<Result<RepoStats[], string>> {
+async getYesterdayRepoBreakdown(localOnly: boolean) : Promise<Result<RepoStats[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_repo_breakdown") };
+    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_repo_breakdown", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -165,17 +185,29 @@ async getYesterdayRepoBreakdown() : Promise<Result<RepoStats[], string>> {
  * Same repo/project grouping as `get_today_repo_breakdown`, scoped to the
  * rolling 7-day window ending now — the Dashboard tab's This Week repo cards.
  */
-async getWeekRepoBreakdown() : Promise<Result<RepoStats[], string>> {
+async getWeekRepoBreakdown(localOnly: boolean) : Promise<Result<RepoStats[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_week_repo_breakdown") };
+    return { status: "ok", data: await TAURI_INVOKE("get_week_repo_breakdown", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getCacheStats(days: number) : Promise<Result<CacheStats, string>> {
+/**
+ * Same repo/project grouping as `get_today_repo_breakdown`, scoped to an
+ * arbitrary local calendar day — the Dashboard tab's date-picker repo cards.
+ */
+async getDateRepoBreakdown(date: string, localOnly: boolean) : Promise<Result<RepoStats[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_cache_stats", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_date_repo_breakdown", { date, localOnly }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getCacheStats(days: number, localOnly: boolean) : Promise<Result<CacheStats, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_cache_stats", { days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -186,9 +218,9 @@ async getCacheStats(days: number) : Promise<Result<CacheStats, string>> {
  * (`local_midnight_utc`..now) instead of a rolling `days`-day window — the
  * Dashboard tab's Today cache card.
  */
-async getTodayCacheStats() : Promise<Result<CacheStats, string>> {
+async getTodayCacheStats(localOnly: boolean) : Promise<Result<CacheStats, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_today_cache_stats") };
+    return { status: "ok", data: await TAURI_INVOKE("get_today_cache_stats", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -198,9 +230,9 @@ async getTodayCacheStats() : Promise<Result<CacheStats, string>> {
  * Same math as `get_today_cache_stats`, scoped to yesterday's local calendar
  * day — the Dashboard tab's Yesterday cache card.
  */
-async getYesterdayCacheStats() : Promise<Result<CacheStats, string>> {
+async getYesterdayCacheStats(localOnly: boolean) : Promise<Result<CacheStats, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_cache_stats") };
+    return { status: "ok", data: await TAURI_INVOKE("get_yesterday_cache_stats", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -210,25 +242,37 @@ async getYesterdayCacheStats() : Promise<Result<CacheStats, string>> {
  * Same math as `get_today_cache_stats`, scoped to the rolling 7-day window
  * ending now — the Dashboard tab's This Week cache card.
  */
-async getWeekCacheStats() : Promise<Result<CacheStats, string>> {
+async getWeekCacheStats(localOnly: boolean) : Promise<Result<CacheStats, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_week_cache_stats") };
+    return { status: "ok", data: await TAURI_INVOKE("get_week_cache_stats", { localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getDailyAccountBreakdown(days: number) : Promise<Result<DailyAccountBucket[], string>> {
+/**
+ * Same math as `get_today_cache_stats`, scoped to an arbitrary local
+ * calendar day — the Dashboard tab's date-picker cache card.
+ */
+async getDateCacheStats(date: string, localOnly: boolean) : Promise<Result<CacheStats, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_daily_account_breakdown", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_date_cache_stats", { date, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getCacheStatsByAccount(days: number) : Promise<Result<AccountCacheStats[], string>> {
+async getDailyAccountBreakdown(days: number, localOnly: boolean) : Promise<Result<DailyAccountBucket[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_cache_stats_by_account", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_daily_account_breakdown", { days, localOnly }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getCacheStatsByAccount(days: number, localOnly: boolean) : Promise<Result<AccountCacheStats[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_cache_stats_by_account", { days, localOnly }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -698,6 +742,62 @@ async uninstallStatusline() : Promise<Result<boolean, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getSyncStatus() : Promise<Result<SyncCycleSummary | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_sync_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setSyncBackendUrl(url: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_sync_backend_url", { url }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getSyncBackendUrl() : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_sync_backend_url") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async bootstrapSyncAccount(deviceName: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("bootstrap_sync_account", { deviceName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async generatePairingCode() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_pairing_code") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async joinSyncAccount(pairingCode: string, deviceName: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("join_sync_account", { pairingCode, deviceName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async syncNow() : Promise<Result<SyncCycleSummary, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_now") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -1132,6 +1232,24 @@ event_id: string;
  */
 account_uuid: string | null }
 export type SwapReport = { new_active_slot: number; running: RunningClaudeCode }
+/**
+ * Summary of the most recent push/pull cycle (manual or periodic),
+ * shown by the settings UI. Defined here (rather than in `sync::engine`,
+ * which produces it) because Task 4 also needs it as `AppState.sync_status`'s
+ * element type and as a Tauri command return type — both of which require
+ * a type this crate's specta/serde derives can see. `sync::engine::
+ * summarize_cycle_result` (Task 3) is the only place a `SyncCycleResult`
+ * gets turned into one, so the manual "sync now" command and the periodic
+ * background task can never drift on how a result maps to a status string.
+ */
+export type SyncCycleSummary = { last_run_at: string; outcome: string; pushed: number; pulled: number; 
+/**
+ * The `SyncCycleResult::Transient` failure message, when `outcome ==
+ * "transient"` — `None` otherwise. Without this the only place the
+ * reason ever existed (the `String` payload) was discarded the moment
+ * `summarize_cycle_result` matched on it.
+ */
+last_error?: string | null }
 export type Terminal = "ghostty" | "terminal_app" | "iterm_2" | "kitty" | "wez_term" | "windows_terminal" | "power_shell"
 export type UsageSnapshot = { five_hour: Utilization | null; seven_day: Utilization | null; seven_day_sonnet: Utilization | null; seven_day_opus: Utilization | null; extra_usage: ExtraUsage | null; fetched_at?: string }
 export type Utilization = { utilization: number; resets_at?: string | null }

@@ -8,30 +8,48 @@ async function unwrap<T>(r: Result<T, string>): Promise<T> {
 
 export const ipc = {
   getCurrentUsage: () => commands.getCurrentUsage().then(unwrap),
+  getDeviceId: () => commands.getDeviceId().then(unwrap),
   getPricing: () => commands.getPricing().then(unwrap),
-  getSessionHistory: (days: number) => commands.getSessionHistory(days).then(unwrap),
+  getSessionHistory: (days: number, localOnly: boolean) =>
+    commands.getSessionHistory(days, localOnly).then(unwrap),
   getLiveSessions: () => commands.getLiveSessions().then(unwrap),
-  getCompactions: (days: number) => commands.getCompactions(days).then(unwrap),
-  getDailyTrends: (days: number) => commands.getDailyTrends(days).then(unwrap),
-  getDailyPattern: (days: number) => commands.getDailyPattern(days).then(unwrap),
-  getTodayPattern: () => commands.getTodayPattern().then(unwrap),
-  getYesterdayPattern: () => commands.getYesterdayPattern().then(unwrap),
-  getWeekPattern: () => commands.getWeekPattern().then(unwrap),
-  exportTrendsCsv: (path: string, days: number) => commands.exportTrendsCsv(path, days).then(unwrap),
+  getCompactions: (days: number, localOnly: boolean) =>
+    commands.getCompactions(days, localOnly).then(unwrap),
+  getDailyTrends: (days: number, localOnly: boolean) =>
+    commands.getDailyTrends(days, localOnly).then(unwrap),
+  getDailyPattern: (days: number, localOnly: boolean) =>
+    commands.getDailyPattern(days, localOnly).then(unwrap),
+  getTodayPattern: (localOnly: boolean) => commands.getTodayPattern(localOnly).then(unwrap),
+  getYesterdayPattern: (localOnly: boolean) => commands.getYesterdayPattern(localOnly).then(unwrap),
+  getWeekPattern: (localOnly: boolean) => commands.getWeekPattern(localOnly).then(unwrap),
+  getDatePattern: (date: string, localOnly: boolean) =>
+    commands.getDatePattern(date, localOnly).then(unwrap),
+  exportTrendsCsv: (path: string, days: number, localOnly: boolean) =>
+    commands.exportTrendsCsv(path, days, localOnly).then(unwrap),
   getLimitHitHistory: (days: number) => commands.getLimitHitHistory(days).then(unwrap),
-  getModelBreakdown: (days: number) => commands.getModelBreakdown(days).then(unwrap),
-  getDailyModelBreakdown: (days: number) => commands.getDailyModelBreakdown(days).then(unwrap),
-  getProjectBreakdown: (days: number) => commands.getProjectBreakdown(days).then(unwrap),
+  getModelBreakdown: (days: number, localOnly: boolean) =>
+    commands.getModelBreakdown(days, localOnly).then(unwrap),
+  getDailyModelBreakdown: (days: number, localOnly: boolean) =>
+    commands.getDailyModelBreakdown(days, localOnly).then(unwrap),
+  getProjectBreakdown: (days: number, localOnly: boolean) =>
+    commands.getProjectBreakdown(days, localOnly).then(unwrap),
   getRepoBreakdown: () => commands.getRepoBreakdown().then(unwrap),
-  getTodayRepoBreakdown: () => commands.getTodayRepoBreakdown().then(unwrap),
-  getYesterdayRepoBreakdown: () => commands.getYesterdayRepoBreakdown().then(unwrap),
-  getWeekRepoBreakdown: () => commands.getWeekRepoBreakdown().then(unwrap),
-  getCacheStats: (days: number) => commands.getCacheStats(days).then(unwrap),
-  getTodayCacheStats: () => commands.getTodayCacheStats().then(unwrap),
-  getYesterdayCacheStats: () => commands.getYesterdayCacheStats().then(unwrap),
-  getWeekCacheStats: () => commands.getWeekCacheStats().then(unwrap),
-  getDailyAccountBreakdown: (days: number) => commands.getDailyAccountBreakdown(days).then(unwrap),
-  getCacheStatsByAccount: (days: number) => commands.getCacheStatsByAccount(days).then(unwrap),
+  getTodayRepoBreakdown: (localOnly: boolean) => commands.getTodayRepoBreakdown(localOnly).then(unwrap),
+  getYesterdayRepoBreakdown: (localOnly: boolean) =>
+    commands.getYesterdayRepoBreakdown(localOnly).then(unwrap),
+  getWeekRepoBreakdown: (localOnly: boolean) => commands.getWeekRepoBreakdown(localOnly).then(unwrap),
+  getDateRepoBreakdown: (date: string, localOnly: boolean) =>
+    commands.getDateRepoBreakdown(date, localOnly).then(unwrap),
+  getCacheStats: (days: number, localOnly: boolean) => commands.getCacheStats(days, localOnly).then(unwrap),
+  getTodayCacheStats: (localOnly: boolean) => commands.getTodayCacheStats(localOnly).then(unwrap),
+  getYesterdayCacheStats: (localOnly: boolean) => commands.getYesterdayCacheStats(localOnly).then(unwrap),
+  getWeekCacheStats: (localOnly: boolean) => commands.getWeekCacheStats(localOnly).then(unwrap),
+  getDateCacheStats: (date: string, localOnly: boolean) =>
+    commands.getDateCacheStats(date, localOnly).then(unwrap),
+  getDailyAccountBreakdown: (days: number, localOnly: boolean) =>
+    commands.getDailyAccountBreakdown(days, localOnly).then(unwrap),
+  getCacheStatsByAccount: (days: number, localOnly: boolean) =>
+    commands.getCacheStatsByAccount(days, localOnly).then(unwrap),
 
   startOauthFlow: (longLived: boolean = false) =>
     commands.startOauthFlow(longLived).then(unwrap),

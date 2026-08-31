@@ -7,18 +7,20 @@ import { IconCache } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
+import { useDataScopeStore } from '../lib/dataScope';
 import { colorForAccount } from './accountDisplay';
 
 export function CacheTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
   const accounts = useAppStore((s) => s.accounts);
+  const showAllDevices = useDataScopeStore((s) => s.showAllDevices);
   const { data, error, loading, reload } = useTabData(
-    () => ipc.getCacheStats(30),
-    [version],
+    () => ipc.getCacheStats(30, !showAllDevices),
+    [version, showAllDevices],
   );
   const { data: byAccount } = useTabData(
-    () => ipc.getCacheStatsByAccount(30),
-    [version],
+    () => ipc.getCacheStatsByAccount(30, !showAllDevices),
+    [version, showAllDevices],
   );
 
   if (error) {

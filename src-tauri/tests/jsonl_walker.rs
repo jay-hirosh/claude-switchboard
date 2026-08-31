@@ -76,6 +76,7 @@ fn truncation_resets_cursor_and_dedupes() {
         .events_between(
             chrono::Utc::now() - chrono::Duration::days(3650),
             chrono::Utc::now() + chrono::Duration::days(1),
+            None,
         )
         .unwrap()
         .len();

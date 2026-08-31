@@ -7,6 +7,7 @@ import { IconTimer } from '../../lib/icons';
 import { ipc } from '../../lib/ipc';
 import { useTabData } from '../../lib/useTabData';
 import { useAppStore } from '../../lib/store';
+import { useDataScopeStore } from '../../lib/dataScope';
 import { HourlyStrip } from './HourlyStrip';
 import type { AccountListEntry, HhMm, Schedule } from '../../lib/generated/bindings';
 import type { HourCell, WarmupPlan } from '../../lib/types';
@@ -48,6 +49,7 @@ function fmtHm(h: HhMm): string {
 export function DailyPatternPanel() {
   const version = useAppStore((s) => s.sessionDataVersion);
   const accounts = useAppStore((s) => s.accounts);
+  const showAllDevices = useDataScopeStore((s) => s.showAllDevices);
   const [days, setDays] = useState<Lookback>(30);
   const {
     data: report,
@@ -55,8 +57,11 @@ export function DailyPatternPanel() {
     loading,
     reload,
   } = useTabData(
-    () => (days === 'today' ? ipc.getTodayPattern() : ipc.getDailyPattern(days)),
-    [version, days],
+    () =>
+      days === 'today'
+        ? ipc.getTodayPattern(!showAllDevices)
+        : ipc.getDailyPattern(days, !showAllDevices),
+    [version, days, showAllDevices],
   );
 
   const [hovered, setHovered] = useState<HourCell | null>(null);

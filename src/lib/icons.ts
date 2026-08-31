@@ -12,6 +12,7 @@ export {
   Calendar,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   CornerDownRight,

@@ -7,6 +7,7 @@ import { IconHeatmap } from '../lib/icons';
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
+import { useDataScopeStore } from '../lib/dataScope';
 import { colorForAccount, labelForAccount } from './accountDisplay';
 
 const CELL_SIZE = 11;
@@ -65,13 +66,14 @@ const levelColors: Record<number, string> = {
 export function HeatmapTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
   const accounts = useAppStore((s) => s.accounts);
+  const showAllDevices = useDataScopeStore((s) => s.showAllDevices);
   const { data: events, error, loading, reload } = useTabData(
-    () => ipc.getSessionHistory(180),
-    [version],
+    () => ipc.getSessionHistory(180, !showAllDevices),
+    [version, showAllDevices],
   );
   const { data: accountBuckets } = useTabData(
-    () => ipc.getDailyAccountBreakdown(180),
-    [version],
+    () => ipc.getDailyAccountBreakdown(180, !showAllDevices),
+    [version, showAllDevices],
   );
   const accountsByDate = useMemo(
     () => new Map((accountBuckets ?? []).map((b: DailyAccountBucket) => [b.date, b.accounts])),

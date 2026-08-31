@@ -11,6 +11,7 @@ import { IconTrends, IconExport } from '../../lib/icons';
 import { ipc } from '../../lib/ipc';
 import { useTabData } from '../../lib/useTabData';
 import { useAppStore } from '../../lib/store';
+import { useDataScopeStore } from '../../lib/dataScope';
 import { MODEL_VARIANT, modelKey, shortName } from '../modelDisplay';
 import { colorForAccount } from '../accountDisplay';
 import { computePeriodComparison, type PeriodGranularity, type PeriodMetric } from '../../lib/periodComparison';
@@ -69,14 +70,15 @@ const TRENDS_FETCH_DAYS = 62;
 export function UsageTrends() {
   const version = useAppStore((s) => s.sessionDataVersion);
   const accounts = useAppStore((s) => s.accounts);
+  const showAllDevices = useDataScopeStore((s) => s.showAllDevices);
   const { data, error, loading, reload } = useTabData(
     () =>
       Promise.all([
-        ipc.getDailyTrends(TRENDS_FETCH_DAYS),
-        ipc.getDailyModelBreakdown(30),
-        ipc.getDailyAccountBreakdown(30),
+        ipc.getDailyTrends(TRENDS_FETCH_DAYS, !showAllDevices),
+        ipc.getDailyModelBreakdown(30, !showAllDevices),
+        ipc.getDailyAccountBreakdown(30, !showAllDevices),
       ]).then(([trends, breakdown, accountBreakdown]) => ({ trends, breakdown, accountBreakdown })),
-    [version],
+    [version, showAllDevices],
   );
   const [range, setRange] = useState<'7d' | '30d'>('30d');
   const [metric, setMetric] = useState<'tokens' | 'cost'>('tokens');
@@ -180,7 +182,7 @@ export function UsageTrends() {
       filters: [{ name: 'CSV', extensions: ['csv'] }],
     });
     if (typeof path !== 'string') return; // user cancelled
-    await ipc.exportTrendsCsv(path, TRENDS_FETCH_DAYS);
+    await ipc.exportTrendsCsv(path, TRENDS_FETCH_DAYS, !showAllDevices);
   }
 
   return (

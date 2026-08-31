@@ -132,6 +132,24 @@ fn err_to_string<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Resolves the "show only this machine" Settings toggle to the
+/// `only_device_id` filter `events_between`/`compactions_between` expect:
+/// `local_only` true -> `Some(this device's id)`, false -> `None` (every
+/// device's rows).
+fn resolve_device_filter(state: &AppState, local_only: bool) -> Result<Option<String>, String> {
+    if local_only {
+        state.db.device_id().map(Some).map_err(err_to_string)
+    } else {
+        Ok(None)
+    }
+}
+
+#[command]
+#[specta::specta]
+pub async fn get_device_id(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    state.db.device_id().map_err(err_to_string)
+}
+
 #[command]
 #[specta::specta]
 pub async fn get_current_usage(state: State<'_, Arc<AppState>>) -> Result<Option<CachedUsage>, String> {
@@ -150,11 +168,16 @@ pub async fn get_pricing(
 #[specta::specta]
 pub async fn get_session_history(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<StoredSessionEvent>, String> {
     let to = Utc::now();
     let from = to - Duration::days(days as i64);
-    state.db.events_between(from, to).map_err(err_to_string)
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)
 }
 
 /// Sessions whose JSONL transcript received a write within the last
@@ -174,11 +197,16 @@ pub async fn get_live_sessions(
 #[specta::specta]
 pub async fn get_compactions(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<crate::store::StoredCompaction>, String> {
     let to = Utc::now();
     let from = to - Duration::days(days as i64);
-    state.db.compactions_between(from, to).map_err(err_to_string)
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    state
+        .db
+        .compactions_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)
 }
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
@@ -243,7 +271,11 @@ pub async fn get_warmup_suggestion(
 ) -> Result<Option<WarmupSuggestion>, String> {
     const MIN_ACTIVE_DAYS: usize = 10;
     const LOOKBACK_DAYS: u32 = 90;
-    let events = get_session_history(LOOKBACK_DAYS, state).await?;
+    // Warm-up scheduling looks at this device's own historical activity
+    // pattern, so it's always local-only regardless of the Settings toggle
+    // — a synced peer's usage hours don't tell you when *this machine*
+    // tends to be active.
+    let events = get_session_history(LOOKBACK_DAYS, true, state).await?;
     Ok(compute_warmup_suggestion(&events, MIN_ACTIVE_DAYS))
 }
 
@@ -295,9 +327,10 @@ pub async fn get_limit_hit_history(
 #[specta::specta]
 pub async fn get_daily_trends(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<DailyBucket>, String> {
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     Ok(bucket_daily_trends(&events))
 }
 
@@ -307,9 +340,10 @@ pub async fn get_daily_trends(
 #[specta::specta]
 pub async fn get_daily_pattern(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::pattern::DailyPatternReport, String> {
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     Ok(crate::pattern::compute_daily_pattern(&events, days))
 }
 
@@ -318,11 +352,16 @@ pub async fn get_daily_pattern(
 #[command]
 #[specta::specta]
 pub async fn get_today_pattern(
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::pattern::DailyPatternReport, String> {
     let to = Utc::now();
     let from = crate::pattern::local_midnight_utc(to);
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     Ok(crate::pattern::compute_daily_pattern(&events, 1))
 }
 
@@ -331,10 +370,15 @@ pub async fn get_today_pattern(
 #[command]
 #[specta::specta]
 pub async fn get_yesterday_pattern(
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::pattern::DailyPatternReport, String> {
     let (from, to) = crate::pattern::yesterday_range_utc(Utc::now());
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     Ok(crate::pattern::compute_daily_pattern(&events, 1))
 }
 
@@ -343,11 +387,49 @@ pub async fn get_yesterday_pattern(
 #[command]
 #[specta::specta]
 pub async fn get_week_pattern(
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::pattern::DailyPatternReport, String> {
     let (from, to) = crate::pattern::week_range_utc(Utc::now());
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     Ok(crate::pattern::compute_daily_pattern(&events, 7))
+}
+
+/// Parses a `YYYY-MM-DD` date string and rejects dates after today in the
+/// user's local timezone — shared by the Dashboard tab's `get_date_*`
+/// commands, which all take an arbitrary calendar day the same way.
+fn parse_local_date(date: &str, now: chrono::DateTime<Utc>) -> Result<chrono::NaiveDate, String> {
+    let day = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| format!("invalid date: {date}"))?;
+    let today = now.with_timezone(&chrono::Local).date_naive();
+    if day > today {
+        return Err(format!("date {date} is in the future"));
+    }
+    Ok(day)
+}
+
+/// Same shape as `get_today_pattern`, scoped to an arbitrary local calendar
+/// day — the Dashboard tab's date-picker lookback.
+#[command]
+#[specta::specta]
+pub async fn get_date_pattern(
+    date: String,
+    local_only: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::pattern::DailyPatternReport, String> {
+    let now = Utc::now();
+    let day = parse_local_date(&date, now)?;
+    let (from, to) = crate::pattern::date_range_utc(day, now);
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
+    Ok(crate::pattern::compute_daily_pattern(&events, 1))
 }
 
 /// Serializes daily buckets to CSV — one row per day, header always present
@@ -368,9 +450,10 @@ fn daily_trends_to_csv(buckets: &[DailyBucket]) -> String {
 pub async fn export_trends_csv(
     path: String,
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     let csv = daily_trends_to_csv(&bucket_daily_trends(&events));
     std::fs::write(&path, csv).map_err(err_to_string)
 }
@@ -450,9 +533,10 @@ fn bucket_daily_account_breakdown(events: &[StoredSessionEvent]) -> Vec<DailyAcc
 #[specta::specta]
 pub async fn get_daily_account_breakdown(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<DailyAccountBucket>, String> {
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     Ok(bucket_daily_account_breakdown(&events))
 }
 
@@ -532,9 +616,10 @@ fn accumulate_model_stats(events: &[StoredSessionEvent]) -> Vec<ModelStats> {
 #[specta::specta]
 pub async fn get_model_breakdown(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<ModelStats>, String> {
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     Ok(accumulate_model_stats(&events))
 }
 
@@ -542,9 +627,10 @@ pub async fn get_model_breakdown(
 #[specta::specta]
 pub async fn get_daily_model_breakdown(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<DailyModelBucket>, String> {
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     use std::collections::BTreeMap;
     let mut by_day: BTreeMap<String, Vec<StoredSessionEvent>> = BTreeMap::new();
     for e in events {
@@ -569,9 +655,10 @@ pub async fn get_daily_model_breakdown(
 #[specta::specta]
 pub async fn get_project_breakdown(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<ProjectStats>, String> {
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     use std::collections::HashMap;
     let mut by_project: HashMap<String, ProjectStats> = HashMap::new();
     for e in events {
@@ -785,11 +872,16 @@ fn build_today_repo_inputs(
 #[command]
 #[specta::specta]
 pub async fn get_today_repo_breakdown(
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<RepoStats>, String> {
     let to = Utc::now();
     let from = crate::pattern::local_midnight_utc(to);
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     let folds = fold_today_events_by_parent(&events);
     let sessions = list_resumable_sessions(state).await?;
     let inputs = build_today_repo_inputs(folds, &sessions);
@@ -801,10 +893,15 @@ pub async fn get_today_repo_breakdown(
 #[command]
 #[specta::specta]
 pub async fn get_yesterday_repo_breakdown(
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<RepoStats>, String> {
     let (from, to) = crate::pattern::yesterday_range_utc(Utc::now());
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     let folds = fold_today_events_by_parent(&events);
     let sessions = list_resumable_sessions(state).await?;
     let inputs = build_today_repo_inputs(folds, &sessions);
@@ -816,10 +913,38 @@ pub async fn get_yesterday_repo_breakdown(
 #[command]
 #[specta::specta]
 pub async fn get_week_repo_breakdown(
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<RepoStats>, String> {
     let (from, to) = crate::pattern::week_range_utc(Utc::now());
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
+    let folds = fold_today_events_by_parent(&events);
+    let sessions = list_resumable_sessions(state).await?;
+    let inputs = build_today_repo_inputs(folds, &sessions);
+    Ok(group_repo_stats(&inputs))
+}
+
+/// Same repo/project grouping as `get_today_repo_breakdown`, scoped to an
+/// arbitrary local calendar day — the Dashboard tab's date-picker repo cards.
+#[command]
+#[specta::specta]
+pub async fn get_date_repo_breakdown(
+    date: String,
+    local_only: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<RepoStats>, String> {
+    let now = Utc::now();
+    let day = parse_local_date(&date, now)?;
+    let (from, to) = crate::pattern::date_range_utc(day, now);
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     let folds = fold_today_events_by_parent(&events);
     let sessions = list_resumable_sessions(state).await?;
     let inputs = build_today_repo_inputs(folds, &sessions);
@@ -830,10 +955,11 @@ pub async fn get_week_repo_breakdown(
 #[specta::specta]
 pub async fn get_cache_stats(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<CacheStats, String> {
     let pricing = state.pricing.clone();
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     let mut read = 0u64;
     let mut created = 0u64;
     for e in &events {
@@ -905,10 +1031,17 @@ fn cache_stats_from_events(
 /// Dashboard tab's Today cache card.
 #[command]
 #[specta::specta]
-pub async fn get_today_cache_stats(state: State<'_, Arc<AppState>>) -> Result<CacheStats, String> {
+pub async fn get_today_cache_stats(
+    local_only: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<CacheStats, String> {
     let to = Utc::now();
     let from = crate::pattern::local_midnight_utc(to);
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     Ok(cache_stats_from_events(&state.pricing, &events))
 }
 
@@ -917,10 +1050,15 @@ pub async fn get_today_cache_stats(state: State<'_, Arc<AppState>>) -> Result<Ca
 #[command]
 #[specta::specta]
 pub async fn get_yesterday_cache_stats(
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<CacheStats, String> {
     let (from, to) = crate::pattern::yesterday_range_utc(Utc::now());
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     Ok(cache_stats_from_events(&state.pricing, &events))
 }
 
@@ -928,9 +1066,36 @@ pub async fn get_yesterday_cache_stats(
 /// ending now — the Dashboard tab's This Week cache card.
 #[command]
 #[specta::specta]
-pub async fn get_week_cache_stats(state: State<'_, Arc<AppState>>) -> Result<CacheStats, String> {
+pub async fn get_week_cache_stats(
+    local_only: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<CacheStats, String> {
     let (from, to) = crate::pattern::week_range_utc(Utc::now());
-    let events = state.db.events_between(from, to).map_err(err_to_string)?;
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
+    Ok(cache_stats_from_events(&state.pricing, &events))
+}
+
+/// Same math as `get_today_cache_stats`, scoped to an arbitrary local
+/// calendar day — the Dashboard tab's date-picker cache card.
+#[command]
+#[specta::specta]
+pub async fn get_date_cache_stats(
+    date: String,
+    local_only: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<CacheStats, String> {
+    let now = Utc::now();
+    let day = parse_local_date(&date, now)?;
+    let (from, to) = crate::pattern::date_range_utc(day, now);
+    let device_filter = resolve_device_filter(&state, local_only)?;
+    let events = state
+        .db
+        .events_between(from, to, device_filter.as_deref())
+        .map_err(err_to_string)?;
     Ok(cache_stats_from_events(&state.pricing, &events))
 }
 
@@ -981,10 +1146,11 @@ fn accumulate_cache_stats_by_account(events: &[StoredSessionEvent]) -> Vec<Accou
 #[specta::specta]
 pub async fn get_cache_stats_by_account(
     days: u32,
+    local_only: bool,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<AccountCacheStats>, String> {
     let pricing = state.pricing.clone();
-    let events = get_session_history(days, state).await?;
+    let events = get_session_history(days, local_only, state).await?;
     let mut stats = accumulate_cache_stats_by_account(&events);
 
     let mut savings_by_account: std::collections::HashMap<Option<String>, f64> = std::collections::HashMap::new();
@@ -2859,7 +3025,7 @@ pub async fn sync_now(state: State<'_, Arc<AppState>>) -> Result<crate::app_stat
     let base_url = state.db.sync_backend_url().map_err(err_to_string)?.ok_or("set a backend URL first")?;
     let api_key = state.db.sync_api_key().map_err(err_to_string)?.ok_or("sync not configured on this device")?;
     let client = crate::sync::SyncClient::new(state.http_client.clone(), base_url);
-    let result = crate::sync::engine::run_sync_cycle(&state.db, &client, &api_key).await;
+    let result = crate::sync::engine::run_sync_cycle(&state.db, &client, &api_key, &state.pricing).await;
     let summary = crate::sync::engine::summarize_cycle_result(result, chrono::Utc::now());
     *state.sync_status.write() = Some(summary.clone());
     Ok(summary)

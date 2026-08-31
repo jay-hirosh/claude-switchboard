@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS session_events (
     -- the (source_file, source_line) constraint we used in v1 missed it,
     -- inflating cost on busy days by 40%+).
     event_id TEXT NOT NULL,
+    -- This device's own id (Db::device_id()) for locally-watched rows, or the
+    -- SYNCED_FROM_PEER_DEVICE_ID sentinel for rows derived from another
+    -- device's synced data. See migrations/0015_session_events_device_id.sql.
+    device_id TEXT NOT NULL DEFAULT '',
     UNIQUE (event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON session_events(ts DESC);
@@ -113,6 +117,8 @@ CREATE TABLE IF NOT EXISTS session_compactions (
     -- The record's own uuid: stable across re-reads, so re-ingesting a file
     -- is idempotent exactly the way event_id makes session_events idempotent.
     uuid         TEXT NOT NULL,
+    -- Same provenance convention as session_events.device_id.
+    device_id    TEXT NOT NULL DEFAULT '',
     UNIQUE (uuid)
 );
 CREATE INDEX IF NOT EXISTS idx_compactions_ts ON session_compactions(ts DESC);

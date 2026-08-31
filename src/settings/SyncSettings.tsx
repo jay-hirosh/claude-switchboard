@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { Toggle } from '../components/ui/Toggle';
+import { useDataScopeStore } from '../lib/dataScope';
 
 interface Props {
   backendUrl: string | null;
@@ -25,6 +27,8 @@ export function SyncSettings({
   const [joinCode, setJoinCode] = useState('');
   const [deviceName, setDeviceName] = useState('');
   const configured = Boolean(backendUrl);
+  const showAllDevices = useDataScopeStore((s) => s.showAllDevices);
+  const setShowAllDevices = useDataScopeStore((s) => s.setShowAllDevices);
 
   // `backendUrl` starts `null` and is loaded asynchronously by the parent
   // (SettingsPanel) after mount — `useState(backendUrl ?? '')` above only
@@ -110,6 +114,12 @@ export function SyncSettings({
           Join
         </button>
       </div>
+      <Toggle
+        label="Show data synced from other devices"
+        description="When off, dashboards show only this machine's activity."
+        checked={showAllDevices}
+        onChange={(e) => setShowAllDevices(e.target.checked)}
+      />
     </div>
   );
 }

@@ -121,6 +121,7 @@ pub fn run() {
     let specta_builder = tauri_specta::Builder::<tauri::Wry>::new()
         .commands(tauri_specta::collect_commands![
             commands::get_current_usage,
+            commands::get_device_id,
             commands::get_pricing,
             commands::get_session_history,
             commands::get_compactions,
@@ -129,6 +130,7 @@ pub fn run() {
             commands::get_today_pattern,
             commands::get_yesterday_pattern,
             commands::get_week_pattern,
+            commands::get_date_pattern,
             commands::export_trends_csv,
             commands::get_model_breakdown,
             commands::get_daily_model_breakdown,
@@ -137,10 +139,12 @@ pub fn run() {
             commands::get_today_repo_breakdown,
             commands::get_yesterday_repo_breakdown,
             commands::get_week_repo_breakdown,
+            commands::get_date_repo_breakdown,
             commands::get_cache_stats,
             commands::get_today_cache_stats,
             commands::get_yesterday_cache_stats,
             commands::get_week_cache_stats,
+            commands::get_date_cache_stats,
             commands::get_daily_account_breakdown,
             commands::get_cache_stats_by_account,
             commands::start_oauth_flow,
@@ -201,6 +205,7 @@ pub fn run() {
     let specta_builder = tauri_specta::Builder::<tauri::Wry>::new()
         .commands(tauri_specta::collect_commands![
             commands::get_current_usage,
+            commands::get_device_id,
             commands::get_pricing,
             commands::get_session_history,
             commands::get_compactions,
@@ -209,6 +214,7 @@ pub fn run() {
             commands::get_today_pattern,
             commands::get_yesterday_pattern,
             commands::get_week_pattern,
+            commands::get_date_pattern,
             commands::export_trends_csv,
             commands::get_model_breakdown,
             commands::get_daily_model_breakdown,
@@ -217,10 +223,12 @@ pub fn run() {
             commands::get_today_repo_breakdown,
             commands::get_yesterday_repo_breakdown,
             commands::get_week_repo_breakdown,
+            commands::get_date_repo_breakdown,
             commands::get_cache_stats,
             commands::get_today_cache_stats,
             commands::get_yesterday_cache_stats,
             commands::get_week_cache_stats,
+            commands::get_date_cache_stats,
             commands::get_daily_account_breakdown,
             commands::get_cache_stats_by_account,
             commands::start_oauth_flow,
@@ -933,7 +941,7 @@ pub fn run() {
                         };
                         if let (Some(base_url), Some(api_key)) = (base_url, api_key) {
                             let client = sync::SyncClient::new(sync_state.http_client.clone(), base_url);
-                            let result = sync::engine::run_sync_cycle(&sync_state.db, &client, &api_key).await;
+                            let result = sync::engine::run_sync_cycle(&sync_state.db, &client, &api_key, &sync_state.pricing).await;
                             let summary = sync::engine::summarize_cycle_result(result, chrono::Utc::now());
                             *sync_state.sync_status.write() = Some(summary);
                         }

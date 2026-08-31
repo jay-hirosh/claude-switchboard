@@ -1,8 +1,14 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SyncSettings } from "../SyncSettings";
+import { useDataScopeStore } from "../../lib/dataScope";
 
 describe("SyncSettings", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useDataScopeStore.setState({ showAllDevices: false });
+  });
+
   it("shows 'Not configured' and disables actions when no backend URL is set", () => {
     render(
       <SyncSettings
@@ -120,5 +126,26 @@ describe("SyncSettings", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /^join$/i }));
     expect(fn).toHaveBeenCalledWith("WXYZ-5678", "My Laptop");
+  });
+
+  it("shows the local-only toggle off by default and turns it on when clicked", () => {
+    render(
+      <SyncSettings
+        backendUrl={null}
+        status={null}
+        pairingCode={null}
+        onSaveBackendUrl={() => {}}
+        onBootstrap={() => {}}
+        onGenerateCode={() => {}}
+        onJoin={() => {}}
+        onSyncNow={() => {}}
+      />,
+    );
+    const toggle = screen.getByRole("switch", { name: /show data synced from other devices/i });
+    expect(toggle).not.toBeChecked();
+
+    fireEvent.click(toggle);
+    expect(useDataScopeStore.getState().showAllDevices).toBe(true);
+    expect(toggle).toBeChecked();
   });
 });

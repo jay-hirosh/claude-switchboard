@@ -256,7 +256,7 @@ describe('UsageTrends — CSV export', () => {
     fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
 
     await waitFor(() =>
-      expect(ipcMock.exportTrendsCsv).toHaveBeenCalledWith('/Users/me/switchboard-trends.csv', 62),
+      expect(ipcMock.exportTrendsCsv).toHaveBeenCalledWith('/Users/me/switchboard-trends.csv', 62, true),
     );
   });
 

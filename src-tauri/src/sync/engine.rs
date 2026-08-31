@@ -1,4 +1,6 @@
-use crate::store::{Db, StoredFileSnapshot, StoredTranscriptLine};
+use crate::jsonl_parser::pricing::PricingTable;
+use crate::jsonl_parser::record::{parse_compaction_line, parse_event_line};
+use crate::store::{Db, StoredCompaction, StoredFileSnapshot, StoredSessionEvent, StoredTranscriptLine};
 use crate::sync::{SyncClient, SyncOutcome};
 use archive_sync_types::{PushRequest, SyncFileSnapshot, SyncTranscriptLine};
 
@@ -52,13 +54,79 @@ pub fn summarize_cycle_result(result: SyncCycleResult, at: chrono::DateTime<chro
     }
 }
 
+/// Parses a freshly-pulled page of raw transcript lines into
+/// `session_events`/`session_compactions` rows, via the exact same
+/// `parse_event_line`/`parse_compaction_line` logic the local JSONL watcher
+/// (`jsonl_parser::walker::ingest_file`) already uses — so a pulled line
+/// produces the same dashboard-visible row a local watcher would have, just
+/// tagged with the peer sentinel by the caller (`Db::insert_pulled_events`).
+/// `project_slug` is passed as the parser's fallback project, matching how
+/// the walker passes its directory-derived project name — in practice
+/// `parse_event_line` prefers the JSONL's own `cwd` field when present, so
+/// this fallback rarely matters.
+fn derive_events_from_pulled_lines(
+    pricing: &PricingTable,
+    lines: &[StoredTranscriptLine],
+) -> (Vec<StoredSessionEvent>, Vec<StoredCompaction>) {
+    let mut events = Vec::new();
+    let mut compactions = Vec::new();
+    for l in lines {
+        if let Some(ev) = parse_event_line(&l.raw_line, &l.project_slug) {
+            let cost = pricing.cost_for(
+                &ev.model,
+                ev.input_tokens,
+                ev.output_tokens,
+                ev.cache_read_tokens,
+                ev.cache_creation_5m_tokens,
+                ev.cache_creation_1h_tokens,
+            );
+            let event_id = ev
+                .event_id
+                .unwrap_or_else(|| format!("{}:{}", l.jsonl_path, l.line_no));
+            events.push(StoredSessionEvent {
+                ts: ev.ts,
+                project: ev.project,
+                model: ev.model,
+                input_tokens: ev.input_tokens,
+                output_tokens: ev.output_tokens,
+                cache_read_tokens: ev.cache_read_tokens,
+                cache_creation_5m_tokens: ev.cache_creation_5m_tokens,
+                cache_creation_1h_tokens: ev.cache_creation_1h_tokens,
+                cost_usd: cost,
+                source_file: l.jsonl_path.clone(),
+                source_line: l.line_no,
+                event_id,
+                account_uuid: None,
+            });
+        } else if let Some(c) = parse_compaction_line(&l.raw_line) {
+            compactions.push(StoredCompaction {
+                ts: c.ts,
+                source_file: l.jsonl_path.clone(),
+                trigger: c.trigger,
+                pre_tokens: c.pre_tokens,
+                post_tokens: c.post_tokens,
+                uuid: c.uuid,
+            });
+        }
+    }
+    (events, compactions)
+}
+
 /// Runs one full push-then-pull cycle: pushes every not-yet-pushed local
 /// row (in batches, advancing the push watermark only after each batch
 /// fully succeeds — a partial batch failure must not skip rows), then
 /// pulls every not-yet-seen remote row (paginating on the cursor until a
-/// page comes back under the limit) and inserts it via the existing,
-/// idempotent `Db::insert_transcript_lines`/`insert_file_snapshot`.
-pub async fn run_sync_cycle(db: &Db, client: &SyncClient, api_key: &str) -> SyncCycleResult {
+/// page comes back under the limit), inserts it via the existing, idempotent
+/// `Db::insert_transcript_lines`/`insert_file_snapshot`, and derives
+/// `session_events`/`session_compactions` rows from each pulled page so
+/// synced peer data actually becomes visible in the report UI (see
+/// `derive_events_from_pulled_lines`).
+pub async fn run_sync_cycle(
+    db: &Db,
+    client: &SyncClient,
+    api_key: &str,
+    pricing: &PricingTable,
+) -> SyncCycleResult {
     let mut pushed = 0usize;
     loop {
         let since = db.sync_push_watermark("transcript_lines").unwrap_or(None).unwrap_or(0);
@@ -195,6 +263,17 @@ pub async fn run_sync_cycle(db: &Db, client: &SyncClient, api_key: &str) -> Sync
                 if let Err(e) = db.insert_pulled_transcript_lines(&to_insert) {
                     return SyncCycleResult::Transient(e.to_string());
                 }
+                // Derivation failures must never abort the sync cycle — same
+                // "archive/derivation is a separate concern from the
+                // cycle's own progress" posture the local watcher already
+                // takes with its own insert_transcript_lines errors (see
+                // jsonl_parser::walker::ingest_file). The raw lines are
+                // already durably archived above regardless of this outcome.
+                let (derived_events, derived_compactions) =
+                    derive_events_from_pulled_lines(pricing, &to_insert);
+                if let Err(e) = db.insert_pulled_events(&derived_events, &derived_compactions) {
+                    tracing::warn!("failed to derive session_events from pulled transcript lines: {e:#}");
+                }
                 for snap in resp.file_snapshots {
                     if let Err(e) = db.insert_pulled_file_snapshot(&StoredFileSnapshot {
                         source_path: snap.source_path,
@@ -259,6 +338,10 @@ mod tests {
         SyncClient::new(Arc::new(reqwest::Client::new()), base_url.to_string())
     }
 
+    fn test_pricing() -> PricingTable {
+        PricingTable::bundled().unwrap()
+    }
+
     #[tokio::test]
     async fn cycle_pushes_new_local_rows_and_advances_watermark() {
         let (_dir, db) = test_db();
@@ -284,7 +367,7 @@ mod tests {
             .await;
 
         let client = test_client(&server.url());
-        let result = run_sync_cycle(&db, &client, "test-key").await;
+        let result = run_sync_cycle(&db, &client, "test-key", &test_pricing()).await;
 
         push_mock.assert_async().await;
         pull_mock.assert_async().await;
@@ -304,7 +387,7 @@ mod tests {
         server.mock("POST", "/v1/archive/push").with_status(401).create_async().await;
 
         let client = test_client(&server.url());
-        let result = run_sync_cycle(&db, &client, "bad-key").await;
+        let result = run_sync_cycle(&db, &client, "bad-key", &test_pricing()).await;
 
         assert_eq!(result, SyncCycleResult::Unauthorized);
         assert_eq!(db.sync_push_watermark("transcript_lines").unwrap(), None, "watermark must not advance on auth failure");
@@ -368,7 +451,7 @@ mod tests {
             .await;
 
         let client = test_client(&server.url());
-        let result = run_sync_cycle(&db, &client, "test-key").await;
+        let result = run_sync_cycle(&db, &client, "test-key", &test_pricing()).await;
 
         first_pull.assert_async().await;
         second_pull.assert_async().await;
@@ -440,7 +523,7 @@ mod tests {
             .await;
 
         let client = test_client(&server.url());
-        let result = run_sync_cycle(&db, &client, "test-key").await;
+        let result = run_sync_cycle(&db, &client, "test-key", &test_pricing()).await;
 
         // The key assertion: BOTH mocks must have been hit. Under the old
         // buggy termination condition, only the first would ever fire.
@@ -497,7 +580,7 @@ mod tests {
             .await;
 
         let client = test_client(&server.url());
-        let result = run_sync_cycle(&db, &client, "test-key").await;
+        let result = run_sync_cycle(&db, &client, "test-key", &test_pricing()).await;
 
         push_mock.assert_async().await;
         pull_mock.assert_async().await;
@@ -506,6 +589,101 @@ mod tests {
             db.sync_push_watermark("transcript_lines").unwrap(),
             Some(3),
             "all 3 rows must eventually be pushed across the split batches"
+        );
+    }
+
+    /// A pulled page containing one assistant (usage) line and one
+    /// compaction line must be derived into session_events/
+    /// session_compactions — not just archived as raw transcript_lines —
+    /// tagged with the peer sentinel so the "local only" toggle can exclude
+    /// it. This is the core of the local-vs-synced-data feature: without
+    /// derivation, synced data never becomes visible in any dashboard.
+    #[tokio::test]
+    async fn cycle_derives_session_events_and_compactions_from_a_pulled_page() {
+        let (_dir, db) = test_db();
+
+        let assistant_line = serde_json::json!({
+            "type": "assistant",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "cwd": "/tmp/project",
+            "requestId": "req-1",
+            "message": {
+                "id": "msg-1",
+                "model": "claude-sonnet-4-6",
+                "usage": {"input_tokens": 10, "output_tokens": 5}
+            }
+        })
+        .to_string();
+        let compaction_line = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": "22a1c0de-0000-4000-8000-000000000001",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "compactMetadata": {
+                "trigger": "manual",
+                "preTokens": 495927,
+                "postTokens": 16608,
+            }
+        })
+        .to_string();
+
+        let page = serde_json::json!({
+            "transcript_lines": [
+                {"project_slug": "p", "session_id": "s0", "jsonl_path": "p/s0.jsonl", "line_no": 0, "raw_line": assistant_line, "ingested_at": 0},
+                {"project_slug": "p", "session_id": "s0", "jsonl_path": "p/s0.jsonl", "line_no": 1, "raw_line": compaction_line, "ingested_at": 0},
+            ],
+            "file_snapshots": [],
+            "transcript_seq_high_water": 2,
+            "snapshot_seq_high_water": 0
+        })
+        .to_string();
+
+        let mut server = mockito::Server::new_async().await;
+        let pull_mock = server
+            .mock("GET", mockito::Matcher::Regex(r"^/v1/archive/pull\?since_transcript_seq=0".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(page)
+            .create_async()
+            .await;
+        // Second call reports the same high-water mark with an empty page —
+        // the "caught up" signal that stops the pull loop.
+        let second_pull = server
+            .mock("GET", mockito::Matcher::Regex(r"^/v1/archive/pull\?since_transcript_seq=2".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"transcript_lines":[],"file_snapshots":[],"transcript_seq_high_water":2,"snapshot_seq_high_water":0}"#)
+            .create_async()
+            .await;
+
+        let client = test_client(&server.url());
+        let result = run_sync_cycle(&db, &client, "test-key", &test_pricing()).await;
+        pull_mock.assert_async().await;
+        second_pull.assert_async().await;
+        assert!(matches!(result, SyncCycleResult::Ok { .. }), "expected Ok, got {result:?}");
+
+        let window_start = chrono::Utc::now() - chrono::Duration::hours(1);
+        let window_end = chrono::Utc::now() + chrono::Duration::hours(1);
+
+        let all_events = db.events_between(window_start, window_end, None).unwrap();
+        assert_eq!(all_events.len(), 1, "the pulled assistant line must be derived into session_events");
+        assert_eq!(all_events[0].model, "claude-sonnet-4-6");
+        assert_eq!(all_events[0].input_tokens, 10);
+
+        let my_id = db.device_id().unwrap();
+        let local_only_events = db.events_between(window_start, window_end, Some(&my_id)).unwrap();
+        assert!(
+            local_only_events.is_empty(),
+            "a peer-derived event must not be tagged with this device's own id"
+        );
+
+        let all_compactions = db.compactions_between(window_start, window_end, None).unwrap();
+        assert_eq!(all_compactions.len(), 1, "the pulled compaction line must be derived into session_compactions");
+        let local_only_compactions =
+            db.compactions_between(window_start, window_end, Some(&my_id)).unwrap();
+        assert!(
+            local_only_compactions.is_empty(),
+            "a peer-derived compaction must not be tagged with this device's own id"
         );
     }
 }

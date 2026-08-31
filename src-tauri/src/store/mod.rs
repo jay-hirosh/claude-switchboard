@@ -100,13 +100,13 @@ impl Db {
     }
 
     /// Create a brand-new SQLite database with the current schema and stamp
-    /// schema_version=14 so that migrate() skips steps meant for older upgrades.
+    /// schema_version=15 so that migrate() skips steps meant for older upgrades.
     fn create_fresh_db(db_path: &Path) -> Result<Connection> {
         let conn = Connection::open(db_path).context("open sqlite")?;
         conn.execute_batch(include_str!("schema.sql")).context("apply schema")?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [14_i64],
+            [15_i64],
         )
         .context("stamp schema version")?;
         Ok(conn)
@@ -237,9 +237,44 @@ impl Db {
             .context("backfill file_snapshots device_id")?;
         }
 
+        if current < 15 {
+            tracing::info!("migrating v14 -> v15 (device_id on session_events/session_compactions)");
+            conn.execute_batch(include_str!("migrations/0015_session_events_device_id.sql"))
+                .context("apply migration 0015")?;
+
+            // Backfill: every session_events/session_compactions row that
+            // exists at this point was necessarily produced by the local
+            // JSONL watcher — the sync-derived-events code path this
+            // migration enables doesn't exist before it, so nothing could
+            // have written a peer-originated row yet. Same defensive
+            // INSERT-OR-IGNORE-then-read as migration 0014, kept
+            // self-contained here rather than relying on that earlier block
+            // having already run in this same migrate() call.
+            let device_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES ('sync_device_id', ?1)",
+                rusqlite::params![device_id],
+            )?;
+            let device_id: String = conn.query_row(
+                "SELECT value FROM settings WHERE key = 'sync_device_id'",
+                [],
+                |r| r.get(0),
+            )?;
+            conn.execute(
+                "UPDATE session_events SET device_id = ?1 WHERE device_id = ''",
+                rusqlite::params![device_id],
+            )
+            .context("backfill session_events device_id")?;
+            conn.execute(
+                "UPDATE session_compactions SET device_id = ?1 WHERE device_id = ''",
+                rusqlite::params![device_id],
+            )
+            .context("backfill session_compactions device_id")?;
+        }
+
         conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-            [14_i64],
+            [15_i64],
         )?;
         Ok(())
     }
@@ -705,7 +740,7 @@ mod tests {
             .conn()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 14, "create_fresh_db and migrate() must both stamp 14");
+        assert_eq!(version, 15, "create_fresh_db and migrate() must both stamp 15");
     }
 
     /// 0009 adds the compactions table and, like 0008, clears cursors so the
@@ -781,7 +816,7 @@ mod tests {
         assert_eq!(n, 1, "same uuid must not be stored twice");
 
         let from = chrono::Utc::now() - chrono::Duration::days(1);
-        let got = db.compactions_between(from, chrono::Utc::now() + chrono::Duration::days(1)).unwrap();
+        let got = db.compactions_between(from, chrono::Utc::now() + chrono::Duration::days(1), None).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].trigger, "manual");
         assert_eq!(got[0].pre_tokens, 495_927);
@@ -837,7 +872,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
 
         conn.execute(
             "INSERT INTO accounts (id, email, last_seen_at) VALUES ('a1', 'a@x.com', 0)",
@@ -1031,6 +1066,40 @@ mod tests {
                  );",
             )
             .unwrap();
+            // Same treatment for the v14 -> v15 columns this test also
+            // exercises (via the real migrate() path below): simulate the
+            // pre-0015 shape by dropping device_id from both tables.
+            conn.execute_batch(
+                "DROP TABLE session_events;
+                 CREATE TABLE session_events (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     ts INTEGER NOT NULL,
+                     project TEXT NOT NULL,
+                     model TEXT NOT NULL,
+                     input_tokens INTEGER NOT NULL DEFAULT 0,
+                     output_tokens INTEGER NOT NULL DEFAULT 0,
+                     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                     cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0,
+                     cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
+                     cost_usd REAL NOT NULL DEFAULT 0,
+                     source_file TEXT NOT NULL,
+                     source_line INTEGER NOT NULL,
+                     event_id TEXT NOT NULL,
+                     UNIQUE (event_id)
+                 );
+                 DROP TABLE session_compactions;
+                 CREATE TABLE session_compactions (
+                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                     ts           INTEGER NOT NULL,
+                     source_file  TEXT NOT NULL,
+                     trigger_kind TEXT NOT NULL,
+                     pre_tokens   INTEGER NOT NULL DEFAULT 0,
+                     post_tokens  INTEGER NOT NULL DEFAULT 0,
+                     uuid         TEXT NOT NULL,
+                     UNIQUE (uuid)
+                 );",
+            )
+            .unwrap();
             conn.execute(
                 "INSERT INTO transcript_lines (project_slug, session_id, jsonl_path, line_no, raw_line, ingested_at)
                  VALUES ('p', 's', 'p/s.jsonl', 0, '{}', 0)",
@@ -1040,6 +1109,13 @@ mod tests {
             conn.execute(
                 "INSERT INTO file_snapshots (source_path, kind, content, content_hash, captured_at)
                  VALUES ('/x', 'misc', 'hi', 'h1', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_events
+                 (ts, project, model, source_file, source_line, event_id)
+                 VALUES (0, 'p', 'claude-sonnet-4-6', 'p/s.jsonl', 0, 'e1')",
                 [],
             )
             .unwrap();
@@ -1082,6 +1158,18 @@ mod tests {
         assert_eq!(
             snap_device_id, my_id,
             "pre-existing file_snapshots row must be backfilled with this install's device_id"
+        );
+
+        let event_device_id: String = conn
+            .query_row(
+                "SELECT device_id FROM session_events WHERE event_id = 'e1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            event_device_id, my_id,
+            "pre-existing session_events row must be backfilled with this install's device_id (migration 0015)"
         );
     }
 }

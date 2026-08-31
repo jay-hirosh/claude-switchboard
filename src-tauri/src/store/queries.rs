@@ -172,14 +172,18 @@ fn merge_intervals(
     merged
 }
 
-fn insert_compactions_in_tx(tx: &Transaction<'_>, rows: &[StoredCompaction]) -> Result<usize> {
+fn insert_compactions_in_tx(
+    tx: &Transaction<'_>,
+    rows: &[StoredCompaction],
+    device_id: &str,
+) -> Result<usize> {
     if rows.is_empty() {
         return Ok(0);
     }
     let mut stmt = tx.prepare(
         "INSERT OR IGNORE INTO session_compactions
-         (ts, source_file, trigger_kind, pre_tokens, post_tokens, uuid)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+         (ts, source_file, trigger_kind, pre_tokens, post_tokens, uuid, device_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     let mut inserted = 0;
     for c in rows {
@@ -190,12 +194,17 @@ fn insert_compactions_in_tx(tx: &Transaction<'_>, rows: &[StoredCompaction]) -> 
             c.pre_tokens as i64,
             c.post_tokens as i64,
             c.uuid,
+            device_id,
         ])?;
     }
     Ok(inserted)
 }
 
-fn insert_events_in_tx(tx: &Transaction<'_>, events: &[StoredSessionEvent]) -> Result<usize> {
+fn insert_events_in_tx(
+    tx: &Transaction<'_>,
+    events: &[StoredSessionEvent],
+    device_id: &str,
+) -> Result<usize> {
     if events.is_empty() {
         return Ok(0);
     }
@@ -203,8 +212,8 @@ fn insert_events_in_tx(tx: &Transaction<'_>, events: &[StoredSessionEvent]) -> R
         "INSERT OR IGNORE INTO session_events
         (ts, project, model, input_tokens, output_tokens, cache_read_tokens,
          cache_creation_5m_tokens, cache_creation_1h_tokens, cost_usd,
-         source_file, source_line, event_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         source_file, source_line, event_id, device_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?;
     let mut inserted = 0;
     for e in events {
@@ -221,6 +230,7 @@ fn insert_events_in_tx(tx: &Transaction<'_>, events: &[StoredSessionEvent]) -> R
             e.source_file,
             e.source_line,
             e.event_id,
+            device_id,
         ])?;
     }
     Ok(inserted)
@@ -567,9 +577,34 @@ impl Db {
         if events.is_empty() {
             return Ok(0);
         }
+        // Fetch before taking `conn()` below — device_id() takes the same
+        // Mutex<Connection> lock, so calling it after would deadlock.
+        let device_id = self.device_id()?;
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let inserted = insert_events_in_tx(&tx, events)?;
+        let inserted = insert_events_in_tx(&tx, events, &device_id)?;
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Same as `insert_events` + `insert_compactions_in_tx`, but for rows
+    /// derived from another device's synced data — see
+    /// `insert_pulled_transcript_lines` for why the sentinel matters. Called
+    /// by the sync engine after parsing a freshly-pulled page of raw
+    /// `transcript_lines` through the same `parse_event_line`/
+    /// `parse_compaction_line` logic the local JSONL watcher uses.
+    pub fn insert_pulled_events(
+        &self,
+        events: &[StoredSessionEvent],
+        compactions: &[StoredCompaction],
+    ) -> Result<usize> {
+        if events.is_empty() && compactions.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let inserted = insert_events_in_tx(&tx, events, SYNCED_FROM_PEER_DEVICE_ID)?;
+        insert_compactions_in_tx(&tx, compactions, SYNCED_FROM_PEER_DEVICE_ID)?;
         tx.commit()?;
         Ok(inserted)
     }
@@ -598,10 +633,14 @@ impl Db {
         Ok(out)
     }
 
+    /// `only_device_id`: `Some(id)` restricts to rows tagged with that
+    /// device (the "local only" toggle), `None` returns every device's rows
+    /// (local + everything synced in from peers).
     pub fn events_between(
         &self,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
+        only_device_id: Option<&str>,
     ) -> Result<Vec<StoredSessionEvent>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -628,9 +667,10 @@ impl Db {
                       WHERE ai.started_at <= e.ts AND (ai.ended_at IS NULL OR e.ts < ai.ended_at)
                       ORDER BY ai.started_at DESC LIMIT 1) AS account_uuid
              FROM session_events e
-             WHERE e.ts BETWEEN ?1 AND ?2 ORDER BY e.ts DESC",
+             WHERE e.ts BETWEEN ?1 AND ?2 AND (?3 IS NULL OR e.device_id = ?3)
+             ORDER BY e.ts DESC",
         )?;
-        let rows = stmt.query_map(params![from.timestamp(), to.timestamp()], |r| {
+        let rows = stmt.query_map(params![from.timestamp(), to.timestamp(), only_device_id], |r| {
             Ok(StoredSessionEvent {
                 ts: DateTime::from_timestamp(r.get(0)?, 0).unwrap(),
                 project: r.get(1)?,
@@ -789,17 +829,22 @@ impl Db {
         .map_err(Into::into)
     }
 
+    /// `only_device_id`: see `events_between` — same "local only" vs "every
+    /// device" semantics.
     pub fn compactions_between(
         &self,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
+        only_device_id: Option<&str>,
     ) -> Result<Vec<StoredCompaction>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT ts, source_file, trigger_kind, pre_tokens, post_tokens, uuid
-             FROM session_compactions WHERE ts BETWEEN ?1 AND ?2 ORDER BY ts DESC",
+             FROM session_compactions
+             WHERE ts BETWEEN ?1 AND ?2 AND (?3 IS NULL OR device_id = ?3)
+             ORDER BY ts DESC",
         )?;
-        let rows = stmt.query_map(params![from.timestamp(), to.timestamp()], |r| {
+        let rows = stmt.query_map(params![from.timestamp(), to.timestamp(), only_device_id], |r| {
             Ok(StoredCompaction {
                 ts: DateTime::from_timestamp(r.get(0)?, 0).unwrap(),
                 source_file: r.get(1)?,
@@ -864,13 +909,16 @@ impl Db {
         mtime_ns: i64,
         byte_offset: i64,
     ) -> Result<usize> {
+        // Fetch before taking `conn()` below — device_id() takes the same
+        // Mutex<Connection> lock, so calling it after would deadlock.
+        let device_id = self.device_id()?;
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let inserted = insert_events_in_tx(&tx, events)?;
+        let inserted = insert_events_in_tx(&tx, events, &device_id)?;
         // Same transaction as the events and the cursor: a compaction that
         // landed while the cursor advanced past it could never be recovered,
         // since the walker would not re-read those bytes.
-        insert_compactions_in_tx(&tx, compactions)?;
+        insert_compactions_in_tx(&tx, compactions, &device_id)?;
         tx.execute(
             "INSERT INTO jsonl_cursors (file_path, last_mtime_ns, byte_offset) VALUES (?1, ?2, ?3)
              ON CONFLICT(file_path) DO UPDATE SET
@@ -1562,6 +1610,48 @@ mod tests {
         );
     }
 
+    /// `events_between`'s `only_device_id` filter: `Some(this device's id)`
+    /// must exclude peer-derived rows, `None` must include everything —
+    /// the query-layer half of the local-vs-synced-data toggle.
+    #[test]
+    fn events_between_only_device_id_filters_out_peer_rows() {
+        let (_dir, db) = fresh_db();
+        let now = Utc::now();
+        let local = StoredSessionEvent {
+            ts: now,
+            project: "p".into(),
+            model: "sonnet-4-6".into(),
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 0,
+            cache_creation_5m_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            cost_usd: 0.001,
+            source_file: "local.jsonl".into(),
+            source_line: 0,
+            event_id: "local-1".into(),
+            account_uuid: None,
+        };
+        let peer = StoredSessionEvent {
+            event_id: "peer-1".into(),
+            source_file: "peer.jsonl".into(),
+            ..local.clone()
+        };
+        db.insert_events(std::slice::from_ref(&local)).unwrap();
+        db.insert_pulled_events(std::slice::from_ref(&peer), &[]).unwrap();
+
+        let from = now - chrono::Duration::minutes(1);
+        let to = now + chrono::Duration::minutes(1);
+
+        let all = db.events_between(from, to, None).unwrap();
+        assert_eq!(all.len(), 2, "both local and peer rows are visible with no filter");
+
+        let my_id = db.device_id().unwrap();
+        let local_only = db.events_between(from, to, Some(&my_id)).unwrap();
+        assert_eq!(local_only.len(), 1, "local-only must exclude the peer row");
+        assert_eq!(local_only[0].event_id, "local-1");
+    }
+
     /// The exact regression that v1 missed: Claude Code can write the same
     /// `message.usage` block to multiple offsets in the same file (retries,
     /// partial rewinds). Different (source_file, source_line) but identical
@@ -2192,7 +2282,7 @@ mod tests {
         .unwrap();
 
         let events = db
-            .events_between(t_before - chrono::Duration::minutes(1), Utc::now())
+            .events_between(t_before - chrono::Duration::minutes(1), Utc::now(), None)
             .unwrap();
 
         let by_id: std::collections::HashMap<&str, &Option<String>> = events
@@ -2245,7 +2335,7 @@ mod tests {
         .unwrap();
 
         let events = db
-            .events_between(t_acc1 - chrono::Duration::minutes(1), Utc::now())
+            .events_between(t_acc1 - chrono::Duration::minutes(1), Utc::now(), None)
             .unwrap();
         let by_id: std::collections::HashMap<&str, &Option<String>> = events
             .iter()

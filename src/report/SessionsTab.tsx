@@ -8,6 +8,7 @@ import { ChevronDown, ChevronRight, IconCompact, IconSessions, IconSubagent } fr
 import { ipc } from '../lib/ipc';
 import { useTabData } from '../lib/useTabData';
 import { useAppStore } from '../lib/store';
+import { useDataScopeStore } from '../lib/dataScope';
 import type { Compaction, PricingEntry, SessionEvent } from '../lib/types';
 import { costPerCategory, lookupPricing } from '../lib/pricing';
 import { localDayKey, formatDayLabel } from '../lib/dayKey';
@@ -420,12 +421,14 @@ function SubagentRow({ sub }: { sub: SubagentSession }) {
 export function SessionsTab() {
   const version = useAppStore((s) => s.sessionDataVersion);
   const accounts = useAppStore((s) => s.accounts);
+  const showAllDevices = useDataScopeStore((s) => s.showAllDevices);
   const { data, error, loading, reload } = useTabData(
     () =>
-      Promise.all([ipc.getSessionHistory(WINDOW_DAYS), ipc.getCompactions(WINDOW_DAYS)]).then(
-        ([events, compactions]) => ({ events, compactions }),
-      ),
-    [version],
+      Promise.all([
+        ipc.getSessionHistory(WINDOW_DAYS, !showAllDevices),
+        ipc.getCompactions(WINDOW_DAYS, !showAllDevices),
+      ]).then(([events, compactions]) => ({ events, compactions })),
+    [version, showAllDevices],
   );
   const events = data?.events ?? null;
   const [expandedId, setExpandedId] = useState<string | null>(null);

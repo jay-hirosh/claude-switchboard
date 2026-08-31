@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { AccountListEntry, HourCell, HourTotal } from '../../../lib/generated/bindings';
 import type { DailyPatternReport, WarmupPlan } from '../../../lib/types';
 
@@ -47,6 +47,7 @@ vi.mock('../../../lib/store', async () => {
 });
 
 import { DailyPatternPanel } from '../DailyPatternPanel';
+import { useDataScopeStore } from '../../../lib/dataScope';
 
 function cells(fill: (weekday: number, hour: number) => number): HourCell[] {
   const out: HourCell[] = [];
@@ -130,6 +131,38 @@ describe('DailyPatternPanel — loading, error, empty', () => {
   });
 });
 
+describe('DailyPatternPanel — data scope toggle', () => {
+  beforeEach(() => {
+    ipcMock.getDailyPattern.mockReset();
+    ipcMock.getTodayPattern.mockReset();
+    localStorage.clear();
+    useDataScopeStore.setState({ showAllDevices: false });
+  });
+
+  // Restore the default so later describe blocks in this file (which assume
+  // showAllDevices=false) aren't affected by the "switched on" test above —
+  // zustand store state persists across tests in the same module.
+  afterEach(() => {
+    useDataScopeStore.setState({ showAllDevices: false });
+  });
+
+  it('passes localOnly=true (the default) when showAllDevices is off', async () => {
+    ipcMock.getDailyPattern.mockResolvedValue(report({}));
+    render(<DailyPatternPanel />);
+    await screen.findByText(/10 active days of 30/);
+    expect(ipcMock.getDailyPattern).toHaveBeenCalledWith(30, true);
+  });
+
+  it('passes localOnly=false when showAllDevices is switched on, and refetches', async () => {
+    ipcMock.getDailyPattern.mockResolvedValue(report({}));
+    render(<DailyPatternPanel />);
+    await screen.findByText(/10 active days of 30/);
+
+    useDataScopeStore.getState().setShowAllDevices(true);
+    await waitFor(() => expect(ipcMock.getDailyPattern).toHaveBeenCalledWith(30, false));
+  });
+});
+
 describe('DailyPatternPanel — grid and plan', () => {
   beforeEach(() => {
     ipcMock.getDailyPattern.mockReset();
@@ -164,10 +197,10 @@ describe('DailyPatternPanel — grid and plan', () => {
     ipcMock.getDailyPattern.mockResolvedValue(report({}));
     render(<DailyPatternPanel />);
     await screen.findByText(/10 active days of 30/);
-    expect(ipcMock.getDailyPattern).toHaveBeenCalledWith(30);
+    expect(ipcMock.getDailyPattern).toHaveBeenCalledWith(30, true);
 
     fireEvent.click(screen.getByText('90d'));
-    await waitFor(() => expect(ipcMock.getDailyPattern).toHaveBeenCalledWith(90));
+    await waitFor(() => expect(ipcMock.getDailyPattern).toHaveBeenCalledWith(90, true));
   });
 
   it('renders both a tokens-by-hour and a cost-by-hour graph', async () => {
@@ -208,7 +241,7 @@ describe('DailyPatternPanel — Today lookback', () => {
     expect(await screen.findByText('Active today')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('7d'));
-    await waitFor(() => expect(ipcMock.getDailyPattern).toHaveBeenCalledWith(7));
+    await waitFor(() => expect(ipcMock.getDailyPattern).toHaveBeenCalledWith(7, true));
   });
 
   it('shows "no activity yet today" when today has no events', async () => {

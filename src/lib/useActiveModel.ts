@@ -23,8 +23,11 @@ export function useActiveModel(): ActiveModel {
 
   useEffect(() => {
     let cancelled = false;
+    // Always local-only, regardless of the Settings toggle: this drives a
+    // live "what's active right now" indicator, and a synced peer's recent
+    // activity on another machine isn't what's active in this session.
     ipc
-      .getSessionHistory(1)
+      .getSessionHistory(1, true)
       .then((events) => {
         if (cancelled) return;
         if (!events.length) {
